@@ -970,6 +970,29 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "is the email's slug, a handful of rows an admin creates one at a time.",
   },
   {
+    key: "reminder_email_owed:*",
+    kind: "condition",
+    suffix: "bounded",
+    why:
+      "A switched on reminder email is owed to leads whose calls are still ahead, its window opened over 15 " +
+      "minutes ago, and the lane has recorded nothing for them (no send, no skip with its reason, no failure), " +
+      "or it claimed one over 15 minutes ago that never settled (#4300). It holds while any such call is " +
+      "still ahead and the monitor lane re-reads every 5 minutes; the all clear goes out on a measured read " +
+      "that finds none owed, or in its own words once the email is switched off or removed. The suffix is the " +
+      "email's slug, a handful of rows an admin creates one at a time.",
+  },
+  {
+    key: "reminder_email_failing:*",
+    kind: "condition",
+    suffix: "bounded",
+    why:
+      "One reminder email's OWN sends are failing over the rolling window (a share past the threshold, or every " +
+      "one of at least three failing), which the combined `booking_reminders_failing` share cannot see when " +
+      "that email is small beside the others (#4300). It holds until its sends go out again, which the " +
+      "reminder lane measures every 5 minutes, or ends in its own words once the email is switched off. The " +
+      "suffix is the email's slug, a handful of rows.",
+  },
+  {
     key: "placeholder_call_unserved:*",
     kind: "condition",
     suffix: "booking",

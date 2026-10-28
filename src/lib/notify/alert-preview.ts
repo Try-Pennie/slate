@@ -627,7 +627,11 @@ import { LOAD_RUN_BOOKINGS_PER_MINUTE } from "@/lib/load-bar";
 import {
   formatReminderFailureRateAlert,
   formatReminderFailureRateAllClear,
+  reminderEmailFailingAlert,
+  reminderEmailFailingAllClear,
+  reminderEmailFailingStandDown,
 } from "@/lib/booking/reminder-rate";
+import { reminderOwedAlert, reminderOwedAllClear, reminderOwedStandDown } from "@/lib/monitor/reminder-owed";
 import type { HandoffKind } from "@/lib/handoffs/kinds";
 import { formatReminder } from "@/lib/notify/repeat-policy";
 import { marciaFailureAlert, marciaGatewayRefusedAlert, marciaTokenRefusedAlert } from "@/lib/mcp-booking/alert-copy";
@@ -5704,6 +5708,78 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "every reminder email is switched off",
     channel: "info",
     text: noReminderEmailEnabledText(),
+  },
+  // #4300: an email owed to leads whose calls are still ahead, with nothing on record.
+  {
+    key: "reminder_email_owed:*",
+    state: "one lead's 1 hour email never recorded",
+    channel: "alert",
+    text: reminderOwedAlert(DEFAULT_TEMPLATES.hour.name, { unrecorded: ["b7f1c2e4-9a3d-4c88-b0f2-15ac7d9e6431"], staleClaims: [] }),
+  },
+  {
+    key: "reminder_email_owed:*",
+    state: "several leads, some never recorded and one claimed and stuck",
+    channel: "alert",
+    text: reminderOwedAlert(DEFAULT_TEMPLATES.day.name, {
+      unrecorded: ["c2d8e1f0-4b7a-4e19-9c3d-7f1a2b6e8d40", "e9a4b7c1-2f6d-4a83-b5e0-3c8d1f7a9b62"],
+      staleClaims: ["a1b2c3d4-5e6f-4a7b-8c9d-0e1f2a3b4c5d"],
+    }),
+  },
+  {
+    key: "reminder_email_owed:*",
+    state: "nobody is owed it any more",
+    channel: "recovery",
+    text: reminderOwedAllClear(DEFAULT_TEMPLATES.hour.name),
+  },
+  {
+    key: "reminder_email_owed:*",
+    state: "the email was switched off instead",
+    channel: "recovery",
+    text: reminderOwedStandDown(DEFAULT_TEMPLATES.hour.name),
+  },
+  // #4300: one email's own sends failing, which the combined share cannot see.
+  {
+    key: "reminder_email_failing:*",
+    state: "a small email failing on every send while the others go out",
+    channel: "alert",
+    text: reminderEmailFailingAlert({
+      name: "30 minute nudge",
+      attempts: 3,
+      failures: 3,
+      retrying: 0,
+      pct: 100,
+      windowMinutes: 240,
+      topCodes: [{ code: "not_authorised", count: 3 }],
+    }),
+  },
+  {
+    key: "reminder_email_failing:*",
+    state: "one email over the share, some handed back to retry",
+    channel: "alert",
+    text: reminderEmailFailingAlert({
+      name: DEFAULT_TEMPLATES.hour.name,
+      attempts: 12,
+      failures: 4,
+      retrying: 2,
+      pct: 33,
+      windowMinutes: 240,
+      topCodes: [
+        { code: "token_unavailable", count: 2 },
+        { code: "recipient_refused", count: 2 },
+      ],
+    }),
+  },
+  {
+    key: "reminder_email_failing:*",
+    state: "its sends are going out again",
+    channel: "recovery",
+    text: reminderEmailFailingAllClear({ name: "30 minute nudge", attempts: 4, failures: 0, pct: 0, windowMinutes: 240 }),
+  },
+  {
+    key: "reminder_email_failing:*",
+    state: "the email was switched off instead",
+    channel: "recovery",
+    text: reminderEmailFailingStandDown("30 minute nudge"),
   },
   // #2496. The one above and the three below are the whole point of the issue: they
   // are the same fault at two very different sizes, and they have to READ that way

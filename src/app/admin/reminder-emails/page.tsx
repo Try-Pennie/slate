@@ -17,6 +17,7 @@ import { REMINDER_EMAIL_COLUMNS, readSnapshot } from "@/lib/admin/reminder-email
 import { REMINDER_COPY } from "@/lib/admin/reminder-emails-copy";
 import { BUSINESS_ZONE } from "@/lib/booking/business-hours";
 import { unwrapCount } from "@/lib/db/result";
+import { loadReminderEmailStatus } from "@/lib/booking/reminder-status-store";
 
 export const metadata = { title: "Reminder emails" };
 
@@ -93,6 +94,14 @@ export default async function ReminderEmailsPage({
     versionsTotal = loaded?.total ?? 0;
   }
 
+  // Each email's last 24 hours (#4300), one reading for the whole list. It never throws:
+  // a failed read is an explicit unknown, which every row shows as the could not read
+  // notice rather than as zeros.
+  const status = await loadReminderEmailStatus(
+    db,
+    emails.map((e) => e.id),
+  );
+
   const listed: ListedEmail[] = emails.map((e) => ({
     id: e.id,
     name: e.name,
@@ -113,7 +122,12 @@ export default async function ReminderEmailsPage({
         <h2 id="reminder-list-h" className="mb-3 text-sm font-semibold">
           {REMINDER_COPY.listHeading}
         </h2>
-        <ReminderEmailList emails={listed} openId={creating ? "new" : (open?.id ?? null)} canAdd={canEdit} />
+        <ReminderEmailList
+          emails={listed}
+          openId={creating ? "new" : (open?.id ?? null)}
+          canAdd={canEdit}
+          status={status}
+        />
       </section>
       {(open || creating) && (
         <ReminderEmailWorkspace

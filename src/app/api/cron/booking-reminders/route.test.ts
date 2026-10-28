@@ -56,6 +56,7 @@ const dispatch = vi.hoisted(() => ({
   sendThrottledInfo: vi.fn(async (_key: string, _cooldownMs: number, _text: string) => {}),
   resolveAlert: vi.fn(async (_key: string, _text: string) => true),
   resolveRecovered: vi.fn(async (_list: { key: string; text: string }[]) => [] as string[]),
+  firingFamilyMembers: vi.fn(async (_family: string) => [] as string[]),
 }));
 const email = vi.hoisted(() => ({
   sendGmailEmail: vi.fn(async (_msg: { to: string[]; subject: string }) => "gmail-id"),
@@ -445,6 +446,42 @@ describe("GET /api/cron/booking-reminders", () => {
     expect(String(wave?.[2])).toContain("21 of 21");
   });
 
+  // #4300: one email failing every send pages on its own, from the same window row,
+  // while the combined share is too small to judge.
+  it("pages about one email whose own sends all fail, under that email's key", async () => {
+    state.rateRow = {
+      key: "booking_reminders",
+      day: new Date().toISOString().slice(0, 10),
+      attempts: 0,
+      failures: 0,
+      by_code: {},
+      refusals: {},
+      samples: [
+        {
+          atMs: Date.now() - 60_000,
+          attempts: 2,
+          failures: 2,
+          byCode: { not_authorised: 2 },
+          byEmail: { day: { attempts: 2, failures: 2, byCode: { not_authorised: 2 } } },
+        },
+      ],
+    };
+    state.pages = [[due(1)]];
+    state.sendFailures = ["Gmail send failed: 403 forbidden"];
+
+    const res = await GET(req());
+    expect(res.status).toBe(200);
+    const keys = dispatch.sendThrottledAlert.mock.calls.map((c) => String(c[0]));
+    expect(keys).not.toContain(REMINDER_FAILURE_RATE_KEY);
+    const own = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "reminder_email_failing:day");
+    expect(String(own?.[2])).toContain("3 of 3");
+    // The new sample carries the email's own counts, so the next tick can judge it too.
+    const saved = state.upserts.find((u) => u.key === "booking_reminders");
+    const samples = (saved?.samples ?? []) as { byEmail?: Record<string, unknown> }[];
+    expect(samples.at(-1)?.byEmail).toEqual({ day: { attempts: 1, failures: 1, byCode: { not_authorised: 1 } } });
+    expect(dispatch.firingFamilyMembers).toHaveBeenCalledWith("reminder_email_failing");
+  });
+
   // The all-clear hangs off a MEASURED healthy window (#1134).
   it("clears the wave page once the window is measurably healthy again", async () => {
     state.rateRow = {
@@ -748,6 +785,12 @@ describe("rateTick (#4298)", () => {
       byCode: { refused: 2 },
       retried: { "bk-1": "token_unavailable", "hour:bk-1": "token_unavailable" },
       settled: { "twelve:bk-2": "sent" },
+      byEmail: {
+        day: { attempted: 1, failed: 1, byCode: { refused: 1 } },
+        hour: { attempted: 1, failed: 1, byCode: { refused: 1 } },
+      },
+      emailNames: { day: "24 hour reminder", hour: "1 hour reminder" },
+      enabledSlugs: ["day", "hour"],
     } as unknown as Parameters<typeof rateTick>[0];
     expect(rateTick(run)).toEqual({
       attempts: 2,
@@ -755,6 +798,13 @@ describe("rateTick (#4298)", () => {
       byCode: { refused: 2 },
       retried: { "bk-1": "token_unavailable", "hour:bk-1": "token_unavailable" },
       settled: { "twelve:bk-2": "sent" },
+      // #4300: each email's own counts, its name, and which emails are on.
+      byEmail: {
+        day: { attempts: 1, failures: 1, byCode: { refused: 1 } },
+        hour: { attempts: 1, failures: 1, byCode: { refused: 1 } },
+      },
+      emailNames: { day: "24 hour reminder", hour: "1 hour reminder" },
+      enabledSlugs: ["day", "hour"],
     });
   });
 });

@@ -231,6 +231,11 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #4298. Same family: every lead due that email is not reminded, and the remedy is
   // to look at what did not land, here the email's own stored words.
   reminder_email_unrenderable: "a-booking-side-effect-did-not-complete",
+  // #4300. Same family: a lead whose call is still ahead is not being reminded, and the
+  // remedy is to find what did not land for those bookings.
+  reminder_email_owed: "a-booking-side-effect-did-not-complete",
+  // #4300. The per email sibling of booking_reminders_failing, so it reads the same way.
+  reminder_email_failing: "a-booking-side-effect-did-not-complete",
   // #4298. An admin's switch, said once a day so a decision nobody meant is noticed.
   reminder_emails_all_off: "something-was-measured-and-is-only-worth-knowing",
   outbox_drain_stuck: "a-booking-side-effect-did-not-complete",

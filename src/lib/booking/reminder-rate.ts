@@ -8,6 +8,7 @@ import {
 } from "@/lib/monitor/booking-failure-rate";
 import type { AlertResolve, ThrottledNotify } from "@/lib/monitor/alert-deps";
 import { asEmailSendError } from "@/lib/notify/email-errors";
+import { reminderEmailLabel } from "./reminder-template.ts";
 
 /**
  * A wave of reminder emails that did not go out, as distinct from one (#2496).
@@ -157,10 +158,52 @@ export interface ReminderTick {
    * retried booking once it has gone out or been given up.
    */
   settled?: Record<string, ReminderSettlement>;
+  /**
+   * The tick's sends split by email slug (#4300). Inside the totals above, never added
+   * to them, so the combined share reads exactly what it did before.
+   */
+  byEmail?: Record<string, ReminderEmailTick>;
+  /** Every stored email's name by slug, so a per email page names the email (#4300). */
+  emailNames?: Record<string, string>;
+  /**
+   * The slugs switched on this tick, measured from the lane's read of `reminder_emails`
+   * (which throws rather than answering empty). An open per email page for any other
+   * slug is ended as a stand down (#4300). Absent means not known, which ends nothing.
+   */
+  enabledSlugs?: string[];
 }
 
 /** How an attempted booking that was not handed back ended. */
 export type ReminderSettlement = "sent" | "kept";
+
+/** One email's share of a tick (#4300). */
+export interface ReminderEmailTick {
+  attempts: number;
+  failures: number;
+  byCode: Record<string, number>;
+}
+
+/**
+ * The key one send carries in the failure share's window: the bare id for the 24 hour
+ * email and `hour:<id>` for the 1 hour email, as they always have (#4282), and
+ * `<slug>:<id>` for any other, so one booking's emails are separate attempts.
+ *
+ * Defined HERE, beside its inverse `reminderShareKeySlug`, so the per email judgement
+ * reads the key by the same rule that wrote it (`reminder-send.ts` re-exports it).
+ */
+export function reminderShareKey(bookingId: string, slug: string): string {
+  return slug === "day" ? bookingId : `${slug}:${bookingId}`;
+}
+
+/**
+ * Which email a share key belongs to: the part before the first colon, or `day` for a
+ * bare id. A booking id is a uuid and holds no colon, and a slug is `[a-z][a-z0-9_]*`
+ * (migration 0211), so the split is unambiguous.
+ */
+export function reminderShareKeySlug(key: string): string {
+  const at = key.indexOf(":");
+  return at < 0 ? "day" : key.slice(0, at);
+}
 
 /**
  * Fold one tick into the window.
@@ -195,6 +238,12 @@ export function advanceReminderWindow(
     const handedBack = new Set(samples.flatMap((s) => Object.keys(s.retried ?? {})));
     const settledEntries = Object.entries(tick.settled ?? {}).filter(([id]) => handedBack.has(id));
     const settled = settledEntries.length > 0 ? Object.fromEntries(settledEntries) : null;
+    // Only the emails that attempted a send: an email that tried nothing measured
+    // nothing this tick, and the row stays one small entry per sending email (#4300).
+    const emailEntries = Object.entries(tick.byEmail ?? {})
+      .filter(([, e]) => e.attempts > 0)
+      .map(([slug, e]) => [slug, { attempts: e.attempts, failures: e.failures, byCode: { ...e.byCode } }] as const);
+    const byEmail = emailEntries.length > 0 ? Object.fromEntries(emailEntries) : null;
     samples.push({
       atMs,
       attempts: tick.attempts,
@@ -202,6 +251,7 @@ export function advanceReminderWindow(
       byCode: { ...tick.byCode },
       ...(retried ? { retried } : {}),
       ...(settled ? { settled } : {}),
+      ...(byEmail ? { byEmail } : {}),
     });
   }
 
@@ -403,11 +453,164 @@ export function judgeReminderWindow(
   return { ...judgeFailureRate(collapsed, atMs, thresholds), retrying, recovered };
 }
 
+// --------------------------------------------------------------- per email (#4300)
+
+/** The condition key for one email whose own sends are failing. */
+export const REMINDER_EMAIL_FAILING_PREFIX = "reminder_email_failing";
+export const reminderEmailFailingKey = (slug: string): string => `${REMINDER_EMAIL_FAILING_PREFIX}:${slug}`;
+
+/**
+ * How many failures, with NOTHING sent beside them, saturate an email whatever its
+ * volume (L139). The share's floor of ten attempts exists so one bad address in two
+ * cannot read as a 50 percent outage; it also means an email sending three times in
+ * four hours is never judged at all, and three of three failing is the clearest sign
+ * its path is broken. Three, not one or two: one refused address, or two in a quiet
+ * hour, is a lead's problem rather than the email's, and the per booking incident
+ * already names each of those.
+ */
+export const REMINDER_EMAIL_SATURATION_FAILURES = 3;
+
+/**
+ * One email's verdict. `saturated` is every send failing at or past the saturation
+ * floor; `healthy` is either the share measured under the threshold or, below the
+ * floor, sends that all went out (a measured clean read, small as it is).
+ */
+export interface ReminderEmailShareVerdict {
+  slug: string;
+  status: "breach" | "saturated" | "healthy" | "insufficient";
+  attempts: number;
+  failures: number;
+  retrying: number;
+  pct: number;
+  topCodes: CodeCount[];
+}
+
+/**
+ * One email's view of the window: every live sample that carries the per email split,
+ * with this email's counts, and the retried and settled entries whose share key is
+ * this email's. A sample written before the split shipped is left out entirely, its
+ * retried entries included, or they would be taken off counts it never held.
+ */
+function emailWindow(state: RateWindowState, slug: string, atMs: number, windowMs: number): RateWindowState {
+  const ofEmail = <T>(m: Record<string, T> | undefined): Record<string, T> | undefined => {
+    if (!m) return undefined;
+    const kept = Object.entries(m).filter(([key]) => reminderShareKeySlug(key) === slug);
+    return kept.length > 0 ? Object.fromEntries(kept) : undefined;
+  };
+  const samples = pruneSamples(state.samples, atMs, windowMs)
+    .filter((s) => s.byEmail !== undefined)
+    .map((s) => {
+      const e = s.byEmail?.[slug];
+      const retried = ofEmail(s.retried);
+      const settled = ofEmail(s.settled);
+      return {
+        atMs: s.atMs,
+        attempts: e?.attempts ?? 0,
+        failures: e?.failures ?? 0,
+        byCode: { ...(e?.byCode ?? {}) },
+        ...(retried ? { retried } : {}),
+        ...(settled ? { settled } : {}),
+      };
+    });
+  return { ...state, samples };
+}
+
+/**
+ * Judge every email that sent in the window, each on its own sends (#4300).
+ *
+ * Through `judgeReminderWindow`, so one booking retried every tick is one failure here
+ * exactly as it is in the combined share, and for its own email only: the retried key
+ * names the email (`reminderShareKey`). The share uses the shipped thresholds; beside it
+ * the saturation rule judges an email too small for the share's floor (L139).
+ */
+export function judgeReminderEmailWindows(
+  state: RateWindowState,
+  atMs: number,
+  thresholds: RateThresholds,
+): ReminderEmailShareVerdict[] {
+  const slugs = new Set<string>();
+  for (const s of pruneSamples(state.samples, atMs, thresholds.windowMs)) {
+    for (const slug of Object.keys(s.byEmail ?? {})) slugs.add(slug);
+  }
+  const out: ReminderEmailShareVerdict[] = [];
+  for (const slug of [...slugs].sort()) {
+    // A floor of one so the share and its codes are computed whatever the volume; the
+    // real floor is applied below, where it decides only whether the SHARE may judge.
+    const v = judgeReminderWindow(emailWindow(state, slug, atMs, thresholds.windowMs), atMs, { ...thresholds, minAttempts: 1 });
+    if (v.status === "insufficient") {
+      out.push({ slug, status: "insufficient", attempts: v.attempts, failures: v.failures, retrying: v.retrying, pct: 0, topCodes: [] });
+      continue;
+    }
+    const measured = v.attempts >= thresholds.minAttempts;
+    let status: ReminderEmailShareVerdict["status"];
+    if (measured && v.status === "breach") status = "breach";
+    else if (v.failures >= REMINDER_EMAIL_SATURATION_FAILURES && v.failures === v.attempts) status = "saturated";
+    else if (measured || v.failures === 0) status = "healthy";
+    else status = "insufficient";
+    out.push({ slug, status, attempts: v.attempts, failures: v.failures, retrying: v.retrying, pct: v.pct, topCodes: v.topCodes });
+  }
+  return out;
+}
+
+/** The email's stored name as a page says it (`reminderEmailLabel`). */
+const emailWords = reminderEmailLabel;
+
+/**
+ * The per email page. It names the email and says that this is its OWN share, which is
+ * what separates it from the combined page: the others may be going out fine.
+ */
+export function reminderEmailFailingAlert(input: {
+  name: string;
+  attempts: number;
+  failures: number;
+  retrying: number;
+  pct: number;
+  windowMinutes: number;
+  topCodes: CodeCount[];
+}): string {
+  const codes = codeList(input.topCodes);
+  const naming = codes ? ` Failing with: ${codes}.` : "";
+  const top = input.topCodes[0]?.code;
+  const guidance = top && CODE_GUIDANCE[top] ? ` ${CODE_GUIDANCE[top]}` : "";
+  const retrying = Math.min(Math.max(input.retrying, 0), input.failures);
+  const retried =
+    retrying > 0
+      ? ` ${retrying} of them did not go out and ${retrying === 1 ? "was" : "were"} handed back to be tried again, with no send since.`
+      : "";
+  return (
+    `The ${emailWords(input.name)} email failed to send for ${input.failures} of ${input.attempts} leads in the last ` +
+    `${input.windowMinutes} minutes (${input.pct}%). This counts that email's own sends, so other reminder emails ` +
+    `going out cannot hide it.${retried}${naming}${guidance} The per booking detail is in the booking-reminder log lines.`
+  );
+}
+
+/** The per email all clear, off a measured read of that email's own sends. */
+export function reminderEmailFailingAllClear(input: {
+  name: string;
+  attempts: number;
+  failures: number;
+  pct: number;
+  windowMinutes: number;
+}): string {
+  const measured =
+    input.failures === 0
+      ? `none of its ${input.attempts} ${input.attempts === 1 ? "send" : "sends"} in the last ${input.windowMinutes} minutes failed`
+      : `${input.failures} of its ${input.attempts} sends failed in the last ${input.windowMinutes} minutes (${input.pct}%)`;
+  return `The ${emailWords(input.name)} email is going out again: ${measured}.`;
+}
+
+/** The stand down for an open per email page once that email is no longer switched on. */
+export function reminderEmailFailingStandDown(name: string | undefined): string {
+  return name
+    ? `The ${emailWords(name)} email is no longer switched on, so its sends are no longer being judged. Nothing was repaired.`
+    : "A reminder email that was failing no longer exists or is switched off, so its sends are no longer being judged. Nothing was repaired.";
+}
+
 export type ReminderRateResult =
   /** The window could not be read, so this tick claims nothing in either direction.
    *  Deliberately NOT folded into an empty window scored as zero failures. */
   | { status: "unverified"; why: "state" }
-  | { status: "checked"; verdict: ReminderRateVerdict; state: RateWindowState };
+  | { status: "checked"; verdict: ReminderRateVerdict; state: RateWindowState; emails: ReminderEmailShareVerdict[] };
 
 /**
  * Measure this tick, judge the window, and decide whether a human hears about it.
@@ -434,10 +637,16 @@ export async function runReminderFailureRateCheck(deps: {
   saveState: (state: RateWindowState) => Promise<void>;
   notify: ThrottledNotify;
   resolve: AlertResolve;
+  /**
+   * The slugs with an open per email page (`firingFamilyMembers`), so one for an email
+   * no longer switched on can be ended (#4300). THROWS on a failed read, which ends
+   * nothing this tick. Absent, no stand down is attempted.
+   */
+  loadFiringEmailSlugs?: () => Promise<string[]>;
   /** Structurally the log helper's field shape, spelled out rather than imported so
    *  this module keeps no dependency on the logger. */
   log?: (fields: Record<string, string | number | boolean | null | undefined>) => void;
-  onError?: (context: "saveState" | "notify" | "resolve", err: unknown) => void;
+  onError?: (context: "saveState" | "notify" | "resolve" | "firing", err: unknown) => void;
 }): Promise<ReminderRateResult> {
   let prev: RateWindowState | null;
   try {
@@ -491,5 +700,54 @@ export async function runReminderFailureRateCheck(deps: {
       )
       .catch((err) => deps.onError?.("resolve", err));
   }
-  return { status: "checked", verdict, state };
+
+  // Each email on its own sends (#4300), after the combined page so that page's firing
+  // marker is on record first: while it fires, a per email page it explains waits
+  // (`ALERT_FOLDS`), and one cause is said once.
+  const emails = judgeReminderEmailWindows(state, deps.nowMs, deps.thresholds);
+  const names = deps.tick.emailNames ?? {};
+  // A switched off email's failed samples stay in the window for hours, so judging it would
+  // post a fresh page the stand down below ends in the same tick. Off a MEASURED list only.
+  const switchedOn = deps.tick.enabledSlugs ? new Set(deps.tick.enabledSlugs) : null;
+  for (const e of emails) {
+    const key = reminderEmailFailingKey(e.slug);
+    const name = names[e.slug] ?? e.slug;
+    deps.log?.({
+      msg: "reminder email failure share",
+      email: e.slug,
+      status: e.status,
+      attempts: e.attempts,
+      failures: e.failures,
+      retrying: e.retrying,
+    });
+    if (switchedOn && !switchedOn.has(e.slug)) continue;
+    if (e.status === "breach" || e.status === "saturated") {
+      await deps
+        .notify(key, deps.cooldownMs, reminderEmailFailingAlert({ ...e, name, windowMinutes }))
+        .catch((err) => deps.onError?.("notify", err));
+    } else if (e.status === "healthy") {
+      await deps
+        .resolve(key, reminderEmailFailingAllClear({ ...e, name, windowMinutes }))
+        .catch((err) => deps.onError?.("resolve", err));
+    }
+  }
+
+  // An open page for an email no longer switched on has no sends left to judge, so it
+  // would hold for ever: it is ended in words that say nothing was repaired. Only off a
+  // MEASURED list of enabled emails; an unknown one ends nothing.
+  if (deps.loadFiringEmailSlugs && deps.tick.enabledSlugs) {
+    const enabled = new Set(deps.tick.enabledSlugs);
+    let firing: string[] = [];
+    try {
+      firing = await deps.loadFiringEmailSlugs();
+    } catch (err) {
+      deps.onError?.("firing", err);
+    }
+    for (const slug of firing) {
+      if (enabled.has(slug)) continue;
+      const key = reminderEmailFailingKey(slug);
+      await deps.resolve(key, reminderEmailFailingStandDown(names[slug])).catch((err) => deps.onError?.("resolve", err));
+    }
+  }
+  return { status: "checked", verdict, state, emails };
 }
