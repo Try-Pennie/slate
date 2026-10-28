@@ -18,7 +18,7 @@ page.
 
 | | Objective | What is in force today |
 |---|---|---|
-| **RPO, bookings** (and the other five mirrored tables: `booking_events`, `booking_outbox`, `routing_decisions`, `webhook_deliveries`, `audit_log`) | **About 10 minutes** | The Snowflake export lane copies every change to these tables to the warehouse every 10 minutes (`MIRROR_TABLES` in `src/lib/snowflake/export-core.ts`). If it stops, the lane watchdog pages once its heartbeat is 30 minutes old (`MIRROR_STALE_BOUNDS_MS`), so the worst case before anybody is told is 30 minutes. Section 4 writes them back with `pnpm restore:from-snowflake`. |
+| **RPO, bookings** (and the other five mirrored tables: `booking_events`, `booking_outbox`, `routing_decisions`, `webhook_deliveries`, `audit_log`) | **About 30 minutes** | The Snowflake export lane copies every change to these tables to the warehouse every 30 minutes (`MIRROR_TABLES` in `src/lib/snowflake/export-core.ts`). If it stops, the lane watchdog pages once its heartbeat is 90 minutes old (`MIRROR_STALE_BOUNDS_MS`), so the worst case before anybody is told is 90 minutes. Section 4 writes them back with `pnpm restore:from-snowflake`. |
 | **RPO, everything else** (advisors, pools, working hours, business hours, settings, time off, calendars) | **24 hours** | Two full logical dumps a day (07:40 and 19:40 UTC), stored off platform in Cloudflare R2 by `.github/workflows/db-backup.yml`. The objective is a day; the second slot is for resilience, because GitHub runs these scheduled jobs hours late and a single slot twice drifted past the alarm. The lane watchdog pages when the newest dump is older than 26 hours (`BACKUP_STALE_BOUNDS_MS`), and when none has ever landed. Supabase's own daily backups still exist beside it, in the same account as production. |
 | **RTO** (time to serve again) | **Same business day** | Slate's bookings are business hours only, so a restore that lands before the next working morning has not breached. |
 
@@ -46,11 +46,22 @@ It would give a two minute RPO on every table, but the mirror already gives ten
 minutes on the tables where minutes matter, and the rest does not change fast enough
 for minutes to be worth that.
 
+**On the 30 minute cadence (decided by Dan on 2026-10-28, #4349).** The booking RPO
+went from about 10 minutes to about 30, knowingly. Every export run wakes `SLATE_WH`,
+and once real leads arrived around the clock (the pilot, from 2026-09-29) nearly
+every 10 minute run had rows to copy: about 135 wakes a day at about 1.5 billed
+minutes each, roughly $300 a month, measured in Snowflake's own usage views on
+2026-10-28. A 30 minute cadence cuts the wakes to at most 48 a day. Dan accepted the
+cost knowing Slate was moving from half to all of the pilot traffic the following
+week, so 30 minutes is then roughly 30 to 60 bookings at the busiest hours. The
+paragraph above, which declined PITR because the mirror gave ten minutes, predates
+this; weigh PITR against a 30 minute RPO when it is next revisited.
+
 **Revisit when** either of these holds, both of which can be re-measured:
 
 - **real bookings pass 2,000 a day** (`select count(*) from bookings where created_at
-  >= now() - interval '1 day'`, excluding test buckets), because ten minutes of
-  bookings is then about 14 leads, and a minute by minute objective starts to cost
+  >= now() - interval '1 day'`, excluding test buckets), because thirty minutes of
+  bookings is then about 42 leads, and a minute by minute objective starts to cost
   more in reconciliation than PITR costs in money; or
 - **the non booking tables start changing continuously** rather than by hand, for
   example an automated roster or hours sync writing all day, because a day of those
@@ -329,7 +340,7 @@ reconcile against.
 
 0. **Write the mirrored tables back from Snowflake first.** Every booking, booking
    event, outbox row, routing decision, webhook delivery and audit entry written
-   since the restore point is in the warehouse, copied there within about ten
+   since the restore point is in the warehouse, copied there within about thirty
    minutes of being written. Dry run first, which reads both sides and writes
    nothing:
 
@@ -352,7 +363,7 @@ RESTORE_POINT=2026-10-03T06:00:00Z APPLY=1 RESTORE_CONFIRM_HOST=drukfvgaynzrralb
    reads `booking_reminder_sends`, which is not mirrored either, so a restored booking
    has no record of ANY reminder email it was sent. It is safe to
    run again. What it cannot see: a booking written and then lost inside the last
-   export interval (up to ten minutes, or up to 30 if the export lane was stalled),
+   export interval (up to thirty minutes, or up to 90 if the export lane was stalled),
    which is what the rest of this list is for.
 
 1. **Read the pre-restore snapshot you took in step 0.** That is the fastest and

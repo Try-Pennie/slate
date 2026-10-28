@@ -76,10 +76,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // invocation is the one already short of CPU headroom.
   //
   // 03:05 rather than 03:00 (#1713): every retention lane gates on the export lane
-  // being current, and the export lane fires on every tenth minute, so an exact
-  // 03:00 start had the gate reading the mirror while the tick it was judging was
-  // still working through six tables. scripts/test-cron-routes.ts pins the minute
-  // off the export lane's step.
+  // being current, and the export lane then fired on every tenth minute, so an
+  // exact 03:00 start had the gate reading the mirror while the tick it was judging
+  // was still working through six tables. The export now runs at :14 and :44
+  // (#4349); scripts/test-cron-routes.ts pins this minute off the export's minutes.
   "5 3 * * *": [
     "/api/cron/prune-routing",
     "/api/cron/prune-webhook-payloads",
@@ -115,10 +115,14 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // Hydration is load-bearing once anything filters or prunes the cache by window, so it
   // stamps its own heartbeat with a matching bound in LANE_STALE_BOUNDS_MS.
   "*/15 * * * *": "/api/cron/hydrate-calendars",
-  // Snowflake archival mirror export (#1099): its OWN expression (every 10 min),
-  // never co-scheduled, so it gets its own CPU/subrequest budget. Resumable via
-  // export_cursor, so a 10-min gap just means the next tick catches up.
-  "*/10 * * * *": "/api/cron/snowflake-export",
+  // Snowflake archival mirror export (#1099): its OWN expression, never
+  // co-scheduled, so it gets its own CPU/subrequest budget. Every 30 minutes since
+  // #4349 (Dan, 2026-10-28: each run wakes the warehouse, and lead traffic around
+  // the clock made that nearly every run), at :14 and :44: clear of the hourly
+  // lanes at :00 and of the 03:05 retention lanes, whose export lag gate must
+  // never read mid tick (scripts/test-cron-routes.ts). Resumable via export_cursor, so a missed tick means the next
+  // one catches up.
+  "14,44 * * * *": "/api/cron/snowflake-export",
   // Snowflake mirror reconciliation (#1101) + erasure content-audit (#1103):
   // every 6h, each under its own lock. Reconcile counts Supabase vs Snowflake per
   // table + a positive control and alerts on drift; the audit reads the pii.erasure
@@ -136,7 +140,8 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // The daily advisor photo refresh from the Google directory (#3027). Its OWN
   // expressions, never co-scheduled: it makes about 130 Google reads and writes
   // image rows, so it gets an invocation of its own. Minute 17 shares a moment
-  // with no other trigger (every 5, 10 and 15 minute lane and the hourly one).
+  // with no other trigger (the every 5 and 15 minute lanes, the export at :14 and
+  // :44, and the hourly one).
   // The 10:17 run is the automatic re attempt (L533): the route stands down when
   // the 04:17 run already reached a verdict today, so a healthy day reads Google
   // once. Both expressions drive the one lane, under one lock.

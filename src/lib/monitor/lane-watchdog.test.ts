@@ -223,7 +223,8 @@ describe("alertOnStaleLanes (#803)", () => {
   });
 
   it("alerts (Slack only) when the Snowflake mirror export lane goes stale (#1101)", async () => {
-    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(40 * MIN) });
+    // Past the 90 minute bound (three missed 30 minute runs, #4349).
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(100 * MIN) });
     const { stale } = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).toContain("snowflake-export");
     const call = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lane_stale:snowflake-export");
@@ -233,6 +234,12 @@ describe("alertOnStaleLanes (#803)", () => {
 
   it("does not alert when the mirror export lane is fresh", async () => {
     heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(5 * MIN) });
+    const { stale } = await alertOnStaleLanes();
+    expect(stale.map((l) => l.lane)).not.toContain("snowflake-export");
+  });
+
+  it("does not alert on one missed 30 minute export run (#4349)", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "snowflake-export": ago(60 * MIN) });
     const { stale } = await alertOnStaleLanes();
     expect(stale.map((l) => l.lane)).not.toContain("snowflake-export");
   });

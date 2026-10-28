@@ -34,7 +34,7 @@ USE ROLE ACCOUNTADMIN;
 -- ----------------------------------------------------------------------------
 CREATE WAREHOUSE IF NOT EXISTS SLATE_WH
   WAREHOUSE_SIZE = 'XSMALL'
-  AUTO_SUSPEND = 60            -- seconds idle before suspend
+  AUTO_SUSPEND = 30            -- seconds idle before suspend (#4349)
   AUTO_RESUME = TRUE
   INITIALLY_SUSPENDED = TRUE
   STATEMENT_TIMEOUT_IN_SECONDS = 600
@@ -50,7 +50,7 @@ CREATE WAREHOUSE IF NOT EXISTS SLATE_WH
 --      nothing on a warehouse that already exists.
 --
 --   2. A monthly resource monitor that WARNS ONLY: notify at 75% and at 100%, and
---      NEVER suspend. Suspending the warehouse would stop the 10 minute booking
+--      NEVER suspend. Suspending the warehouse would stop the 30 minute booking
 --      mirror, and that mirror is the booking backup (the prune lanes redact only
 --      what it has confirmed), so a spend cap must never be able to switch it off.
 --      NOTIFY emails the account administrators who have email notifications
@@ -70,6 +70,10 @@ CREATE WAREHOUSE IF NOT EXISTS SLATE_WH
 -- ----------------------------------------------------------------------------
 ALTER WAREHOUSE IF EXISTS SLATE_WH SET STATEMENT_TIMEOUT_IN_SECONDS = 600;
 ALTER WAREHOUSE IF EXISTS SLATE_WH SET GENERATION = '1';
+-- Every export run resumes the warehouse, billed a minute minimum, and it then
+-- idled 60s before suspending: about 1.5 billed minutes a run for a few seconds
+-- of MERGE. 30s idle cuts that to just over the minimum (Dan, 2026-10-28, #4349).
+ALTER WAREHOUSE IF EXISTS SLATE_WH SET AUTO_SUSPEND = 30;
 
 -- ----------------------------------------------------------------------------
 -- Database + schema.

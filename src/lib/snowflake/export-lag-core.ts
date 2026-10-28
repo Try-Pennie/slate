@@ -50,8 +50,9 @@ import { parseStampMs } from "@/lib/date/stamp";
  * How old the oldest row still waiting for export may be before a delete is
  * refused.
  *
- * The export lane runs every 10 minutes, so on a healthy mirror no row waits
- * more than minutes. One hour is six consecutive missed ticks: comfortably past
+ * The export lane runs every 30 minutes (#4349), so on a healthy mirror no row
+ * waits more than about half an hour. Two hours is four consecutive missed ticks
+ * (it was one hour, six ticks, at the old 10 minute cadence): comfortably past
  * ordinary between-tick waiting and a slow catch-up, well short of the daily
  * cadence of the lanes this gates, so a single hiccup does not stop retention
  * for a day. That is the quantity `exportLagAgeMs` computes (#1713): it used to
@@ -59,7 +60,7 @@ import { parseStampMs } from "@/lib/date/stamp";
  * table is the table's own arrival rhythm and is unbounded above however
  * healthy the lane is.
  */
-export const MAX_EXPORT_LAG_MS = 60 * 60_000;
+export const MAX_EXPORT_LAG_MS = 2 * 60 * 60_000;
 
 export interface TableLag {
   table: string;

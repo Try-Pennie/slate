@@ -3,7 +3,7 @@
 // docs/dr-runbook.md section 4. A restore rolls Supabase back to the restore point,
 // and every booking, booking event, outbox row, routing decision, webhook delivery and
 // audit entry written since is gone from it. The export lane copied each of them to
-// the warehouse within about ten minutes of the write, so this reads every mirrored
+// the warehouse within about thirty minutes of the write, so this reads every mirrored
 // row whose watermark is at or after the restore point and writes back the ones
 // Supabase is missing or holds an older copy of. The rules (never over a newer row,
 // never over a redacted one, parents first) live in scripts/lib/snowflake-restore.ts,

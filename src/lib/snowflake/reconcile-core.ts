@@ -14,7 +14,7 @@
 // in scripts/path-alias-hooks.mjs to find an extensionless TS import.
 import { MAX_EXPORT_LAG_MS, formatLag, type TableLag } from "@/lib/snowflake/export-lag-core";
 
-// Normal lag tolerance: the export runs every 10 min, so Supabase can legitimately
+// Normal lag tolerance: the export runs every 30 min, so Supabase can legitimately
 // be a little ahead of Snowflake. Alert only when the gap exceeds the larger of a
 // flat floor and a small fraction of the table, so a genuinely stuck lane shows
 // but ordinary between-tick lag does not.

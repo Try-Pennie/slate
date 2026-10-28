@@ -858,7 +858,7 @@ assert(crons !== null && crons.length >= 10, `the crons are read from the real w
 const real = crons ?? [];
 eq(
   real.filter(isFrequentCron).sort().join(", "),
-  ["* * * * *", "*/10 * * * *", "*/15 * * * *", "*/5 * * * *"].join(", "),
+  ["* * * * *", "*/15 * * * *", "*/5 * * * *"].join(", "),
   "only the lanes that run at least every fifteen minutes may fall inside the split",
 );
 assert(!isFrequentCron("0 * * * *"), "the hourly roster sync is protected");

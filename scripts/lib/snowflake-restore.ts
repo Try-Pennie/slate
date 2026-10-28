@@ -3,7 +3,7 @@
  *
  * After a database restore, everything written to the six mirrored tables since the
  * restore point is gone from Supabase and still in the warehouse, because the export
- * lane copies them there every ten minutes (src/lib/snowflake/export-core.ts). So the
+ * lane copies them there every thirty minutes (src/lib/snowflake/export-core.ts). So the
  * warehouse, not a person reading calendars, is the first source for those rows.
  * `scripts/restore-from-snowflake.ts` is the live command; this module is every rule
  * it applies, pure, so `scripts/test-snowflake-restore.ts` drives them with fakes.

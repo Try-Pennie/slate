@@ -7,7 +7,7 @@ name: Database backup
 # the recovery point as two numbers (docs/dr-runbook.md, "Recovery objectives"):
 #
 #   - bookings and the other five tables the Snowflake mirror carries are recoverable to
-#     within about ten minutes, from the warehouse (scripts/restore-from-snowflake.ts);
+#     within about thirty minutes (#4349), from the warehouse (scripts/restore-from-snowflake.ts);
 #   - everything else (advisors, pools, hours, settings, time off) is recoverable to the
 #     last dump THIS workflow took, so to within a day.
 #
