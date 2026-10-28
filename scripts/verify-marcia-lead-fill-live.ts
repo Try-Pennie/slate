@@ -34,19 +34,17 @@ import { readFileSync } from "node:fs";
 import { loadEnvFiles } from "./smoke-env.ts";
 import { liveTestWorldPreflight } from "./lib/live-test-world-preflight.ts";
 import {
-  BOOKING_MCP_URL,
   LEAD_FILL_OUTCOMES,
+  askBookingMcp,
   RUN_TIME_ZONE,
   fillVerdict,
   finalOutcome,
   leadFillClaims,
   leadIdProblem,
   leadProblem,
-  readToolAnswer,
   runNonce,
   slateAnswersFirst,
   tokenKeyFrom,
-  toolCall,
   type LeadFillOutcome,
 } from "./lib/marcia-lead-fill-check.ts";
 import { signMachineToken } from "../src/lib/mcp-booking/machine-token.ts";
@@ -122,25 +120,9 @@ async function mcp(name: string, args: Record<string, unknown>): Promise<{ body:
   const n = ++calls;
   const token = await signMachineToken(leadFillClaims(LEAD, Date.now(), runNonce(RUN_STARTED_MS, n)), KEY);
   const started = Date.now();
-  let status = 0;
-  let text = "";
-  try {
-    const res = await fetch(BOOKING_MCP_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
-      body: toolCall(n, name, args),
-    });
-    status = res.status;
-    text = await res.text();
-  } catch (err) {
-    throw Object.assign(new Error(`${name}: the booking MCP could not be reached (${err instanceof Error ? err.name : "a throw"})`), { outcome: "mcpRefused" as const });
-  }
+  const read = await askBookingMcp(token, n, name, args);
   const ms = Date.now() - started;
-  const read = readToolAnswer(status, text);
-  if (!read.ok) {
-    const keyHint = read.why.includes("token_signature_invalid") ? "; the token key this run holds is not the one production verifies with" : "";
-    throw Object.assign(new Error(`${name}: ${read.why}${keyHint}`), { outcome: "mcpRefused" as const });
-  }
+  if (!read.ok) throw Object.assign(new Error(read.why), { outcome: "mcpRefused" as const });
   return { body: read.body, ms };
 }
 

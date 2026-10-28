@@ -2147,6 +2147,67 @@ Its pure decisions (which leads can prove it, when Slate answers first, the verd
 field, the token's claims, reading the MCP's answer, one code per outcome) are pinned
 offline by `scripts/test-marcia-lead-fill-check.ts`. **Not yet run live.**
 
+# Proving Marcia can book a cancelled time again (`pnpm verify:marcia-rebook`)
+
+#3616. The ramp from 50% to 100% waits on "a verified cancel, and a rebook of the same
+slot after it, each live with its own calendar event". The 2026-10-21 live tests moved
+and cancelled calls through Marcia's booking MCP but never booked a freed time again,
+which is where a cancel that left its event on the calendar, or a second book read as a
+retry of the first, would show. Every suite drives the MCP through fakes, so this proves
+it once on production, from the DEPLOYED Worker, the way Marcia reaches it.
+
+It signs its own TEST tokens with Marcia's token key exactly as the lead fill proof above
+does (`MARCIA_TOKEN_KEY_FILE`, never printed), each call with its own nonce, carrying the
+Lead's name, email and phone because a net new Marcia book needs all three on the token.
+A test token routes every call to `PARTNER`, so no webhook, no Regal text and no monitor
+counts it (#2760).
+
+The run, in order, stopping before any write at the first problem:
+
+1. reads the Lead from Salesforce here: it must hold an Email at a `@trypennie.com`
+   address and a Phone, because both invites go to them; and reads Slate: the lead may
+   hold no active test call, or a book would land on it instead of making a new one;
+2. asks the deployed booking MCP for times on `PARTNER` and books the first one;
+3. cancels it through the MCP;
+4. books **the same slot id** again through the MCP, and cancels that.
+
+After every write it reads the booking row AND asks Google for the advisor's event: a
+book passes only as `created`, confirmed, with a live event; a cancel only as
+`cancelled` with the event gone (or read back as cancelled); the rebook only at the same
+start, as a different booking with its own event. Then, always, every call it made is
+read back and cancelled by hand if still active. It refuses to start inside the smoke
+canary's window, since the partner bucket is smoketest@'s.
+
+```
+VERIFY_MARCIA_REBOOK_APPLY=1 VERIFY_MARCIA_LEAD_ID=<00Q lead id> MARCIA_TOKEN_KEY_FILE=<path> pnpm verify:marcia-rebook
+```
+
+Run it from a checkout of current main holding `.env.local` (Supabase, Salesforce and
+Google credentials).
+
+| exit | what it met |
+|---|---|
+| 0 | booked, cancelled and booked the same time again, each with its own event, and both calls are cancelled |
+| 1 | no flag, no lead id, no usable token key, or no credentials; nothing attempted |
+| 2 | inside the canary's window; nothing attempted |
+| 3 | the Lead cannot be booked by the run (no Pennie email or no phone); nothing booked |
+| 4 | the lead already holds a test call; nothing booked |
+| 5 | the Lead could not be read from here; nothing booked |
+| 6 | find_times offered no time on `PARTNER`; nothing booked |
+| 7 | the booking MCP refused the first book or a cancel, named by code |
+| 8 | **after the cancel, the same time could not be booked again**, named by code |
+| 9 | **every call was answered, but a booking or its event is not what the answer said**, named |
+| 10 | cleanup left a test call active, named: cancel it by hand |
+| 11 | cleanup could not read a test call's status, named |
+| 12 | Slate's bookings for the lead could not be read; nothing booked |
+| 13 | a booking or its event could not be read back, so that step is unmeasured |
+| 14 | the run itself failed in a way no step expected, named |
+
+A cleanup problem (10, then 11) wins the exit code, and its message still says what the
+run had found before cleanup. Its pure decisions (the token's claims, the verdict on each
+book, cancel and the rebook, one code per outcome) are pinned offline by
+`scripts/test-marcia-rebook-check.ts`.
+
 # Proving the advisor photo refresh (`pnpm verify:advisor-photos`)
 
 The daily `advisor-photos` lane (#3027) reads every active person's photo from the

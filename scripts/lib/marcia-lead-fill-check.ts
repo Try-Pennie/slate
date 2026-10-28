@@ -8,14 +8,23 @@ import { usableTokenKeys, FIXTURE_TOKEN_KEY } from "../../src/lib/mcp-booking/ma
 import { MACHINE_TOKEN_AUDIENCE, MACHINE_TOKEN_ISSUER } from "../../src/lib/mcp-booking/token-shape.ts";
 import { PARTNER_BUCKET_CODE } from "../../src/lib/embed/public-test-bucket.ts";
 
+/**
+ * The outcomes every live Marcia proof shares, before it books anything: the same
+ * condition on the same exit code in each (the lead fill proof here, the rebook proof
+ * in `marcia-rebook-check.ts`).
+ */
+export const MARCIA_SETUP_OUTCOMES = {
+  notConfigured: { exit: 1, says: "no apply flag, no lead id, no usable token key, or no credentials; nothing was attempted" },
+  canaryWindow: { exit: 2, says: "inside the smoke canary's window; nothing was attempted" },
+  salesforceUnreadable: { exit: 5, says: "the Salesforce Lead could not be read from here; nothing was booked" },
+} as const;
+
 /** Every way a run can end, each on its own exit code (L11). */
 export const LEAD_FILL_OUTCOMES = {
   proven: { exit: 0, says: "a move through the booking MCP filled the lead's email and phone from the Salesforce Lead on production, and the test call was cancelled" },
-  notConfigured: { exit: 1, says: "no apply flag, no lead id, no usable token key, or no credentials; nothing was attempted" },
-  canaryWindow: { exit: 2, says: "inside the smoke canary's window; nothing was attempted" },
+  ...MARCIA_SETUP_OUTCOMES,
   leadUnsuitable: { exit: 3, says: "this Salesforce Lead cannot prove the fill; nothing was booked" },
   bookingsAnswerFirst: { exit: 4, says: "Slate already holds this lead's details or a call for it, so the Lead would never be asked; nothing was booked" },
-  salesforceUnreadable: { exit: 5, says: "the Salesforce Lead could not be read from here; nothing was booked" },
   noTimes: { exit: 6, says: "find_times through the booking MCP did not offer two times on the partner test bucket; nothing was booked" },
   mcpRefused: { exit: 7, says: "the booking MCP refused a call" },
   setupRefused: { exit: 8, says: "the test call could not be booked" },
@@ -150,6 +159,31 @@ export function finalOutcome(
   if (!cleanup) return run;
   const before = `${run.outcome === "proven" ? "before cleanup the run had proven the fill" : `before cleanup the run had failed: ${LEAD_FILL_OUTCOMES[run.outcome].says}`}${run.detail ? ` (${run.detail})` : ""}`;
   return { outcome: cleanup.outcome, detail: `${cleanup.detail}; ${before}` };
+}
+
+/**
+ * One tools/call to the deployed booking MCP with a token the caller signed, read into
+ * the tool's own answer or a description of why there is none. A refused signature is
+ * named as the wrong key, the one cause the operator can act on from here.
+ */
+export async function askBookingMcp(token: string, id: number, name: string, args: Record<string, unknown>): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; why: string }> {
+  let status = 0;
+  let text = "";
+  try {
+    const res = await fetch(BOOKING_MCP_URL, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
+      body: toolCall(id, name, args),
+    });
+    status = res.status;
+    text = await res.text();
+  } catch (err) {
+    return { ok: false, why: `${name}: the booking MCP could not be reached (${err instanceof Error ? err.name : "a throw"})` };
+  }
+  const read = readToolAnswer(status, text);
+  if (read.ok) return read;
+  const keyHint = read.why.includes("token_signature_invalid") ? "; the token key this run holds is not the one production verifies with" : "";
+  return { ok: false, why: `${name}: ${read.why}${keyHint}` };
 }
 
 /** One JSON-RPC tools/call body. */
