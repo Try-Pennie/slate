@@ -81,6 +81,12 @@ export const COORDINATOR_PAGE_COPY = {
   },
   /** States the design's frames do not draw, in the same voice. */
   more: {
+    /**
+     * The customer's existing call time in the Time grid, greyed and unclickable (#4331, settled
+     * in docs/design/coordinator-current-time.html). Here rather than in `newTime`, which is held
+     * word for word to the earlier settled design's fixture.
+     */
+    currentCall: "Current call",
     /** Said for the customer when the Lead carries no first name. */
     theCustomer: "the customer",
     noPhone: "No phone on the Lead",

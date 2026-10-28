@@ -148,6 +148,9 @@ export type PageEvent =
 
 const busy = (s: PageState) => s.phase === "finding" || s.phase === "placing";
 export const isMove = (s: PageState) => s.found?.existing.kind === "move";
+/** Whether `start` is the customer's existing call's own time (#4331), compared as instants. */
+const isCurrentCall = (s: PageState, start: string) =>
+  s.found?.existing.kind === "move" && Date.parse(s.found.existing.call.startsAt) === Date.parse(start);
 /** The card is locked behind the box, or behind a call that cannot be moved from here. */
 export const isLocked = (s: PageState) =>
   s.phase !== "done" && ((isMove(s) && !s.told) || s.found?.existing.kind === "loose");
@@ -239,6 +242,7 @@ export function reducePage(s: PageState, e: PageEvent): PageState {
     }
     case "timeChosen":
       if (cardOff(s) || !startsOn(s, s.day).includes(e.start)) return s; // D15
+      if (isCurrentCall(s, e.start)) return s; // #4331: the call is already there
       return { ...s, start: e.start };
     case "reasonChosen":
       if (cardOff(s) || !isMove(s)) return s;
@@ -342,6 +346,10 @@ export interface TimeSlot {
   start: string;
   label: string;
   pressed: boolean;
+  /** The customer's existing call is at this time, so it is shown greyed and never chosen (#4331). */
+  current: boolean;
+  /** What a screen reader and a hover say of the current call's time; null on every other time. */
+  currentLabel: string | null;
 }
 
 export interface PageView {
@@ -450,8 +458,11 @@ export function pageView(s: PageState, ctx: { nowMs: number; reasons: readonly {
   else if (!s.day || starts.length === 0) line = { text: COPY.newTime.pickDay, tone: "muted" };
   else line = { text: fillCopy(COPY.newTime.hours, { day: longDay(s.day, zone), from: clockOf(starts[0]!, zone), to: clockOf(starts[starts.length - 1]!, zone) }), tone: "fg" };
 
-  const slots = starts.map((t) => ({ start: t, label: clockOf(t, zone), pressed: t === s.start, morning: at(t, zone).hour < 12 }));
-  const toSlot = ({ start, label, pressed }: TimeSlot) => ({ start, label, pressed });
+  const slots = starts.map((t) => {
+    const current = isCurrentCall(s, t);
+    return { start: t, label: clockOf(t, zone), pressed: t === s.start, current, currentLabel: current ? COPY.more.currentCall : null, morning: at(t, zone).hour < 12 };
+  });
+  const toSlot = ({ start, label, pressed, current, currentLabel }: TimeSlot) => ({ start, label, pressed, current, currentLabel });
   const move = isMove(s);
   const placing = s.phase === "placing";
   const chosen = timeChosen(s);
