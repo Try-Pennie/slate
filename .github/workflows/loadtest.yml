@@ -308,7 +308,7 @@ jobs:
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/preflight.ts
       # The judge reads this to learn whether the unique index really enforces, so
       # it has to reach the judge like every other driver file.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: preflight
           path: results/
@@ -368,7 +368,7 @@ jobs:
           OUT: results/baseline-${{ matrix.driver }}.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: baseline-${{ matrix.driver }}
           path: results/
@@ -477,7 +477,7 @@ jobs:
       # that file is what tells the judge the burst was not simultaneous. Without it
       # the judge sees a burst leg that produced nothing.
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: burst-${{ matrix.driver }}
           path: results/
@@ -537,7 +537,7 @@ jobs:
       # ALWAYS: a tail that could not cover every burst still holds what it caught,
       # and the judge reports which requests it matched.
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: burst-tail
           path: results/
@@ -590,7 +590,7 @@ jobs:
           DRIVER: ${{ matrix.driver }}
           OUT: results/driver-${{ matrix.driver }}.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/book.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: driver-${{ matrix.driver }}
           path: results/
@@ -628,7 +628,7 @@ jobs:
           SUPABASE_SECRET_KEY: ${{ secrets.LOADTEST_SUPABASE_SECRET_KEY }}
           OUT: results/freshness.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/freshness-sampler.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: freshness
           path: results/
@@ -668,7 +668,7 @@ jobs:
           BOOKING_API_KEY: ${{ secrets.LOADTEST_BOOKING_API_KEY }}
           OUT: results/ip-ceiling.json
         run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/loadtest/ip-ceiling-control.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ip-ceiling
           path: results/
@@ -743,7 +743,7 @@ jobs:
       # ALWAYS: a step that hangs or fails still holds what it caught, and the judge
       # says what the archive could and could not cover.
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tail
           path: results/
@@ -863,7 +863,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bash scripts/loadtest/retry-cloudflare-api.sh npx wrangler deploy --env loadtest
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: fault-0
           path: results/
@@ -941,7 +941,7 @@ jobs:
           wc -l results/cold-tail.jsonl
           exit "$rc"
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cold-0
           path: results/
@@ -1033,7 +1033,7 @@ jobs:
       # ALWAYS uploaded, and this is the step teardown waits on. A report that
       # exists only in a log is one nobody reads after the branch is gone.
       - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: loadtest-report
           path: reports/
