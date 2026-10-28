@@ -363,8 +363,8 @@ export const UPTIME_STALE_BOUNDS_MS: Record<string, number> = {
  * /api/health 503 (that would page uptime as if the site were broken). Only the
  * internal lane-watchdog consults this map, and it alerts to Slack.
  *
- * - `snowflake-export` (every 10 min) is the mirror feed. Bound is 3x cadence, so
- *   ordinary cron jitter or one slow tick can't trip a false alert.
+ * - `snowflake-export` (every 30 min since #4349) is the mirror feed. Bound is 3x
+ *   cadence, so ordinary cron jitter or one slow tick can't trip a false alert.
  * - `snowflake-reconcile` and `erasure-audit` (both every 6h, co-scheduled) are the
  *   two checks ON that mirror: reconcile counts Supabase vs Snowflake per table,
  *   and the audit proves an erased booking's PII is really gone from the warehouse.
@@ -376,7 +376,7 @@ export const UPTIME_STALE_BOUNDS_MS: Record<string, number> = {
  *   for a 6h compliance check and loose enough that cron jitter is never the cause.
  */
 export const MIRROR_STALE_BOUNDS_MS: Record<string, number> = {
-  "snowflake-export": 30 * MIN,
+  "snowflake-export": 90 * MIN,
   "snowflake-reconcile": 8 * 60 * MIN,
   "erasure-audit": 8 * 60 * MIN,
   // `snowflake-check` (#1144) is the live warehouse self-check, run at the tail of

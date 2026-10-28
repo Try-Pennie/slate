@@ -51,12 +51,13 @@ function main() {
     const g = evaluateExportLag([lag({ table: "audit_log", ...NIGHT, lagMs: age, backlog: 1 })]);
     eq(g.ready, true, "so the retention lanes run that night instead of refusing");
 
-    // The same shape with a lane that really has stalled: the waiting row is two
-    // hours old. Both directions, or the guard proves nothing (L1).
-    const stalled = exportLagAgeMs({ ...NIGHT, oldestPendingTs: "2026-09-02T01:00:04Z" });
-    eq(stalled, 2 * 60 * 60_000, "a row waiting two hours reads as two hours");
+    // The same shape with a lane that really has stalled: the waiting row is three
+    // hours old, past the two hour bound the 30 minute cadence set (#4349). Both
+    // directions, or the guard proves nothing (L1).
+    const stalled = exportLagAgeMs({ ...NIGHT, oldestPendingTs: "2026-09-02T00:00:04Z" });
+    eq(stalled, 3 * 60 * 60_000, "a row waiting three hours reads as three hours");
     eq(
-      evaluateExportLag([lag({ table: "audit_log", ...NIGHT, oldestPendingTs: "2026-09-02T01:00:04Z", lagMs: stalled })]).ready,
+      evaluateExportLag([lag({ table: "audit_log", ...NIGHT, oldestPendingTs: "2026-09-02T00:00:04Z", lagMs: stalled })]).ready,
       false,
       "and a lane that has genuinely stalled still refuses",
     );

@@ -115,10 +115,14 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // Hydration is load-bearing once anything filters or prunes the cache by window, so it
   // stamps its own heartbeat with a matching bound in LANE_STALE_BOUNDS_MS.
   "*/15 * * * *": "/api/cron/hydrate-calendars",
-  // Snowflake archival mirror export (#1099): its OWN expression (every 10 min),
-  // never co-scheduled, so it gets its own CPU/subrequest budget. Resumable via
-  // export_cursor, so a 10-min gap just means the next tick catches up.
-  "*/10 * * * *": "/api/cron/snowflake-export",
+  // Snowflake archival mirror export (#1099): its OWN expression, never
+  // co-scheduled, so it gets its own CPU/subrequest budget. Every 30 minutes since
+  // #4349 (Dan, 2026-10-28: each run wakes the warehouse, and lead traffic around
+  // the clock made that nearly every run), at :14 and :44: clear of the hourly
+  // lanes at :00 and of the 03:05 retention lanes, whose export lag gate must
+  // never read mid tick (scripts/test-cron-routes.ts). Resumable via export_cursor, so a missed tick means the next
+  // one catches up.
+  "14,44 * * * *": "/api/cron/snowflake-export",
   // Snowflake mirror reconciliation (#1101) + erasure content-audit (#1103):
   // every 6h, each under its own lock. Reconcile counts Supabase vs Snowflake per
   // table + a positive control and alerts on drift; the audit reads the pii.erasure

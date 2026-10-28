@@ -12,6 +12,9 @@ import { readFileSync } from "node:fs";
 import { assert, finish } from "./lib/harness.ts";
 import { PATCH_TARGET, decideAuditAlert } from "./lib/dependency-audit-report.ts";
 import { buildPurgeStatements, statementLabel } from "@/lib/snowflake/purge-sql";
+import { MIRROR_STALE_BOUNDS_MS } from "@/lib/monitor/health";
+import { MAX_EXPORT_LAG_MS } from "@/lib/snowflake/export-lag-core";
+import { CRON_ROUTES } from "../worker/cron-routes.ts";
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -174,6 +177,27 @@ const DECIDED = /Dan[^.]{0,40}2026-10-03|2026-10-03[^.]{0,40}Dan/;
   // The live test stopped at Google, so it proves nothing about the hook; the doc
   // must not let it read as if it did.
   assert(/never reached the Supabase hook/.test(signIn) && /pnpm verify:auth-domain-hook/.test(signIn), "and that the hook is still proven only by its own command");
+}
+
+// --- #4349: the booking mirror runs every 30 minutes (Dan, 2026-10-28) -------------
+// Dan traded a 10 minute booking RPO for about 60% of SLATE_WH's credits. Every
+// bound keyed to the export's cadence moves with it, or the watchdog pages on
+// ordinary waiting and the retention gate refuses on a healthy mirror (L614).
+{
+  const MIN = 60_000;
+  const exportCrons = Object.entries(CRON_ROUTES)
+    .filter(([, r]) => (Array.isArray(r) ? r : [r]).includes("/api/cron/snowflake-export"))
+    .map(([cron]) => cron);
+  assert(exportCrons.length === 1 && exportCrons[0] === "14,44 * * * *", `the export runs at :14 and :44 on its own expression (found ${exportCrons.join(", ") || "none"})`);
+  const cadence = 30 * MIN;
+  assert(MIRROR_STALE_BOUNDS_MS["snowflake-export"] === 3 * cadence, "the watchdog pages after three missed runs (90 minutes)");
+  assert(MAX_EXPORT_LAG_MS === 4 * cadence, "the retention gate refuses after four missed runs (2 hours)");
+  const runbook = read("docs/dr-runbook.md");
+  const rpo = /\| \*\*RPO, bookings\*\*[^\n]*/.exec(runbook)?.[0] ?? "";
+  assert(/\*\*About 30 minutes\*\*/.test(rpo) && /every 30 minutes/.test(rpo) && /90 minutes/.test(rpo), "the DR runbook's booking RPO says 30 minutes and the 90 minute page");
+  assert(/2026-10-28[^.]{0,60}Dan|Dan[^.]{0,60}2026-10-28/.test(runbook) && /#4349/.test(runbook), "and records Dan's 2026-10-28 decision");
+  const setup = stripSqlComments(read("docs/snowflake-setup.sql"));
+  assert(/ALTER WAREHOUSE IF EXISTS SLATE_WH SET AUTO_SUSPEND = 30;/.test(setup), "the setup SQL gives an existing warehouse the 30 second auto suspend");
 }
 
 finish();
