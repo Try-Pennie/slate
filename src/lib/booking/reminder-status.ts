@@ -137,9 +137,11 @@ export interface ReminderStatusSummary {
   lines: string[];
 }
 
-function lastSentLine(iso: string | null): string {
+function lastSentLine(iso: string | null, legacyClaimed: number): string {
   const ms = parseStampMs(iso);
-  if (ms === null) return "Never sent.";
+  // The earlier job kept no send times, so its records are sends with no time: an email
+  // with any of them has sent, and "never" would be false (production, 2026-10-27).
+  if (ms === null) return legacyClaimed > 0 ? "Last send time not recorded." : "Never sent.";
   const when = new Date(ms).toLocaleString("en-US", {
     timeZone: BUSINESS_ZONE,
     month: "short",
@@ -183,6 +185,6 @@ export function reminderStatusSummary(counts: ReminderEmailStatusCounts | "unrea
   if (counts.legacyClaimed > 0) {
     lines.push(`${counts.legacyClaimed} sent by the earlier reminder job, with no send time kept.`);
   }
-  lines.push(lastSentLine(counts.lastSentAtIso));
+  lines.push(lastSentLine(counts.lastSentAtIso, counts.legacyClaimed));
   return { tone, lines };
 }

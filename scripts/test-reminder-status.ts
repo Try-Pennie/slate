@@ -105,6 +105,12 @@ for (const which of ["loadSends", "loadLastSent"] as const) {
   eq(quiet.tone, "quiet", "nothing sent is neither healthy nor failing");
   eq(quiet.lines, ["None sent in the last 24 hours.", "Never sent."], "and says so plainly");
 
+  // The earlier job kept no send times, so an email whose only sends are its records must
+  // never read as never sent: production's 1 hour email did on 2026-10-27, with 52 such sends.
+  const earlierOnly = reminderStatusSummary(read({ legacyClaimed: 52 }));
+  assert(!earlierOnly.lines.includes("Never sent."), `an email the earlier job sent is never "never sent" (${earlierOnly.lines.join(" | ")})`);
+  assert(earlierOnly.lines.includes("Last send time not recorded."), "it says the time was not kept instead");
+
   const skips = reminderStatusSummary(read({ sent: 1, skipped: 3, skippedByReason: { late_booking: 2, mystery: 1 }, legacyClaimed: 4 }));
   assert(skips.lines.includes("Skipped 3: 2 booked after its time, 1 mystery."), `skips by reason in words, an unknown reason by name (${skips.lines.join(" | ")})`);
   assert(skips.lines.includes("4 sent by the earlier reminder job, with no send time kept."), "the earlier job's rows in words");
