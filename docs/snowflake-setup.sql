@@ -63,9 +63,10 @@ CREATE WAREHOUSE IF NOT EXISTS SLATE_WH
 -- ALTER RESOURCE MONITOR RM_SLATE SET CREDIT_QUOTA = <quota>;
 --
 -- The warehouse is Gen1 (2026-10-28). Every Slate statement is a short MERGE,
--- DELETE or SELECT, where Gen2's speed buys nothing and its higher credit rate
--- costs about a quarter more. The ALTER, like the timeout's, is what reaches a
--- warehouse that already exists.
+-- DELETE or SELECT, where Gen2's speed buys nothing and Gen1 bills about a
+-- quarter less. GENERATION = '1' is the form the data team ran on this account
+-- on 2026-10-28; SHOW WAREHOUSES then read resource_constraint STANDARD_GEN_1.
+-- The ALTER, like the timeout's, is what reaches a warehouse that already exists.
 -- ----------------------------------------------------------------------------
 ALTER WAREHOUSE IF EXISTS SLATE_WH SET STATEMENT_TIMEOUT_IN_SECONDS = 600;
 ALTER WAREHOUSE IF EXISTS SLATE_WH SET GENERATION = '1';
