@@ -198,3 +198,16 @@ describe("Requirement 7.16 and 7.17: the confirmation dialog (D23 to D26)", () =
     expect(screen.getByRole("button", { name: /^Move the call to Thursday/ })).toBeTruthy();
   });
 });
+
+describe("#4331: the customer's current call time (settled 2026-10-28, Greyed, label shown)", () => {
+  it("draws the call's own time greyed, unclickable and labelled, with Current call shown in the button", () => {
+    draw(stateOf(jordan, [{ type: "toldChanged", checked: true }, { type: "dayChosen", date: "2026-11-17" }]));
+    const current = screen.getByRole("button", { name: "11:00am, Current call" }) as HTMLButtonElement;
+    expect(current.disabled).toBe(true);
+    expect(current.textContent).toBe("11:00amCurrent call");
+    expect(current.querySelector("[data-marked-label-mark]")).toBeNull();
+    const other = screen.getByRole("button", { name: "11:15am" }) as HTMLButtonElement;
+    expect(other.disabled).toBe(false);
+    expect(screen.queryAllByText("Current call")).toHaveLength(1);
+  });
+});

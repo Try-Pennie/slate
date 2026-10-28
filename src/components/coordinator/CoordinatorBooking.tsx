@@ -370,15 +370,31 @@ export function CoordinatorBooking({
                                     key={t.start}
                                     type="button"
                                     aria-pressed={t.pressed}
-                                    disabled={b.times.disabled}
+                                    // #4331, settled in a design round on 2026-10-28 ("Greyed, label
+                                    // shown"): the customer's call is already at this time, so it is
+                                    // greyed, never chosen, without the open dot, and says so.
+                                    disabled={b.times.disabled || t.current}
+                                    aria-label={t.currentLabel ? `${t.label}, ${t.currentLabel}` : undefined}
+                                    title={t.currentLabel ?? undefined}
                                     onClick={() => dispatch({ type: "timeChosen", start: t.start })}
                                     className={`flex min-h-11 w-full items-center justify-center rounded-md border px-3 py-2.5 text-sm tabular-nums disabled:opacity-60 ${
-                                      t.pressed ? "border-accent bg-pennie-sky-soft font-semibold text-fg dark:bg-accent/20" : "border-border bg-surface text-fg hover:border-fg/45"
+                                      t.current
+                                        ? "border-border bg-surface text-fg-muted"
+                                        : t.pressed
+                                          ? "border-accent bg-pennie-sky-soft font-semibold text-fg dark:bg-accent/20"
+                                          : "border-border bg-surface text-fg hover:border-fg/45"
                                     }`}
                                   >
-                                    <MarkedLabel className="gap-2" mark={<span className="h-1.5 w-1.5 rounded-full bg-pennie-green" />}>
-                                      {t.label}
-                                    </MarkedLabel>
+                                    {t.currentLabel ? (
+                                      <span className="inline-flex flex-col items-center leading-tight">
+                                        {t.label}
+                                        <span className="text-[11px]">{t.currentLabel}</span>
+                                      </span>
+                                    ) : (
+                                      <MarkedLabel className="gap-2" mark={<span className="h-1.5 w-1.5 rounded-full bg-pennie-green" />}>
+                                        {t.label}
+                                      </MarkedLabel>
+                                    )}
                                   </button>
                                 ))}
                               </div>

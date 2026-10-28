@@ -30,13 +30,6 @@ const live = vi.hoisted(() => {
       horizonDays: async () => 10,
       now: () => Date.parse("2026-06-08T12:00:00.000Z"),
     }),
-    placeholderCallsDeps: () => ({
-      resolveBucketByCode: async () => ({ bucket: { code: "412", is_test: false, org_id: "org1" }, eventType: { duration_min: 30 } }),
-      findPlaceholder: async () => ({ id: "marcia" }),
-      countOverlapping: async () => {
-        throw new Error("statement timeout");
-      },
-    }),
     placeCallDeps: () => ({
       findCustomer: async (_reference: string, routing: unknown) => (routings.push(routing), {
         ok: true,
@@ -66,7 +59,7 @@ vi.mock("@/lib/rate-limit", () => limiter);
 vi.mock("@/lib/coordinator/live", () => live);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
-import { countPlaceholderCalls, lookupCoordinatorCustomer, placeCoordinatorCall } from "./actions";
+import { lookupCoordinatorCustomer, placeCoordinatorCall } from "./actions";
 
 const COORDINATOR = { id: "coord-1", role: "coordinator", is_test: false };
 const DRILL_COORDINATOR = { id: "coord-drill", role: "coordinator", is_test: true };
@@ -183,14 +176,14 @@ describe("lookupCoordinatorCustomer (#4205)", () => {
   });
 });
 
-describe("countPlaceholderCalls (#4205)", () => {
-  it("refuses somebody who may not use the page", async () => {
-    auth.coordinatorDeskUser.mockResolvedValue(null);
-    expect(await countPlaceholderCalls({ bucketCode: "412", startIso: "2026-06-09T17:00:00.000Z" })).toMatchObject({ ok: false, refusal: "not-authorized" });
-  });
-
-  it("says it could not count when the read fails, never zero", async () => {
-    const out = await countPlaceholderCalls({ bucketCode: "412", startIso: "2026-06-09T17:00:00.000Z" });
-    expect(out).toMatchObject({ ok: false, refusal: "internal" });
+describe("the actions the page can call (#4316)", () => {
+  // A server action is a public endpoint whoever renders the form, so every one the
+  // module exports is callable by any signed in coordinator. Each derives the bucket on
+  // the server from the Lead and the signed in person; an action taking a bucket code
+  // from the browser (the old placeholder count did) would read any bucket, test ones
+  // included. A new export has to be added here on purpose.
+  it("exports only the customer lookup and the booking", async () => {
+    const actions = await import("./actions");
+    expect(Object.keys(actions).sort()).toEqual(["lookupCoordinatorCustomer", "placeCoordinatorCall"]);
   });
 });

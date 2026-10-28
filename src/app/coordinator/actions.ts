@@ -18,10 +18,9 @@ import { allowRequest } from "@/lib/rate-limit";
 import { COORDINATOR_LOOKUP_RATE_RULES, COORDINATOR_PLACE_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { lookupCustomer, type CustomerLookup } from "@/lib/coordinator/customer";
-import { placeholderCallsAt, type PlaceholderCalls } from "@/lib/coordinator/placeholder-calls";
 import { placeCall, refused, type PlaceCallOutcome, type PlaceCallRequest } from "@/lib/coordinator/place-call";
 import { refusalSentence, type CoordinatorRefusal } from "@/lib/coordinator/coordinator-copy";
-import { lookupDeps, placeCallDeps, placeholderCallsDeps } from "@/lib/coordinator/live";
+import { lookupDeps, placeCallDeps } from "@/lib/coordinator/live";
 
 type Refused = { ok: false; refusal: CoordinatorRefusal; sentence: string };
 const refusedAnswer = (refusal: CoordinatorRefusal): Refused => ({ ok: false, refusal, sentence: refusalSentence(refusal) });
@@ -30,7 +29,7 @@ const text = (v: unknown): string => (typeof v === "string" ? v : "");
 
 export type CoordinatorLookupAnswer = Exclude<CustomerLookup, { ok: false }> | Refused;
 
-/** The per person limit the lookup and the count share. */
+/** The per person limit on the lookup. */
 function withinLookupLimit(userId: string): Promise<boolean> {
   return allowRequest({ kind: "opaque", key: `coordinator:${userId}` }, COORDINATOR_LOOKUP_RATE_RULES);
 }
@@ -58,26 +57,6 @@ export async function lookupCoordinatorCustomer(input: { reference: string; date
     return refusedAnswer(out.refusal);
   } catch (err) {
     log.error("coordinator", { msg: "customer lookup failed", user_id: me.id }, err);
-    return refusedAnswer("internal");
-  }
-}
-
-export type PlaceholderCallsAnswer = Extract<PlaceholderCalls, { ok: true }> | Refused;
-
-/** How many calls already sit on the placeholder advisor over the call's time. */
-export async function countPlaceholderCalls(input: { bucketCode: string; startIso: string }): Promise<PlaceholderCallsAnswer> {
-  const me = await coordinatorDeskUser();
-  if (!me) return refusedAnswer("not-authorized");
-  if (!(await withinLookupLimit(me.id))) {
-    return refusedAnswer("rate-limited");
-  }
-  try {
-    const out = await placeholderCallsAt({ bucketCode: text(input?.bucketCode), startIso: text(input?.startIso) }, placeholderCallsDeps());
-    if (out.ok) return out;
-    return refusedAnswer(out.reason);
-  } catch (err) {
-    // A failed count is never zero: the page says it could not count.
-    log.error("coordinator", { msg: "placeholder count failed", user_id: me.id }, err);
     return refusedAnswer("internal");
   }
 }

@@ -162,6 +162,17 @@ const thursday2pm = "2026-11-19T14:00:00.000-07:00";
   eq(keep.start, null, "a time from another day does not survive a change of day");
   const bad = reducePage(reducePage(found(sam), { type: "dayChosen", date: "2026-11-19" }), { type: "timeChosen", start: "2026-11-19T21:00:00.000-08:00" });
   eq(bad.start, null, "a time the day does not offer cannot be chosen");
+
+  // #4331: the customer's current call time is shown greyed and labelled, never offered as
+  // a move to where the call already is (found in the placeholder drill, #4206).
+  const tue = run([{ type: "toldChanged", checked: true }, { type: "dayChosen", date: "2026-11-17" }], found(jordan));
+  const tueSlots = [...pageView(tue, ctx).booking!.times.morning, ...pageView(tue, ctx).booking!.times.afternoon];
+  const current = tueSlots.filter((t) => t.current);
+  eq(current.map((t) => [t.label, t.currentLabel]), [["11:00am", COPY.more.currentCall]], "only the call's own time is marked as the current call");
+  assert(tueSlots.filter((t) => !t.current).every((t) => t.currentLabel === null), "every other time carries no label");
+  eq(reducePage(tue, { type: "timeChosen", start: current[0]!.start }).start, null, "and choosing it moves nothing");
+  const samTue = [...pageView(reducePage(found(sam), { type: "dayChosen", date: "2026-11-17" }), ctx).booking!.times.afternoon];
+  assert(samTue.every((t) => !t.current), "a customer with no call has no current time");
 }
 
 // --- the reason, its detail, and the refused confirm (D5, D18, D19) --------------------
