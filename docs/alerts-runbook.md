@@ -449,7 +449,8 @@ Keys: `outbox_drain_stuck`, `outbox_all_handed_off`, `reservation_drain_stuck`,
 `stale_phone_invite:*`, `phone_correction_unsent:*`, `webhook_dead:*`, `webhook_event_no_subscriber`,
 `handoff_channel_unset`, `handoff_undelivered`, `bookable_trait_unrecorded:*`,
 `booking_follow_up_left_to_drain`, `booking_invite_moved:*`, `booking_invite_resized:*`,
-`booking_invite_check_failed:*`, `booking_invite_launch_sweep`, `reminder_email_unrenderable:*`.
+`booking_invite_check_failed:*`, `booking_invite_launch_sweep`, `reminder_email_unrenderable:*`,
+`reminder_email_owed:*`, `reminder_email_failing:*`.
 
 **What fired it.** A booking exists and something that should have followed it did not:
 a calendar invite, a busy block, a webhook to Regal. **A real customer is affected**,
@@ -501,6 +502,32 @@ which is what makes this family different from the ones above.
   that rendered it, or as a stand down once it is switched off; the
   `booking-reminder` log line "reminder email cannot be rendered" names the slug and the
   problem kinds every tick it holds.
+
+- For `reminder_email_owed:<slug>` (#4300): the monitor lane found leads whose calls are
+  still ahead, owed that switched on email by the rules, with **nothing on record** more
+  than 15 minutes after it came due (no send, no skip with its reason, no failure), or a
+  send **claimed** over 15 minutes ago and never marked sent or failed. The page names
+  the email, how many of each, and the booking ids. It judges by its own reading of the
+  rules (`src/lib/monitor/reminder-owed.ts`), never the lane's, so it can disagree with
+  the lane, which is its job. For the unrecorded ones: read the `booking-reminder` cycle
+  line (its `waiting_by_reason` and `by_email`) for a tick since they came due, and the
+  lane's heartbeat; a lane that is not running pages `cron_lanes_stale` too. Nothing is
+  recorded for them, so a lane put right sends them on its next tick while the call is
+  still ahead. For a stuck claim: the email may have gone out with its record unwritten
+  (`mark_reminder_sent` failed after Gmail accepted it), so look in the advisor's Sent mail
+  before sending anything by hand, and never reset the record to send it again. It clears
+  on a measured read that finds none owed, or stands down once the email is switched off
+  or removed; while that email's `reminder_email_unrenderable` page fires it waits
+  (`ALERT_FOLDS`). The `monitor` log line "reminder owed" says the counts every tick.
+
+- For `reminder_email_failing:<slug>` (#4300): that one email's own sends are failing in
+  the reminder lane's rolling window (over 20 percent once it has 10 sends, or every one
+  of at least three), which the combined `booking_reminders_failing` share cannot see when
+  the email is small beside the others. Read it as that page, scoped to one email: the
+  codes and their advice are the same, and the `booking-reminder` log line "reminder
+  email failure share" gives its counts every tick. If every email fails together only
+  the combined page posts, and this one waits while it fires (`ALERT_FOLDS`). It clears on
+  that email's sends measurably going out again, or stands down once it is switched off.
 
 - For `reservation_created_owed` (#3847): a booking committed more than a day ago and
   Regal has never been sent its `booking.created`, most often because the booked bucket

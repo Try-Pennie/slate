@@ -108,6 +108,15 @@ export interface RateSample {
    *  window ended on this tick, `sent` or `kept`, so it stops counting as retried. */
   settled?: Record<string, string>;
   /**
+   * The reminder lane's window only (#4300): this tick's sends split by reminder email
+   * slug, each with its own attempts, failures and codes, so each email's share can be
+   * judged from the SAME row as the combined one. Only emails that attempted a send are
+   * present. Inside `attempts`, `failures` and `byCode` already, never added to them.
+   * Optional for the same reason as `refusals`: a sample written before it shipped
+   * counts for no email at all.
+   */
+  byEmail?: Record<string, { attempts: number; failures: number; byCode: Record<string, number> }>;
+  /**
    * The booking lane's window only (#3275): a page (`live`) was asked for on this
    * tick (sent, or held by its cooldown). It rides on the sample so it ages out of the
    * window with the failures it was about. While any sample in the window carries it, a

@@ -45,7 +45,11 @@ import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 
 /** One alert held while its explainer fires. */
 export interface FoldedAlert {
-  /** The key as SENT, a family member included (`cron_lane_stale:smoke-canary`). */
+  /**
+   * The key as SENT, a family member included (`cron_lane_stale:smoke-canary`), or a
+   * whole family (`reminder_email_owed:*`, #4300) when every member is explained the
+   * same way: a family keyed by something an admin creates has no fixed members to list.
+   */
   key: string;
   /**
    * How the explaining page and its all-clear name it: a lower case noun phrase,
@@ -59,7 +63,12 @@ export interface FoldedAlert {
 }
 
 export interface AlertFold {
-  /** The explaining condition's key, exactly as the catalog holds it. */
+  /**
+   * The explaining condition's key, exactly as the catalog holds it. A family
+   * (`reminder_email_unrenderable:*`) only when every key it explains is a family too:
+   * a member is then explained by the explainer's member with the SAME suffix, so one
+   * email's unrenderable page holds that email's owed page and no other (#4300).
+   */
   explainer: string;
   /** Why the explainer's being true is enough to account for each of these. */
   why: string;
@@ -68,6 +77,14 @@ export interface AlertFold {
 
 /** The lane watchdog's key for a stale lane (`staleLaneAlertKey` in lane-watchdog.ts). */
 const staleLaneKey = (lane: string) => `cron_lane_stale:${lane}`;
+
+/** Whether a fold table key names a whole family rather than one key. */
+const isFamily = (key: string) => key.endsWith(":*");
+/** `x:*` matches `x:anything`; the suffix it matched, or null. */
+function familySuffix(family: string, key: string): string | null {
+  const prefix = family.slice(0, -1);
+  return key.startsWith(prefix) && key.length > prefix.length ? key.slice(prefix.length) : null;
+}
 
 export const ALERT_FOLDS: readonly AlertFold[] = [
   {
@@ -125,6 +142,36 @@ export const ALERT_FOLDS: readonly AlertFold[] = [
       },
     ],
   },
+  {
+    // #4300: member to member, so one email's words holding it back explains that
+    // email's owed page and no other email's.
+    explainer: "reminder_email_unrenderable:*",
+    why:
+      "An enabled email whose words cannot be filled in is sent to nobody and recorded for nobody, so " +
+      "every lead in its window is owed it by construction, and the unrenderable page already says every " +
+      "lead due it goes without it. The owed page posts on its own one monitor lane bound after the words are fixed.",
+    explains: [
+      {
+        key: "reminder_email_owed:*",
+        label: "that email's owed reminders",
+        graceMs: LANE_STALE_BOUNDS_MS.monitor,
+      },
+    ],
+  },
+  {
+    explainer: "booking_reminders_failing",
+    why:
+      "When every reminder email's sends are failing together the combined share says so for all of them, " +
+      "and each email's own share breaching beside it is the same cause said again per email (#4300). An " +
+      "email still failing on its own one reminder lane bound after the combined page clears posts as its own problem.",
+    explains: [
+      {
+        key: "reminder_email_failing:*",
+        label: "each reminder email's own failure share",
+        graceMs: LANE_STALE_BOUNDS_MS["booking-reminders"],
+      },
+    ],
+  },
 ];
 
 /** The fold an explained key belongs to, or null for every key nothing explains. */
@@ -132,6 +179,17 @@ export function foldFor(key: string): { explainer: string; folded: FoldedAlert }
   for (const fold of ALERT_FOLDS) {
     const folded = fold.explains.find((f) => f.key === key);
     if (folded) return { explainer: fold.explainer, folded };
+  }
+  // A whole family explained (#4300): the member's explainer is the explainer itself,
+  // or, for a family explainer, its member with the same suffix.
+  for (const fold of ALERT_FOLDS) {
+    for (const folded of fold.explains) {
+      if (!isFamily(folded.key)) continue;
+      const suffix = familySuffix(folded.key, key);
+      if (suffix === null) continue;
+      const explainer = isFamily(fold.explainer) ? `${fold.explainer.slice(0, -1)}${suffix}` : fold.explainer;
+      return { explainer, folded };
+    }
   }
   return null;
 }
@@ -217,9 +275,12 @@ export function foldTableProblems(
   const seen = new Map<string, string>();
   for (const fold of folds) {
     // A family is never SENT under its own key, so its firing marker never exists and a
-    // fold under it would hold nothing while reading as configured.
-    if (fold.explainer.endsWith(":*")) problems.push(`explainer ${fold.explainer} is a family, which no page is ever sent as`);
-    else if (!exact(fold.explainer)) problems.push(`explainer ${fold.explainer} is not a key in the alert catalog`);
+    // fold under it would hold nothing while reading as configured. The one exception
+    // (#4300) is a family explaining only families, resolved member to member by suffix.
+    const familyExplainer = isFamily(fold.explainer);
+    if (familyExplainer && !fold.explains.every((e) => isFamily(e.key))) {
+      problems.push(`explainer ${fold.explainer} is a family, which no page is ever sent as, and it explains a key with no suffix to share`);
+    } else if (!exact(fold.explainer)) problems.push(`explainer ${fold.explainer} is not a key in the alert catalog`);
     else if (kindOf(fold.explainer) !== "condition") problems.push(`explainer ${fold.explainer} is not a condition`);
     if (fold.why.trim().split(/\s+/).length < 8) problems.push(`the fold under ${fold.explainer} carries no reason`);
     if (fold.explains.length === 0) problems.push(`the fold under ${fold.explainer} explains nothing`);

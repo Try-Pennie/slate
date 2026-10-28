@@ -111,6 +111,41 @@ eq(foldFor("placeholder_seat_failing")?.explainer, "google_calendar_breaker_open
 eq(foldFor("placeholder_seat_failing")?.folded.graceMs, LANE_STALE_BOUNDS_MS.monitor, "and waits the monitor lane's bound after it clears");
 eq(foldFor("placeholder_missing"), null, "a missing placeholder is no Google outage, so nothing holds it");
 
+// 8 (#4300): a family explained whole, and a family explaining a family member to member.
+eq(
+  foldFor("reminder_email_owed:hour")?.explainer,
+  "reminder_email_unrenderable:hour",
+  "one email's owed page waits on THAT email's unrenderable page",
+);
+eq(
+  foldFor("reminder_email_owed:half_hour")?.explainer,
+  "reminder_email_unrenderable:half_hour",
+  "and another email's on its own, never on a sibling's",
+);
+eq(foldFor("reminder_email_owed:hour")?.folded.graceMs, LANE_STALE_BOUNDS_MS.monitor, "waiting the monitor lane's bound after it clears");
+eq(foldFor("reminder_email_failing:day")?.explainer, "booking_reminders_failing", "each email's own share waits on the combined one");
+eq(
+  foldFor("reminder_email_failing:day")?.folded.graceMs,
+  LANE_STALE_BOUNDS_MS["booking-reminders"],
+  "waiting the reminder lane's bound after it clears",
+);
+eq(foldFor("reminder_email_owed:"), null, "a bare family prefix with no suffix is no member");
+eq(foldFor("reminder_email_unrenderable:hour"), null, "the explainer itself is held by nothing");
+{
+  const familyFold: AlertFold = {
+    explainer: "reminder_email_unrenderable:*",
+    why: good.why,
+    explains: [{ key: "reminder_email_owed:*", label: "x", graceMs: 60_000 }],
+  };
+  eq(foldTableProblems([familyFold], kindOf, exact), [], "a family explaining only families is a valid fold");
+  const mixed = foldTableProblems(
+    [{ ...familyFold, explains: [...familyFold.explains, { key: "placeholder_seat_failing", label: "y", graceMs: 60_000 }] }],
+    kindOf,
+    exact,
+  );
+  assert(mixed.some((p) => /is a family/.test(p)), "CONTROL: a family explainer explaining a single key is refused");
+}
+
 // The CI page and its all-clear name every folded lane, from the same table.
 const page = formatCiRefusedAlert({ runName: "CI", runUrl: "https://github.com/Try-Pennie/slate/actions/runs/1" });
 const allClear = formatCiStartedRecovery();

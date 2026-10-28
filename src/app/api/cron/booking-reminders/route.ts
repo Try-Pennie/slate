@@ -7,7 +7,13 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import { appUrl } from "@/lib/env";
 import { sendGmailEmail } from "@/lib/notify/email";
-import { sendThrottledAlert, sendThrottledInfo, resolveAlert, resolveRecovered } from "@/lib/notify/dispatch";
+import {
+  firingFamilyMembers,
+  sendThrottledAlert,
+  sendThrottledInfo,
+  resolveAlert,
+  resolveRecovered,
+} from "@/lib/notify/dispatch";
 import { shortErrorReason } from "@/lib/notify/error-text";
 import { recordHeartbeat } from "@/lib/monitor/heartbeat";
 import { selectAllPages, sortByStamp } from "@/lib/supabase/paginate";
@@ -22,7 +28,7 @@ import {
   type ReminderRun,
 } from "@/lib/booking/reminder-send";
 import type { LegacySlug } from "@/lib/booking/reminder-legacy";
-import { runReminderFailureRateCheck } from "@/lib/booking/reminder-rate";
+import { REMINDER_EMAIL_FAILING_PREFIX, runReminderFailureRateCheck } from "@/lib/booking/reminder-rate";
 import {
   loadReminderRateState,
   reminderRateDay,
@@ -129,16 +135,24 @@ export async function GET(req: NextRequest) {
     saveState: saveReminderRateState,
     notify: async (key, cooldownMs, text) => {
       // alert-key: booking_reminders_failing
-      // alert-text-ok: the text is built by `formatReminderFailureRateAlert`, which
-      // carries counts and `ReminderFailureCode`s rather than the provider's body.
+      // alert-key: reminder_email_failing:*
+      // alert-text-ok: the text is built by `formatReminderFailureRateAlert` and, per
+      // email (#4300), `reminderEmailFailingAlert`, which carry counts and
+      // `ReminderFailureCode`s rather than the provider's body.
       await sendThrottledAlert(key, cooldownMs, text);
     },
     // alert-key: booking_reminders_failing
+    // alert-key: reminder_email_failing:*
     // all-clear-proof: scripts/test-booking-reminder-rate.ts - a tick whose window
     // could not be READ returns `unverified` and is asserted to resolve nothing, and
     // a window below the floor is `insufficient` and resolves nothing either. The
-    // recovery hangs only off a MEASURED healthy verdict (#1134, #1152).
+    // recovery hangs only off a MEASURED healthy verdict (#1134, #1152). Per email
+    // (#4300) the same holds in scripts/test-reminder-email-share.ts, and an email
+    // stands down only off the lane's measured list of switched on emails.
     resolve: async (key, text) => resolveAlert(key, text),
+    // #4300: the emails with an open per email page, so one switched off since is ended.
+    // Throws on a failed read, which ends nothing this tick.
+    loadFiringEmailSlugs: () => firingFamilyMembers(REMINDER_EMAIL_FAILING_PREFIX),
     log: (fields) => log.info("booking-reminder", fields),
     onError: (context, err) =>
       log.error(
@@ -521,7 +535,11 @@ function logRun(run: ReminderRun) {
   });
 }
 
-/** The tick the failure share is judged on: every email's sends, keyed apart (#4282, #4298). */
+/**
+ * The tick the failure share is judged on: every email's sends, keyed apart (#4282,
+ * #4298), plus each email's own counts so its share is judged on its own (#4300), and
+ * the names and switched on slugs its pages and stand downs need.
+ */
 export function rateTick(run: ReminderRun) {
   return {
     attempts: run.attempted,
@@ -529,5 +547,10 @@ export function rateTick(run: ReminderRun) {
     byCode: { ...run.byCode },
     retried: { ...run.retried },
     settled: { ...run.settled },
+    byEmail: Object.fromEntries(
+      Object.entries(run.byEmail).map(([slug, c]) => [slug, { attempts: c.attempted, failures: c.failed, byCode: { ...c.byCode } }]),
+    ),
+    emailNames: { ...run.emailNames },
+    enabledSlugs: [...run.enabledSlugs],
   };
 }

@@ -49,6 +49,8 @@ import {
   loadPlaceholderCalls,
   loadCallFeedNewestReceivedMs,
 } from "@/lib/monitor/placeholder-calls-store";
+import { runReminderOwedCheck, REMINDER_OWED_ALERT_PREFIX } from "@/lib/monitor/reminder-owed";
+import { loadOwedBookings, loadOwedEmails } from "@/lib/monitor/reminder-owed-store";
 import {
   runPlaceholderSeatCheck,
   PLACEHOLDER_SEAT_STREAK_KEY,
@@ -3112,6 +3114,54 @@ export async function GET(req: NextRequest) {
               no_lead_id: placeholderCalls.noLeadId.join(","),
               unserved: placeholderCalls.unserved.join(","),
               settled: placeholderCalls.settled.join(","),
+            }
+          : {}),
+      });
+    }
+
+    // --- A reminder email owed to a lead whose call is still ahead, and not recorded
+    // (#4300). For every switched on email, the live calls in REAL buckets whose time
+    // for it came over 15 minutes ago with no send, skip or failure on record, or a claim
+    // over 15 minutes old that never settled, judged by its own reading of the rules and
+    // never the lane's `reminderDecision` (L721). It does every read itself (the emails,
+    // the bookings joined to their bucket's test flag, the open pages), so it consumes no
+    // setup read and is not gated. A failed read measures nothing, pages nobody, clears
+    // nothing, and is thrown so this step's failing streak pages a read that stays broken. ---
+    const reminderOwed = await steps.run("reminder_owed", null, async () =>
+      runReminderOwedCheck({
+        loadEmails: () => loadOwedEmails(db),
+        loadBookings: (windowEndIso) => loadOwedBookings(db, new Date(now).toISOString(), windowEndIso),
+        loadFiringSlugs: () => firingFamilyMembers(REMINDER_OWED_ALERT_PREFIX),
+        // alert-key: reminder_email_owed:*
+        // alert-text-ok: our own copy from reminder-owed.ts, built from the email's stored
+        // name and booking ids; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: reminder_email_owed:*
+        // all-clear-proof: scripts/test-reminder-owed.ts pins that a failed read of the
+        // emails, the bookings or the open pages clears nothing, that an email still owed
+        // clears nothing, and that an email switched off or removed stands down in its own
+        // words rather than the recovery's.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+        nowMs: now,
+      }).then((result) => {
+        if (result.status === "unreadable") throw new Error(`reminder owed unreadable: ${result.error}`);
+        return result;
+      }),
+    );
+    if (reminderOwed) {
+      log.info("monitor", {
+        msg: "reminder owed",
+        status: reminderOwed.status,
+        ...(reminderOwed.status === "checked"
+          ? {
+              judged: reminderOwed.judged,
+              owed: Object.entries(reminderOwed.owed)
+                .map(([slug, o]) => `${slug}:unrecorded=${o.unrecorded},stale_claims=${o.staleClaims}`)
+                .join(";"),
+              unreadable: reminderOwed.unreadable,
+              paged: reminderOwed.paged.join(","),
+              cleared: reminderOwed.cleared.join(","),
             }
           : {}),
       });

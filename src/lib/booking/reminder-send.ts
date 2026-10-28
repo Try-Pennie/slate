@@ -9,13 +9,19 @@ import {
 } from "./reminder-decision.ts";
 import {
   describeTemplateProblem,
+  reminderEmailLabel,
   renderReminder,
   type LateBooking,
   type ReminderTemplate,
   type TemplateProblem,
 } from "./reminder-template.ts";
 import { isLegacySlug, sendRecordsForBooking, type LegacySlug, type StoredSend } from "./reminder-legacy.ts";
-import { classifyReminderSendFailure, type ReminderFailureCode, type ReminderSettlement } from "./reminder-rate.ts";
+import {
+  classifyReminderSendFailure,
+  reminderShareKey,
+  type ReminderFailureCode,
+  type ReminderSettlement,
+} from "./reminder-rate.ts";
 import type { ReminderCopyInput } from "./reminder.ts";
 import type { ReminderClaimOutcome, ReminderEmailRow } from "@/lib/db/types";
 import type { MimeMessage } from "@/lib/notify/email-mime";
@@ -296,6 +302,8 @@ export interface EmailRunCounts {
   waiting: number;
   skipped: number;
   lost: number;
+  /** This email's failures by `ReminderFailureCode`, for its own failure share (#4300). */
+  byCode: Record<string, number>;
 }
 
 export interface ReminderRun {
@@ -371,6 +379,10 @@ export interface ReminderRun {
   unrenderable: string[];
   /** Each judged email's counts, by slug. */
   byEmail: Record<string, EmailRunCounts>;
+  /** Every stored email's name by slug, so a per email page can name it (#4300). */
+  emailNames: Record<string, string>;
+  /** The slugs switched on this tick, read from `reminder_emails` (#4300). */
+  enabledSlugs: string[];
 }
 
 /**
@@ -396,14 +408,8 @@ export type ReminderFailureDisposition = "too_late" | "refused" | "not_built" | 
 /** What an alert needs of an email to name it. */
 export type NamedEmail = Pick<LaneEmail, "name" | "minutesBefore">;
 
-/**
- * The email's stored name as a page says it ("the 24 hour reminder email"). A name
- * that already ends in "email" is not given a second one.
- */
-function emailLabel(name: string): string {
-  const label = name.trim().replace(/\s*emails?$/i, "").trim();
-  return label === "" ? "reminder" : label;
-}
+/** The email's stored name as a page says it (`reminderEmailLabel`, one rule for every page). */
+const emailLabel = reminderEmailLabel;
 
 /** What a send that did not go out can truthfully say about Gmail, by outcome. A
  *  rate limited send reached Gmail and was answered, so it is never "nothing". */
@@ -484,14 +490,9 @@ export function reminderFailedAlertKey(bookingId: string, slug: string): string 
   return slug === "day" ? `booking_reminder_failed:${bookingId}` : `booking_reminder_failed:${bookingId}:${slug}`;
 }
 
-/**
- * The key one send carries in the failure share's window: the bare id for the 24 hour
- * email and `hour:<id>` for the 1 hour email, as they always have (#4282), and
- * `<slug>:<id>` for any other, so one booking's emails are separate attempts.
- */
-export function reminderShareKey(bookingId: string, slug: string): string {
-  return slug === "day" ? bookingId : `${slug}:${bookingId}`;
-}
+// The failure share's key per send lives beside its inverse in `reminder-rate.ts`
+// (#4300), so the per email judgement reads it by the rule that wrote it.
+export { reminderShareKey } from "./reminder-rate.ts";
 
 /** The condition key for an enabled email whose stored words cannot be rendered. */
 export function reminderEmailUnrenderableKey(slug: string): string {
@@ -587,6 +588,8 @@ function emptyRun(): ReminderRun {
     noneEnabled: false,
     unrenderable: [],
     byEmail: {},
+    emailNames: {},
+    enabledSlugs: [],
   };
 }
 
@@ -599,6 +602,7 @@ const emptyCounts = (): EmailRunCounts => ({
   waiting: 0,
   skipped: 0,
   lost: 0,
+  byCode: {},
 });
 
 export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderRun> {
@@ -608,6 +612,8 @@ export async function runBookingReminders(deps: ReminderDeps): Promise<ReminderR
   const run = emptyRun();
   const enabled = stored.filter((e) => e.enabled);
   run.emailsEnabled = enabled.length;
+  run.emailNames = Object.fromEntries(stored.map((e) => [e.slug, e.name]));
+  run.enabledSlugs = enabled.map((e) => e.slug);
 
   // Which enabled emails render at all, judged once per email for the tick. One that
   // does not sends nothing, claims nothing and records nothing, so once its words are
@@ -984,6 +990,7 @@ async function settleFailedSend(
   // Classified here and nowhere later: the raw error stops at this line (#2496).
   const code = classifyReminderSendFailure(err);
   run.byCode[code] = (run.byCode[code] ?? 0) + 1;
+  counts.byCode[code] = (counts.byCode[code] ?? 0) + 1;
   const typed = asEmailSendError(err);
   const outcome = typed?.outcome ?? "unknown";
   const undelivered = outcome === "never_sent" || outcome === "refused";

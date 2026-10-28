@@ -270,6 +270,17 @@ export function renderReminder(template: ReminderTemplate, input: ReminderCopyIn
 /** How a reminder email treats a call booked after its window has already opened. */
 export type LateBooking = "send_now" | "skip";
 
+/**
+ * An email's stored name as an alert says it ("the 24 hour reminder email"), with a
+ * name that already ends in "email" not given a second one. ONE helper for every page
+ * about a reminder email (the lane's, the failure share's and the owed check's, #4300),
+ * so the three can never name the same email two ways.
+ */
+export function reminderEmailLabel(name: string): string {
+  const label = name.trim().replace(/\s*emails?$/i, "").trim();
+  return label === "" ? "reminder" : label;
+}
+
 export interface DefaultReminderTemplate extends ReminderTemplate {
   slug: "day" | "hour";
   name: string;
