@@ -15,7 +15,14 @@ export type BookingDetailInput = Pick<
   | "assigned_user_id"
   | "routing_trace"
   | "source"
->;
+> & {
+  /**
+   * The bucket the row is stored in, joined by the page's read. A call a coordinator
+   * books on the placeholder is never routed, so it has no routing_trace, and this is
+   * the only place its bucket can come from.
+   */
+  buckets?: { code?: string | null } | null;
+};
 
 export interface BookingDetailTraceView {
   /**
@@ -110,7 +117,9 @@ export function bookingDetailView(
     endsAt: b.ends_at,
     rescheduledFrom: rescheduled ? b.original_starts_at : null,
     agentName: b.assigned_user_id ? nameOf(b.assigned_user_id) : "Unassigned",
-    bucketCode: b.routing_trace?.bucket_code ?? null,
+    // The bucket routing chose, else the one the row is stored in: a placed call has
+    // no trace, and without a code the move panel asks for no times at all.
+    bucketCode: b.routing_trace?.bucket_code ?? b.buckets?.code ?? null,
     // A row read before the migration lands has no field at all: the same fact
     // as null, a booking made before sources were recorded.
     source: bookingSourceLabel(b.source ?? null),

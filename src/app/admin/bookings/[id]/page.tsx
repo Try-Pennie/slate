@@ -72,7 +72,7 @@ export default async function BookingDetailPage({
       const data = unwrap(
         await db
           .from("bookings")
-          .select("*, buckets!inner(is_test, name)")
+          .select("*, buckets!inner(is_test, name, code)")
           .eq("id", bookingId)
           .eq("org_id", orgId)
           .maybeSingle(),

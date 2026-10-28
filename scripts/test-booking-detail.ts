@@ -154,6 +154,24 @@ const noTrace = bookingDetailView({ ...base, routing_trace: null }, nameOf);
 eq(noTrace.trace, null, "no routing_trace -> null trace");
 eq(noTrace.bucketCode, null, "no routing_trace -> null bucket");
 
+// A call a coordinator books on the placeholder (kind staff_placed, milestone 75) is
+// never routed, so it carries no routing_trace. Its bucket still comes from the row
+// it is stored in: without it the page showed "Bucket: not set" and the move panel
+// asked for no times at all, so it read "No open times" and the call could not be
+// moved off the placeholder (found in the #4206 drill).
+const placed = bookingDetailView(
+  { ...base, routing_trace: null, buckets: { code: "XBC-7" } },
+  nameOf,
+);
+eq(placed.bucketCode, "XBC-7", "no routing_trace -> the stored bucket's code");
+eq(placed.trace, null, "and still no routing summary, since nothing was routed");
+// A routed call keeps the bucket routing chose, which the row's own bucket must not override.
+eq(
+  bookingDetailView({ ...base, buckets: { code: "OTHER" } }, nameOf).bucketCode,
+  "DBT-01",
+  "a routing_trace bucket wins over the stored one",
+);
+
 // --- bookingDetailHref: the one link target the admin row + lookup both use ---
 eq(bookingDetailHref("bk1"), "/admin/bookings/bk1", "detail href for a booking id");
 eq(
