@@ -76,10 +76,10 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   // invocation is the one already short of CPU headroom.
   //
   // 03:05 rather than 03:00 (#1713): every retention lane gates on the export lane
-  // being current, and the export lane fires on every tenth minute, so an exact
-  // 03:00 start had the gate reading the mirror while the tick it was judging was
-  // still working through six tables. scripts/test-cron-routes.ts pins the minute
-  // off the export lane's step.
+  // being current, and the export lane then fired on every tenth minute, so an
+  // exact 03:00 start had the gate reading the mirror while the tick it was judging
+  // was still working through six tables. The export now runs at :14 and :44
+  // (#4349); scripts/test-cron-routes.ts pins this minute off the export's minutes.
   "5 3 * * *": [
     "/api/cron/prune-routing",
     "/api/cron/prune-webhook-payloads",

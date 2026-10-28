@@ -340,7 +340,7 @@ reconcile against.
 
 0. **Write the mirrored tables back from Snowflake first.** Every booking, booking
    event, outbox row, routing decision, webhook delivery and audit entry written
-   since the restore point is in the warehouse, copied there within about ten
+   since the restore point is in the warehouse, copied there within about thirty
    minutes of being written. Dry run first, which reads both sides and writes
    nothing:
 
