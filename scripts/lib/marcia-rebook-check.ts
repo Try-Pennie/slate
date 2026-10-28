@@ -4,16 +4,14 @@
 // again, each booking with its own Google Calendar event.
 import { MACHINE_TOKEN_AUDIENCE, MACHINE_TOKEN_ISSUER } from "../../src/lib/mcp-booking/token-shape.ts";
 import { PARTNER_BUCKET_CODE } from "../../src/lib/embed/public-test-bucket.ts";
-import { RUN_TIME_ZONE } from "./marcia-lead-fill-check.ts";
+import { MARCIA_SETUP_OUTCOMES, RUN_TIME_ZONE } from "./marcia-lead-fill-check.ts";
 
 /** Every way a run can end, each on its own exit code (L11). */
 export const REBOOK_OUTCOMES = {
+  ...MARCIA_SETUP_OUTCOMES,
   proven: { exit: 0, says: "the booking MCP booked a time, cancelled it, and booked the same time again on production, each booking with its own calendar event, and both test calls are cancelled" },
-  notConfigured: { exit: 1, says: "no apply flag, no lead id, no usable token key, or no credentials; nothing was attempted" },
-  canaryWindow: { exit: 2, says: "inside the smoke canary's window; nothing was attempted" },
   leadUnsuitable: { exit: 3, says: "this Salesforce Lead cannot be booked by the run (it needs an email at a Pennie address and a phone); nothing was booked" },
   leadHoldsCall: { exit: 4, says: "the lead already holds a test call, so a book would land on it rather than make a new one; nothing was booked" },
-  salesforceUnreadable: { exit: 5, says: "the Salesforce Lead could not be read from here; nothing was booked" },
   noTimes: { exit: 6, says: "find_times through the booking MCP offered no time on the partner test bucket; nothing was booked" },
   mcpRefused: { exit: 7, says: "the booking MCP refused the first book or a cancel" },
   rebookRefused: { exit: 8, says: "after the cancel, the booking MCP refused to book the same time again" },
@@ -67,10 +65,16 @@ export type Verdict = { ok: true } | { ok: false; why: string };
 
 const sameInstant = (a: string, b: string) => Date.parse(a) === Date.parse(b);
 
+/** The row read must be the booking the answer named, or nothing about it is evidence. */
+function rowMismatch(bookingId: string, row: CallFacts["row"]): { ok: false; why: string } | null {
+  return !row || row.id !== bookingId ? { ok: false, why: `the row read is not booking ${bookingId}` } : null;
+}
+
 /** A book that made a NEW call: created, the row confirmed, and a live event on the calendar. */
 export function bookVerdict(f: CallFacts): Verdict {
   if (f.answer?.outcome !== "created") return { ok: false, why: `the book answered ${String(f.answer?.outcome)}, not created` };
-  if (!f.row || f.row.id !== f.answer.booking_id) return { ok: false, why: `the row read is not booking ${f.answer.booking_id}` };
+  const wrongRow = rowMismatch(f.answer.booking_id, f.row);
+  if (wrongRow) return wrongRow;
   if (f.row.status !== "confirmed") return { ok: false, why: `booking ${f.row.id} is ${f.row.status}, not confirmed` };
   if (!f.row.gcal_event_id) return { ok: false, why: `booking ${f.row.id} carries no calendar event id` };
   if (!f.event) return { ok: false, why: `Google holds no event ${f.row.gcal_event_id} for booking ${f.row.id}` };
@@ -81,7 +85,8 @@ export function bookVerdict(f: CallFacts): Verdict {
 /** A cancel that freed the time: cancelled by THIS call, the row cancelled, the event gone. */
 export function cancelVerdict(f: CallFacts): Verdict {
   if (f.answer?.outcome !== "cancelled") return { ok: false, why: `the cancel answered ${String(f.answer?.outcome)}, not cancelled` };
-  if (!f.row || f.row.id !== f.answer.booking_id) return { ok: false, why: `the row read is not booking ${f.answer.booking_id}` };
+  const wrongRow = rowMismatch(f.answer.booking_id, f.row);
+  if (wrongRow) return wrongRow;
   if (f.row.status !== "cancelled") return { ok: false, why: `booking ${f.row.id} is ${f.row.status} after the cancel` };
   // Google keeps a deleted event readable with status cancelled; either reading frees the time.
   if (f.event && f.event.status !== "cancelled") return { ok: false, why: `event ${String(f.row.gcal_event_id)} is still live in Google after the cancel` };

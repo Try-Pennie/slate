@@ -17,6 +17,8 @@ import {
   slateAnswersFirst,
   tokenKeyFrom,
   toolCall,
+  askBookingMcp,
+  MARCIA_SETUP_OUTCOMES,
 } from "./lib/marcia-lead-fill-check.ts";
 import { FIXTURE_TOKEN_KEY, signMachineToken, verifyMachineToken } from "../src/lib/mcp-booking/machine-token.ts";
 import { PARTNER_BUCKET_CODE } from "../src/lib/embed/public-test-bucket.ts";
@@ -113,6 +115,39 @@ assert(slateAnswersFirst(null, 1) !== null, "an active call would be the one mov
   assert(!shape.ok && shape.why.includes("401") && shape.why.includes("-32001"), "a protocol refusal is named by its status and code");
   const garbage = readToolAnswer(502, "<html>bad gateway</html>");
   assert(!garbage.ok && garbage.why.includes("not JSON"), "a body that is not JSON is said to be so");
+}
+
+// --- one call to the deployed booking MCP, shared by every live Marcia proof --------------
+{
+  const realFetch = globalThis.fetch;
+  const answering = (status: number, body: string) => (async () => new Response(body, { status })) as typeof fetch;
+  try {
+    let sent: { url: string; auth: string | null; body: string } | null = null;
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      sent = { url, auth: new Headers(init.headers).get("authorization"), body: String(init.body) };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 4, result: { structuredContent: { ok: true, data: { outcome: "created" } } } }), { status: 200 });
+    }) as typeof fetch;
+    const ok = await askBookingMcp("tok", 4, "book", { slot_id: "s" });
+    assert(ok.ok, "an answered call is read");
+    eq([sent!.auth, JSON.parse(sent!.body).params.name], ["Bearer tok", "book"], "the token rides the Authorization header and the tool is named");
+
+    globalThis.fetch = answering(200, JSON.stringify({ jsonrpc: "2.0", id: 1, result: { structuredContent: { ok: false, code: "token_signature_invalid", class: "unexpected" } } }));
+    const wrongKey = await askBookingMcp("tok", 1, "book", {});
+    assert(!wrongKey.ok && wrongKey.why.startsWith("book: ") && wrongKey.why.includes("not the one production verifies with"), "a refused signature is named as the wrong key");
+
+    globalThis.fetch = answering(200, JSON.stringify({ jsonrpc: "2.0", id: 1, result: { structuredContent: { ok: false, code: "slot_taken", class: "conflict" } } }));
+    const taken = await askBookingMcp("tok", 1, "book", {});
+    assert(!taken.ok && taken.why.includes("slot_taken") && !taken.why.includes("token key"), "any other refusal is named by its code alone");
+
+    globalThis.fetch = (async () => {
+      throw new TypeError("network down");
+    }) as typeof fetch;
+    const down = await askBookingMcp("tok", 1, "cancel", {});
+    assert(!down.ok && down.why === "cancel: the booking MCP could not be reached (TypeError)", "an unreachable MCP is said to be so, by error class only");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  eq([MARCIA_SETUP_OUTCOMES.notConfigured.exit, MARCIA_SETUP_OUTCOMES.canaryWindow.exit, MARCIA_SETUP_OUTCOMES.salesforceUnreadable.exit], [1, 2, 5], "the shared setup outcomes keep their exit codes");
 }
 
 // --- how a run ends: cleanup wins the code, the run's result stays in the message ----------

@@ -29,7 +29,7 @@
 import { readFileSync } from "node:fs";
 import { loadEnvFiles } from "./smoke-env.ts";
 import { liveTestWorldPreflight } from "./lib/live-test-world-preflight.ts";
-import { BOOKING_MCP_URL, leadIdProblem, leadProblem, readToolAnswer, tokenKeyFrom, toolCall } from "./lib/marcia-lead-fill-check.ts";
+import { askBookingMcp, leadIdProblem, leadProblem, tokenKeyFrom } from "./lib/marcia-lead-fill-check.ts";
 import {
   REBOOK_OUTCOMES,
   bookVerdict,
@@ -110,24 +110,8 @@ let calls = 0;
 async function mcp(name: string, args: Record<string, unknown>, refused: RebookOutcome = "mcpRefused"): Promise<Record<string, unknown>> {
   const n = ++calls;
   const token = await signMachineToken(rebookClaims(LEAD, Date.now(), rebookNonce(RUN_STARTED_MS, n), CONTACT), KEY);
-  let status = 0;
-  let text = "";
-  try {
-    const res = await fetch(BOOKING_MCP_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", authorization: `Bearer ${token}` },
-      body: toolCall(n, name, args),
-    });
-    status = res.status;
-    text = await res.text();
-  } catch (err) {
-    throw tagged(refused, `${name}: the booking MCP could not be reached (${err instanceof Error ? err.name : "a throw"})`);
-  }
-  const read = readToolAnswer(status, text);
-  if (!read.ok) {
-    const keyHint = read.why.includes("token_signature_invalid") ? "; the token key this run holds is not the one production verifies with" : "";
-    throw tagged(refused, `${name}: ${read.why}${keyHint}`);
-  }
+  const read = await askBookingMcp(token, n, name, args);
+  if (!read.ok) throw tagged(refused, read.why);
   return read.body;
 }
 
