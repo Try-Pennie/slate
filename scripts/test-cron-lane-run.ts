@@ -373,6 +373,83 @@ const PLACED_ORIGIN = placedLaneOrigin(false);
   eq(out.run.placement, "remote-SEA", "with where it ran");
 }
 
+// #4325: a placed lane answered 503 with NO body, and no invocation of the lane was
+// ever recorded: Cloudflare answered between the binding and the entry. Every answer
+// Slate sends carries text, so an empty 5xx over the binding is reported as such, and
+// still never re-run: a lane Cloudflare stopped part way may look the same, after it
+// has written.
+{
+  const { deps, seen } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async () => new Response(null, { status: 503 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/watch", tick, deps);
+  eq(seen.requests.length, 0, "an empty 503 over the binding is NOT re-run in process");
+  eq(
+    out.failure,
+    { lane: "watch", status: 503, reason: "answered 503", emptyBody: true },
+    "it is reported as an empty answer",
+  );
+}
+{
+  const { deps } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async () => new Response("  ", { status: 404 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  const out = await runLane("/api/cron/watch", tick, deps);
+  eq(out.failure?.emptyBody, undefined, "an empty answer below 500 is not marked: Cloudflare's own answers are 5xx");
+}
+{
+  const { deps } = harness(async () => new Response(null, { status: 500 }));
+  const out = await runLane("/api/cron/watch", tick, deps);
+  eq(
+    out.failure,
+    { lane: "watch", status: 500, reason: "answered 500" },
+    "an empty answer from a lane run IN PROCESS is not marked: no Cloudflare hop answered it",
+  );
+}
+{
+  // A body that never ends is not known to be empty.
+  const stalled = new ReadableStream<Uint8Array>({
+    pull() {
+      return new Promise<void>(() => {});
+    },
+  });
+  const { deps } = harness(async () => new Response("{}", { status: 200 }));
+  const self = selfBinding(async () => new Response(stalled, { status: 503 }));
+  deps.placed = { binding: self.binding, origin: PLACED_ORIGIN };
+  deps.wait = async () => {};
+  const out = await runLane("/api/cron/watch", tick, deps);
+  eq(out.failure?.emptyBody, undefined, "a body that stalled past the read deadline is not marked empty");
+}
+{
+  eq(
+    parseLaneFailure({ lane: "watch", status: 503, reason: "answered 503", emptyBody: true }),
+    { lane: "watch", status: 503, reason: "answered 503", emptyBody: true },
+    "the failure route keeps the empty answer mark",
+  );
+  eq(
+    parseLaneFailure({ lane: "watch", status: 503, reason: "answered 503", emptyBody: "yes" }),
+    null,
+    "and refuses a mark that is not a boolean",
+  );
+  const emptyCopy = formatLaneFailureAlert(
+    { lane: "watch", status: 503, reason: "answered 503", emptyBody: true },
+    "bd8c4ed95dd04bbb",
+  );
+  assert(emptyCopy.includes("answered 503 with an empty body"), "the page says the answer was empty");
+  assert(/Cloudflare/.test(emptyCopy), "and that it most likely came from Cloudflare");
+  assert(/never started/.test(emptyCopy) && /partway/.test(emptyCopy), "naming both things it can mean");
+  assert(
+    emptyCopy.includes("GET /api/cron/watch"),
+    "and the invocation whose absence tells them apart",
+  );
+  assert(!/did not finish/.test(emptyCopy), "and does not claim the lane started and failed");
+  assert(emptyCopy.includes("tick=bd8c4ed95dd04bbb"), "it still names the tick id to search for");
+  const dashes = new RegExp(`[${String.fromCharCode(0x2014, 0x2013)}]`);
+  assert(!dashes.test(emptyCopy), "and carries no dash punctuation");
+  const fullCopy = formatLaneFailureAlert({ lane: "watch", status: 503, reason: "answered 503" }, null);
+  assert(/did not finish/.test(fullCopy) && !/empty body/.test(fullCopy), "a 503 with a body keeps the old wording");
+}
+
 {
   // A gradual deploy's canary refuses a placed lane before the app runs it, and says
   // so on the response, so the version that dispatched it runs it in process (#3095).

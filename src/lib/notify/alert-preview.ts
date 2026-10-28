@@ -4959,6 +4959,15 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: formatLaneFailureAlert({ lane: "bulk_reassign", status: 503, reason: "answered 503" }, null),
   },
+  {
+    key: "cron_lane_failed:*",
+    state: "a placed lane answered 503 with an empty body (#4325)",
+    channel: "alert",
+    text: formatLaneFailureAlert(
+      { lane: "watch", status: 503, reason: "answered 503", emptyBody: true },
+      "bd8c4ed95dd04bbb",
+    ),
+  },
   // --- the cron dead-man's switch -------------------------------------------
   // 2026-10-26: every quiet core lane on ONE page. Tonight's shape first: five lanes
   // stopped in the same second, Cloudflare reporting a cron incident, and the pool
