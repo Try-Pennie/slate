@@ -281,7 +281,13 @@ export async function runLane(
       // response body, which is whatever the lane chose to put there.
       // Under the same deadline as an ok answer (#3885): a failed lane that stalls its
       // body must not hold the tick open either. What arrived is what is logged.
-      const body = (await readThrough(res, ANSWER_READ_MS, deps.wait)).text;
+      const answer = await readThrough(res, ANSWER_READ_MS, deps.wait);
+      const body = answer.text;
+      // #4325: every answer Slate's code sends carries text, so a 5xx over the binding
+      // whose body read through EMPTY most likely came from Cloudflare. Never re-run:
+      // a lane Cloudflare stopped partway, after it wrote, may answer the same way.
+      const emptyBody =
+        via() === "placed" && res.status >= 500 && answer.outcome === "read" && body.trim() === "";
       // One failure, one message (Dan, 2026-10-03): a lane that already raised its
       // own alert about this failure says so on the response, and gets no generic
       // page on top of it. The header is set from what the lane's code actually
@@ -296,7 +302,14 @@ export async function runLane(
         via: via(),
         ...(alerted ? { alerted } : {}),
       });
-      if (!alerted) failure = { lane, status: res.status, reason: `answered ${res.status}` };
+      if (!alerted) {
+        failure = {
+          lane,
+          status: res.status,
+          reason: `answered ${res.status}`,
+          ...(emptyBody ? { emptyBody: true as const } : {}),
+        };
+      }
     }
   } catch (err) {
     // The error itself goes to the log as the third argument, so Cloudflare keeps

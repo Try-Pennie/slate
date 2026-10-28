@@ -85,6 +85,9 @@ export interface LaneFailureReport {
   lane: string;
   status: number | null;
   reason: string;
+  /** A placed lane answered 5xx with a body read through to its end and EMPTY (#4325).
+   *  Every answer Slate sends carries text, so this one most likely came from Cloudflare. */
+  emptyBody?: true;
 }
 
 /** A lane name as `laneFieldName` produces it. Anything else is refused rather
@@ -97,11 +100,12 @@ const TICK_ID = /^[a-f0-9]{1,32}$/;
  *  an unreadable body would page about a lane that does not exist. */
 export function parseLaneFailure(body: unknown): LaneFailureReport | null {
   if (!body || typeof body !== "object") return null;
-  const { lane, status, reason } = body as Record<string, unknown>;
+  const { lane, status, reason, emptyBody } = body as Record<string, unknown>;
   if (typeof lane !== "string" || !LANE_NAME.test(lane)) return null;
   if (status !== null && !(typeof status === "number" && Number.isInteger(status))) return null;
   if (typeof reason !== "string" || reason.trim() === "") return null;
-  return { lane, status, reason: reason.trim().slice(0, 120) };
+  if (emptyBody !== undefined && typeof emptyBody !== "boolean") return null;
+  return { lane, status, reason: reason.trim().slice(0, 120), ...(emptyBody ? { emptyBody: true as const } : {}) };
 }
 
 /** The tick id from the header, or null when absent or not one we minted. */
@@ -113,10 +117,6 @@ export function formatLaneFailureAlert(
   report: LaneFailureReport,
   tickId: string | null,
 ): string {
-  const what =
-    report.status === null
-      ? `threw before answering (${report.reason})`
-      : `answered ${report.status}`;
   // Says exactly what each search finds (L440): only the DISPATCHER's lines carry
   // the tick id. The lane's own lines do not, so they are found by time.
   const path = `/api/cron/${report.lane.replace(/_/g, "-")}`;
@@ -126,10 +126,27 @@ export function formatLaneFailureAlert(
       `carry the id, so read them from the same minute.`
     : `Search the Worker logs for tag=cron and path=${path}, and read the lane's own lines ` +
       `from the same minute.`;
+  const tail =
+    `Its heartbeat can still read fresh if it was stamped before the failure, so the lane ` +
+    `watchdog may never page about it. Repeats at most hourly while it keeps failing.`;
+  // #4325: the dispatcher cannot tell a lane Cloudflare never started from one it
+  // stopped partway after writing, so the page names both and the record that
+  // separates them, and claims neither (L11).
+  if (report.emptyBody && report.status !== null) {
+    return (
+      `The ${report.lane} cron lane answered ${report.status} with an empty body on a ` +
+      `scheduled run. Every answer Slate's code sends carries text, so this one most likely ` +
+      `came from Cloudflare: the lane either never started, or was stopped partway. In the ` +
+      `Workers observability view, a GET ${path} invocation in that minute means it started; ` +
+      `none means it never started and nothing ran. ${where} ${tail}`
+    );
+  }
+  const what =
+    report.status === null
+      ? `threw before answering (${report.reason})`
+      : `answered ${report.status}`;
   return (
     `The ${report.lane} cron lane ${what} on a scheduled run, so whatever it does on that ` +
-    `schedule did not finish. ${where} Its heartbeat can still read fresh if it was stamped ` +
-    `before the failure, so the lane watchdog may never page about it. Repeats at most hourly ` +
-    `while it keeps failing.`
+    `schedule did not finish. ${where} ${tail}`
   );
 }
