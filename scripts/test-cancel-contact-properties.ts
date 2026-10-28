@@ -1,6 +1,6 @@
 // #4273: a cancelled OLDER booking must not rewrite the Regal contact's Marcia flags.
 //
-// `buildRegalEvent` writes the contact's `customProperties` (`slateGhostBooking`, and
+// `buildRegalEvent` writes the contact's flags as top level traits (`slateGhostBooking`, and
 // `ai_agent_eligible` on a placeholder call) from whichever booking the event is
 // about, and Regal applies an event's traits to the contact. So a cancel of an older
 // booking, after a newer one landed, overwrote the newer booking's flags. The cancel's
@@ -39,6 +39,15 @@ function regalOf(payload: BookingEventPayload) {
   return buildRegalEvent("booking.cancelled", payload);
 }
 
+/** The contact's two flags as top level traits, where Regal files them; null when neither is sent. */
+function flagsOf(e: ReturnType<typeof regalOf>): Record<string, unknown> | null {
+  const t = e.traits as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if ("slateGhostBooking" in t) out.slateGhostBooking = t.slateGhostBooking;
+  if ("ai_agent_eligible" in t) out.ai_agent_eligible = t.ai_agent_eligible;
+  return Object.keys(out).length ? out : null;
+}
+
 async function run() {
   const NEWER = { id: "bk-new", manage_token: "tok-new", starts_at: "2026-06-09T13:00:00.000Z", ends_at: "2026-06-09T13:30:00.000Z" };
   for (const [label, old, newer] of [
@@ -51,8 +60,8 @@ async function run() {
     assert(sent?.payload.contact_properties_withheld === "another-live-booking",
       `${label}: the payload stores that the customer still has a live call (got ${String(sent?.payload.contact_properties_withheld)})`);
     const e = sent ? regalOf(sent.payload) : null;
-    assert(e !== null && e.traits.customProperties === undefined,
-      `${label}: the Regal event leaves the contact's flags to the newer call (got ${JSON.stringify(e?.traits.customProperties)})`);
+    assert(e !== null && flagsOf(e) === null,
+      `${label}: the Regal event leaves the contact's flags to the newer call (got ${JSON.stringify(e ? flagsOf(e) : null)})`);
     assert(e?.properties.slateGhostBooking === (old.kind === "staff_placed"), `${label}: the event itself still names the cancelled call`);
     assert(lookups[0]?.salesforceId === "sf1" && lookups[0]?.email === "k@x.com", `${label}: asked by the cancelled booking's own person`);
   }
@@ -62,10 +71,10 @@ async function run() {
     const { sent } = await cancelBeside(marcia(), []);
     assert(sent?.payload.contact_properties_withheld === undefined, "control: a lone cancel withholds nothing");
     const e = sent ? regalOf(sent.payload) : null;
-    assert(JSON.stringify(e?.traits.customProperties) === JSON.stringify({ slateGhostBooking: true, ai_agent_eligible: false }),
-      `control: and the contact is told the Marcia call is over (got ${JSON.stringify(e?.traits.customProperties)})`);
+    assert(JSON.stringify(e ? flagsOf(e) : null) === JSON.stringify({ slateGhostBooking: true, ai_agent_eligible: false }),
+      `control: and the contact is told the Marcia call is over (got ${JSON.stringify(e ? flagsOf(e) : null)})`);
     const lone = await cancelBeside(routed(), []);
-    assert(JSON.stringify(lone.sent ? regalOf(lone.sent.payload).traits.customProperties : null) === JSON.stringify({ slateGhostBooking: false }),
+    assert(JSON.stringify(lone.sent ? flagsOf(regalOf(lone.sent.payload)) : null) === JSON.stringify({ slateGhostBooking: false }),
       "control: a lone routed cancel sends its flag as before");
   }
 
@@ -84,7 +93,7 @@ async function run() {
     const { sent } = await cancelBeside(marcia(), "throws");
     assert(sent !== undefined, "a failed lookup never stops the cancel reaching Regal");
     assert(sent?.payload.contact_properties_withheld === "lookup-failed", "and the payload stores that it could not tell, by its own word (L11)");
-    assert(sent !== undefined && regalOf(sent.payload).traits.customProperties === undefined, "and the contact's flags are left out, never overwritten");
+    assert(sent !== undefined && flagsOf(regalOf(sent.payload)) === null, "and the contact's flags are left out, never overwritten");
   }
 }
 

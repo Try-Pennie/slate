@@ -142,8 +142,14 @@ interface RegalEvent {
      * #4204: `slateGhostBooking` on every routed event, so a journey that does not start
      * on a Slate event can read it from the contact; `ai_agent_eligible` only on a
      * placeholder call or the move that takes one off the placeholder.
+     *
+     * TOP LEVEL traits, never inside a `customProperties` object: Regal files a top level
+     * trait as `customProperties.<name>` on the contact (as `slateBookable` lands), so one
+     * sent inside `customProperties` lands as `customProperties.customProperties.<name>`,
+     * which no journey reads. Seen in Regal's attribute list on 2026-10-28.
      */
-    customProperties?: { slateGhostBooking: boolean; ai_agent_eligible?: boolean };
+    slateGhostBooking?: boolean;
+    ai_agent_eligible?: boolean;
   };
 }
 
@@ -345,10 +351,8 @@ export function buildRegalEvent(
   // flags to that call; the event's own properties above still describe this one.
   if (p.contact_properties_withheld === undefined) {
     const eligible = aiAgentEligible(event, p);
-    regal.traits.customProperties = {
-      slateGhostBooking: onPlaceholder,
-      ...(eligible !== undefined ? { ai_agent_eligible: eligible } : {}),
-    };
+    regal.traits.slateGhostBooking = onPlaceholder;
+    if (eligible !== undefined) regal.traits.ai_agent_eligible = eligible;
   }
 
   // #2659: the two join keys the landing page put on the booking URL, under the
