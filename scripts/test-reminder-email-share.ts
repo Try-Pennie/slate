@@ -195,11 +195,31 @@ async function judgeTick(state: RateWindowState | null, t: ReminderTick, over: P
   );
 }
 
+// --- an email switched off with failures still in the window is never paged afresh -----
+//
+// Its old failed samples stay in the window for hours, so judging it would post a new page
+// that the stand down below then ends in the same tick. Off emails are only stood down.
+{
+  const state = fold([[60, tickOf({ half: [3, 3] })], [30, tickOf({ half: [2, 2] })]]);
+  const { spy } = await judgeTick(state, tickOf({ day: [1, 0] }, { enabledSlugs: ["day", "hour"] }), {
+    loadFiringEmailSlugs: async () => ["half"],
+  });
+  assert(!spy.paged.some((c) => c.key === reminderEmailFailingKey("half")), "a switched off email posts no new failure page");
+  assert(
+    spy.resolved.some((c) => c.key === reminderEmailFailingKey("half") && c.text === reminderEmailFailingStandDown(NAMES.half)),
+    "its open page is stood down instead",
+  );
+  // Control: the same window with half switched on does page.
+  const on = await judgeTick(state, tickOf({ day: [1, 0] }, { enabledSlugs: ["day", "hour", "half"] }));
+  assert(on.spy.paged.some((c) => c.key === reminderEmailFailingKey("half")), "while switched on, the same failures page");
+}
+
 // --- a failed read of the open pages ends nothing, and costs nothing else ----------
 {
   const state = fold([[60, tickOf({ day: [20, 0], half: [1, 1] })], [30, tickOf({ half: [1, 1] })]]);
   const errors: string[] = [];
-  const { spy } = await judgeTick(state, tickOf({ half: [1, 1] }, { enabledSlugs: [] }), {
+  // day is off, so a working read would stand its page down; half is on and failing.
+  const { spy } = await judgeTick(state, tickOf({ half: [1, 1] }, { enabledSlugs: ["half"] }), {
     loadFiringEmailSlugs: async () => {
       throw new Error("alert_state read failed");
     },

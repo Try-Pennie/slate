@@ -706,6 +706,9 @@ export async function runReminderFailureRateCheck(deps: {
   // (`ALERT_FOLDS`), and one cause is said once.
   const emails = judgeReminderEmailWindows(state, deps.nowMs, deps.thresholds);
   const names = deps.tick.emailNames ?? {};
+  // A switched off email's failed samples stay in the window for hours, so judging it would
+  // post a fresh page the stand down below ends in the same tick. Off a MEASURED list only.
+  const switchedOn = deps.tick.enabledSlugs ? new Set(deps.tick.enabledSlugs) : null;
   for (const e of emails) {
     const key = reminderEmailFailingKey(e.slug);
     const name = names[e.slug] ?? e.slug;
@@ -717,6 +720,7 @@ export async function runReminderFailureRateCheck(deps: {
       failures: e.failures,
       retrying: e.retrying,
     });
+    if (switchedOn && !switchedOn.has(e.slug)) continue;
     if (e.status === "breach" || e.status === "saturated") {
       await deps
         .notify(key, deps.cooldownMs, reminderEmailFailingAlert({ ...e, name, windowMinutes }))
