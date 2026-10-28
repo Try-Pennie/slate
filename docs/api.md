@@ -966,15 +966,18 @@ coverage move without reading the booking.
   `properties.slateGhostBooking` (#4204), `true` when the call sits on the
   placeholder advisor (booking kind `staff_placed`), `false` otherwise. On those
   calls `agentName` and `agentFirstName` are `Marcia` and the traits carry
-  `customProperties.ai_agent_eligible: true`, so Marcia, Pennie's AI agent, texts the
+  `ai_agent_eligible: true`, so Marcia, Pennie's AI agent, texts the
   customer; a cancel of one sends `false`, and so does the reschedule or reassign
   that moves it onto a real advisor (`left_placeholder` on the stored payload, so a
   resend or a dead letter replay sends the same). A routed booking never sends
   `ai_agent_eligible`, so a lead's own AI eligibility is never cleared. Every routed
-  event also writes `customProperties.slateGhostBooking` onto the contact, so a
-  journey that does not start on a Slate event can read it. A `booking.cancelled`
+  event also writes `slateGhostBooking` onto the contact, so a journey that does not
+  start on a Slate event can read it. Both are sent as TOP LEVEL traits, which Regal
+  files as `customProperties.ai_agent_eligible` and `customProperties.slateGhostBooking`;
+  sent inside a `traits.customProperties` object they land one level too deep
+  (`customProperties.customProperties.*`), where no journey reads them. A `booking.cancelled`
   whose customer still has another active booking (the duplicate check's own lookup)
-  leaves `customProperties` out entirely, so the cancel of an older call never
+  leaves both flags out entirely, so the cancel of an older call never
   rewrites the flags the newer one set; a lookup that fails leaves them out too. The
   decision is stored on the payload as `contact_properties_withheld`
   (`another-live-booking` or `lookup-failed`, #4273), so a resend or a dead letter

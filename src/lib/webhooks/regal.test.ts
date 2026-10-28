@@ -399,7 +399,7 @@ describe("the Regal wire contract (#2314)", () => {
       phones: { "+15551234567": { voiceOptIn: { subscribed: true }, smsOptIn: { subscribed: true } } },
       emails: { "jane@example.com": { emailOptIn: { subscribed: true } } },
       // #4204: every routed event marks the contact, false off the placeholder.
-      customProperties: { slateGhostBooking: false },
+      slateGhostBooking: false,
     });
 
     // A cancel and a reassign name the number for identity only, even when the
@@ -411,7 +411,7 @@ describe("the Regal wire contract (#2314)", () => {
         phones: { "+15551234567": {} },
         emails: { "jane@example.com": {} },
         // #4204: every routed event marks the contact, false off the placeholder.
-        customProperties: { slateGhostBooking: false },
+        slateGhostBooking: false,
       });
     }
   });
@@ -431,7 +431,7 @@ describe("the Regal wire contract (#2314)", () => {
       phones: CORRECTED_PHONE,
       emails: { "jane@example.com": {} },
       // #4204: every routed event marks the contact, false off the placeholder.
-      customProperties: { slateGhostBooking: false },
+      slateGhostBooking: false,
     });
     const props = wireBody("booking.contact_updated", fullPayload()).properties as Record<string, unknown>;
     expect(props.previousPhone).toBe("+12155550100");
@@ -449,7 +449,7 @@ describe("the Regal wire contract (#2314)", () => {
       phones: CORRECTED_PHONE,
       emails: { "jane@example.com": {} },
       // #4204: every routed event marks the contact, false off the placeholder.
-      customProperties: { slateGhostBooking: false },
+      slateGhostBooking: false,
     });
   });
 
@@ -464,7 +464,7 @@ describe("the Regal wire contract (#2314)", () => {
       phones: { "+15551234567": {} },
       emails: { "jane@example.com": {} },
       // #4204: every routed event marks the contact, false off the placeholder.
-      customProperties: { slateGhostBooking: false },
+      slateGhostBooking: false,
     });
   });
 
@@ -538,7 +538,29 @@ describe("placeholder bookings to Regal (#4204)", () => {
     booking_kind: "staff_placed",
     ...over,
   });
-  const aiEligible = (e: ReturnType<typeof buildRegalEvent>) => e.traits.customProperties?.ai_agent_eligible;
+  const aiEligible = (e: ReturnType<typeof buildRegalEvent>) => e.traits.ai_agent_eligible;
+  // The two contact flags, read where Regal files them: a top level trait lands on the
+  // contact as `customProperties.<name>`, so a trait sent INSIDE `customProperties` lands
+  // one level too deep (`customProperties.customProperties.<name>`, seen in Regal on
+  // 2026-10-28), where no journey reads it.
+  const contactFlags = (e: ReturnType<typeof buildRegalEvent>) => {
+    const t = e.traits as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    if ("slateGhostBooking" in t) out.slateGhostBooking = t.slateGhostBooking;
+    if ("ai_agent_eligible" in t) out.ai_agent_eligible = t.ai_agent_eligible;
+    return Object.keys(out).length ? out : undefined;
+  };
+
+  it.each(["booking.created", "booking.rescheduled", "booking.reassigned", "booking.cancelled", "booking.contact_updated"] as const)(
+    "never nests the contact flags under customProperties on %s, where Regal files them one level too deep",
+    (event) => {
+      for (const kind of ["staff_placed", "routed"] as const) {
+        const e = buildRegalEvent(event, onPlaceholder({ booking_kind: kind }));
+        expect((e.traits as Record<string, unknown>).customProperties).toBeUndefined();
+        expect(typeof e.traits.slateGhostBooking).toBe("boolean");
+      }
+    },
+  );
 
   it.each(["booking.created", "booking.rescheduled", "booking.reassigned", "booking.contact_updated"] as const)(
     "marks %s on the placeholder, names Marcia and turns Marcia's texting on",
@@ -548,7 +570,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
       expect(e.properties.agentName).toBe("Marcia");
       expect(e.properties.agentFirstName).toBe("Marcia");
       expect(aiEligible(e)).toBe(true);
-      expect(e.traits.customProperties?.slateGhostBooking).toBe(true);
+      expect(e.traits.slateGhostBooking).toBe(true);
     },
   );
 
@@ -582,7 +604,7 @@ describe("placeholder bookings to Regal (#4204)", () => {
       expect(e.properties.slateGhostBooking).toBe(false);
       // #4204: the contact carries the marker too, so journeys that do not start on a
       // Slate event can read it; Marcia's own flag is left alone.
-      expect(e.traits.customProperties).toEqual({ slateGhostBooking: false });
+      expect(contactFlags(e)).toEqual({ slateGhostBooking: false });
     },
   );
 
@@ -595,14 +617,14 @@ describe("placeholder bookings to Regal (#4204)", () => {
   ] as const)("leaves the contact's flags alone when %s is cancelled beside a live one", (_label, kind) => {
     for (const why of ["another-live-booking", "lookup-failed"] as const) {
       const e = buildRegalEvent("booking.cancelled", onPlaceholder({ booking_kind: kind, status: "cancelled", contact_properties_withheld: why }));
-      expect(e.traits.customProperties).toBeUndefined();
+      expect(contactFlags(e)).toBeUndefined();
       expect(e.properties.slateGhostBooking).toBe(kind === "staff_placed");
       expect(e.traits.phones).toBeDefined();
     }
   });
 
   it("CONTROL: a cancel with no withholding still sends the contact's flags as before", () => {
-    expect(buildRegalEvent("booking.cancelled", onPlaceholder({ status: "cancelled" })).traits.customProperties).toEqual({
+    expect(contactFlags(buildRegalEvent("booking.cancelled", onPlaceholder({ status: "cancelled" })))).toEqual({
       slateGhostBooking: true,
       ai_agent_eligible: false,
     });
@@ -613,6 +635,6 @@ describe("placeholder bookings to Regal (#4204)", () => {
   it("reads a payload with no kind as routed", () => {
     const e = buildRegalEvent("booking.created", payload());
     expect(e.properties.slateGhostBooking).toBe(false);
-    expect(e.traits.customProperties).toEqual({ slateGhostBooking: false });
+    expect(contactFlags(e)).toEqual({ slateGhostBooking: false });
   });
 });
