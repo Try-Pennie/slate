@@ -81,12 +81,15 @@ const DECIDED = /Dan[^.]{0,40}2026-10-03|2026-10-03[^.]{0,40}Dan/;
     const problems: string[] = [];
     if (!new RegExp(`CREATE WAREHOUSE IF NOT EXISTS ${warehouse}[^;]*STATEMENT_TIMEOUT_IN_SECONDS = 600[^;]*;`).test(sql)) problems.push("a fresh warehouse is created with the 600s timeout");
     if (!new RegExp(`ALTER WAREHOUSE IF EXISTS ${warehouse} SET STATEMENT_TIMEOUT_IN_SECONDS = 600;`).test(sql)) problems.push("an existing warehouse is given the 600s timeout");
-    const monitor = /CREATE RESOURCE MONITOR IF NOT EXISTS SLATE_WH_MONITOR[^;]*;/.exec(sql)?.[0] ?? "";
+    // RM_SLATE is the monitor the data team attached, kept by Dan on 2026-10-28.
+    const monitor = /CREATE RESOURCE MONITOR IF NOT EXISTS RM_SLATE[^;]*;/.exec(sql)?.[0] ?? "";
     if (!/FREQUENCY = MONTHLY/.test(monitor)) problems.push("the resource monitor is monthly");
-    if (!(/ON 80 PERCENT DO NOTIFY/.test(monitor) && /ON 100 PERCENT DO NOTIFY/.test(monitor))) problems.push("the monitor notifies at 80% and 100%");
+    if (!/CREDIT_QUOTA = 100\b/.test(monitor)) problems.push("the monitor's quota is 100 credits");
+    if (!(/ON 75 PERCENT DO NOTIFY/.test(monitor) && /ON 100 PERCENT DO NOTIFY/.test(monitor))) problems.push("the monitor notifies at 75% and 100%");
+    if (!new RegExp(`ALTER WAREHOUSE IF EXISTS ${warehouse} SET GENERATION = '1';`).test(sql)) problems.push("the warehouse is set to Gen1");
     // The whole point of the decision: suspending stops the booking mirror.
     if (/DO\s+(SUSPEND|SUSPEND_IMMEDIATE)\b/.test(sql)) problems.push("no trigger suspends the warehouse");
-    if (!new RegExp(`ALTER WAREHOUSE ${warehouse} SET RESOURCE_MONITOR = SLATE_WH_MONITOR;`).test(sql)) problems.push("the monitor is attached to the warehouse");
+    if (!new RegExp(`ALTER WAREHOUSE ${warehouse} SET RESOURCE_MONITOR = RM_SLATE;`).test(sql)) problems.push("the monitor is attached to the warehouse");
     return problems;
   };
   const found = judge(raw);
@@ -102,7 +105,8 @@ const DECIDED = /Dan[^.]{0,40}2026-10-03|2026-10-03[^.]{0,40}Dan/;
   assert(/#3125/.test(spend) && DECIDED.test(spend), "DEPLOY.md's spend section records the decision");
   assert(/never suspending/.test(spend) && /booking backup/.test(spend), "with the reason it never suspends");
   assert(/WAREHOUSE_METERING_HISTORY/.test(spend) && spend.includes(`'${warehouse}'`), "it carries the usage query, on the deployed warehouse");
-  assert(/twice the measured monthly credits/.test(spend), "and states the cap as twice the measured usage");
+  assert(/RM_SLATE/.test(spend) && /Dan[^.]{0,40}2026-10-28|2026-10-28[^.]{0,40}Dan/.test(spend), "and names the monitor Dan kept on 2026-10-28");
+  assert(/Cap: \*\*`RM_SLATE`, 100 credits/.test(spend), "and states the live cap as RM_SLATE's 100 credits");
 }
 
 // --- #3127: mirrored webhook payloads keep the 24 month window ------------------------

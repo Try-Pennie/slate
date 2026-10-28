@@ -1096,16 +1096,23 @@ the cap itself is not exposed by the management API, so this one genuinely canno
 checked from here.
 
 **Snowflake (warehouse guard, #3125).** Decided by Dan on 2026-10-03: the `SLATE_WH`
-warehouse carries a **monthly resource monitor that warns only**, notifying at 80% and
-at 100% of its quota and **never suspending**, plus **`STATEMENT_TIMEOUT_IN_SECONDS =
-600`**. Never suspend, because suspending the warehouse stops the 10 minute booking
+warehouse carries a **monthly resource monitor that warns only**, never suspending,
+plus **`STATEMENT_TIMEOUT_IN_SECONDS = 600`**. Never suspend, because suspending the warehouse stops the 10 minute booking
 mirror (`/api/cron/snowflake-export`), and that mirror is the booking backup: a spend
 cap must not be able to switch the backup off. The statements are in
 `docs/snowflake-setup.sql` under "Spend guard". Slate has no local Snowflake access,
 so they are run by hand in a Snowsight worksheet as `ACCOUNTADMIN`.
 
-The quota is **twice the measured monthly credits**, and it needs current usage, so
-it is filled in when somebody runs this read-only query in Snowsight (it reads
+Cap: **`RM_SLATE`, 100 credits a month**, notifying at 75% and 100%, never
+suspending. The data team attached it in place of the 49 credit `SLATE_WH_MONITOR` set
+on 2026-10-03, and Dan kept it on 2026-10-28: by `RM_SLATE`'s own count the warehouse
+used 67.65 credits between 2026-10-09 and 2026-10-28, already past 49. The 49 had come
+from 24.37 credits over the 30 days before 2026-10-03, most of which preceded a step up
+in daily spend around 2026-10-01, so it measured a quieter warehouse. The same day the
+warehouse moved from Gen2 to Gen1 (`GENERATION = '1'`), which bills short statements
+like Slate's about a quarter less.
+
+To see what the warehouse uses now, run this read-only query in Snowsight (it reads
 `SNOWFLAKE.ACCOUNT_USAGE`, which lags up to three hours, and writes nothing):
 
 <!-- runbook-unverified: Slate has no local Snowflake access, so this cannot be run
@@ -1114,23 +1121,17 @@ it is filled in when somebody runs this read-only query in Snowsight (it reads
 
 ```sql
 SELECT warehouse_name,
-       SUM(credits_used)                 AS credits_last_30_days,
-       GREATEST(CEIL(SUM(credits_used) * 2), 1) AS monitor_quota
+       SUM(credits_used) AS credits_last_30_days
   FROM SNOWFLAKE.ACCOUNT_USAGE.WAREHOUSE_METERING_HISTORY
  WHERE warehouse_name = 'SLATE_WH'
    AND start_time >= DATEADD(day, -30, CURRENT_TIMESTAMP())
  GROUP BY warehouse_name;
 ```
 
-Cap: **49 credits a month**, set 2026-10-03 by Dan in Snowsight, from 24.37 credits
-used by `SLATE_WH` over the 30 days before. `SLATE_WH_MONITOR` notifies at 80% and 100%
-and never suspends, and `STATEMENT_TIMEOUT_IN_SECONDS = 600` was applied the same day.
-To re-measure later, run the query above, put its `monitor_quota` in place of `<quota>`
-in the "RUN IN SNOWSIGHT" block at the end of `docs/snowflake-setup.sql` (or use the
-`ALTER RESOURCE MONITOR` line near its top), run it, and update the number and the date
-here. No row back means the warehouse used no credits in 30
-days, which is not a normal reading for a mirror that runs every 10 minutes: check
-the export lane before setting a quota of 1.
+To change the cap, use the `ALTER RESOURCE MONITOR RM_SLATE` line near the top of
+`docs/snowflake-setup.sql`, then update the number, the date and the reason here. No
+row back means the warehouse used no credits in 30 days, which is not a normal reading
+for a mirror that runs every 10 minutes: check the export lane first.
 
 Neither is verifiable from this repo, which is the honest limitation of writing them
 down here: nothing fails when somebody deletes the notification. What compensates is
