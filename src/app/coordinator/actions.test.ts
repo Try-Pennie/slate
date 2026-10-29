@@ -7,18 +7,27 @@ import { PARTNER_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
 // who gets in, what a refusal reads, and that a double press reaches the booking under
 // one submission id. Every value is invented.
 
-const auth = vi.hoisted(() => ({ coordinatorDeskUser: vi.fn() }));
+const auth = vi.hoisted(() => ({
+  coordinatorDeskUser: vi.fn(),
+  // The real one's contract: the desk user, or a throw (a 403 at the HTTP layer).
+  requireCoordinatorDesk: vi.fn(),
+}));
 const limiter = vi.hoisted(() => ({ allowRequest: vi.fn(async () => true) }));
 const live = vi.hoisted(() => {
   const place = vi.fn();
   const readLead = vi.fn();
   const routings: unknown[] = [];
   const lookupRoutings: unknown[] = [];
+  const readQueue = vi.fn();
+  const readSettings = vi.fn();
   return {
     place,
     readLead,
+    readQueue,
+    readSettings,
     routings,
     lookupRoutings,
+    transferDeps: () => ({ readQueue, readSettings }),
     lookupDeps: () => ({
       readLead,
       readLeadXbc: async () => "412",
@@ -59,7 +68,7 @@ vi.mock("@/lib/rate-limit", () => limiter);
 vi.mock("@/lib/coordinator/live", () => live);
 vi.mock("@/lib/log", () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
-import { lookupCoordinatorCustomer, placeCoordinatorCall } from "./actions";
+import { checkCoordinatorTransfer, lookupCoordinatorCustomer, placeCoordinatorCall } from "./actions";
 
 const COORDINATOR = { id: "coord-1", role: "coordinator", is_test: false };
 const DRILL_COORDINATOR = { id: "coord-drill", role: "coordinator", is_test: true };
@@ -77,7 +86,10 @@ beforeEach(() => {
   live.routings.length = 0;
   live.place.mockReset();
   auth.coordinatorDeskUser.mockResolvedValue(COORDINATOR);
+  auth.requireCoordinatorDesk.mockResolvedValue(COORDINATOR);
   limiter.allowRequest.mockResolvedValue(true);
+  live.readQueue.mockResolvedValue({ ok: true, free: 19 });
+  live.readSettings.mockResolvedValue({ threshold: 3, line: "786-504-0671" });
 });
 
 describe("placeCoordinatorCall (#4205)", () => {
@@ -182,8 +194,51 @@ describe("the actions the page can call (#4316)", () => {
   // the server from the Lead and the signed in person; an action taking a bucket code
   // from the browser (the old placeholder count did) would read any bucket, test ones
   // included. A new export has to be added here on purpose.
-  it("exports only the customer lookup and the booking", async () => {
+  it("exports only the customer lookup, the booking and the transfer check", async () => {
+    // #4380: the transfer check takes nothing from the browser at all; the queue is chosen
+    // on the endpoint's side and the threshold and line are the stored settings.
     const actions = await import("./actions");
-    expect(Object.keys(actions).sort()).toEqual(["lookupCoordinatorCustomer", "placeCoordinatorCall"]);
+    expect(Object.keys(actions).sort()).toEqual(["checkCoordinatorTransfer", "lookupCoordinatorCustomer", "placeCoordinatorCall"]);
+  });
+});
+
+describe("checkCoordinatorTransfer (#4380)", () => {
+  it("refuses somebody who may not use the page before the queue is asked", async () => {
+    auth.requireCoordinatorDesk.mockRejectedValue(new Error("Not authorized"));
+    const out = await checkCoordinatorTransfer();
+    expect(out).toEqual({ kind: "refused", refusal: "not-authorized" });
+    expect(live.readQueue).not.toHaveBeenCalled();
+    expect(limiter.allowRequest).not.toHaveBeenCalled();
+  });
+
+  it("offers the transfer line when the count reaches the stored threshold, keyed per person in the limiter", async () => {
+    live.readQueue.mockResolvedValue({ ok: true, free: 3 });
+    await expect(checkCoordinatorTransfer()).resolves.toEqual({ kind: "offer", line: "786-504-0671" });
+    expect(limiter.allowRequest).toHaveBeenCalledWith({ kind: "opaque", key: "coordinator:coord-1" }, expect.any(Array));
+  });
+
+  it("offers nothing when fewer are free than the stored threshold", async () => {
+    live.readQueue.mockResolvedValue({ ok: true, free: 4 });
+    live.readSettings.mockResolvedValue({ threshold: 5, line: "212-555-0100" });
+    await expect(checkCoordinatorTransfer()).resolves.toEqual({ kind: "busy" });
+  });
+
+  it("says unreadable, never busy, when the queue cannot be read or the settings cannot", async () => {
+    live.readQueue.mockResolvedValue({ ok: false, why: "timeout", detail: "no answer within 3000ms" });
+    await expect(checkCoordinatorTransfer()).resolves.toEqual({ kind: "unreadable", why: "count" });
+    live.readQueue.mockResolvedValue({ ok: true, free: 19 });
+    live.readSettings.mockResolvedValue(null);
+    await expect(checkCoordinatorTransfer()).resolves.toEqual({ kind: "unreadable", why: "settings" });
+  });
+
+  it("answers a thrown dependency as unreadable rather than throwing", async () => {
+    live.readQueue.mockRejectedValue(new Error("boom"));
+    await expect(checkCoordinatorTransfer()).resolves.toEqual({ kind: "unreadable", why: "count" });
+  });
+
+  it("answers a limiter refusal as its own refusal, and asks nothing", async () => {
+    limiter.allowRequest.mockResolvedValue(false);
+    await expect(checkCoordinatorTransfer()).resolves.toEqual({ kind: "refused", refusal: "rate-limited" });
+    expect(live.readQueue).not.toHaveBeenCalled();
   });
 });

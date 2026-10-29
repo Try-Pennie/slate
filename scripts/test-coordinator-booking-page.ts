@@ -249,6 +249,89 @@ const thursday2pm = "2026-11-19T14:00:00.000-07:00";
   eq([noHours.booking!.line, noHours.booking!.days.length], [{ text: COPY.more.daysUnreadable, tone: "error" }, 0], "unreadable hours are said, never a row of closed days");
 }
 
+
+// --- the live transfer offer (#4380, docs/design/coordinator-call-me-now.html) -----------
+// Asked when the customer is found and again when Transfer now is pressed: the count is
+// approximate and reserves nothing. A count that is not enough draws nothing; one that
+// cannot be read draws the plain line, never the card; booking stays as it is throughout.
+{
+  const asked = found(sam);
+  eq(asked.transfer, { kind: "checking", seq: 1 }, "finding the customer asks whether a transfer can be offered");
+  eq(pageView(asked, ctx).transfer, null, "nothing is drawn until the check answers");
+
+  const offered = reducePage(asked, { type: "transferAnswered", seq: 1, answer: { kind: "offer", line: "786-504-0671" } });
+  const card = pageView(offered, ctx).transfer;
+  eq(
+    card,
+    {
+      kind: "card",
+      heading: "Advisors are free now",
+      lead: "Transfer Sam to an advisor while they're on the line.",
+      line: "786-504-0671",
+      button: "Transfer now",
+      pending: false,
+      pendingLabel: "Checking advisors",
+      status: null,
+      fallback: "If it doesn't connect, book a time below.",
+    },
+    "enough free draws the card with the line once, Transfer now, and the fallback to booking (D1 to D3)",
+  );
+  assert(pageView(offered, ctx).booking !== null, "booking stays on screen beside the offer (D3)");
+
+  eq(pageView(reducePage(asked, { type: "transferAnswered", seq: 1, answer: { kind: "busy" } }), ctx).transfer, null, "too few free draws nothing, and booking is as it always was");
+  eq(
+    pageView(reducePage(asked, { type: "transferAnswered", seq: 1, answer: { kind: "unreadable" } }), ctx).transfer,
+    { kind: "line", text: "Live transfer can't be checked right now. Book a time below." },
+    "a count that cannot be read draws the plain line, never the card",
+  );
+  eq(
+    pageView(reducePage(asked, { type: "transferNoAnswer", seq: 1 }), ctx).transfer,
+    { kind: "line", text: "Live transfer can't be checked right now. Book a time below." },
+    "a check that never answered is the same plain line",
+  );
+  eq(reducePage(asked, { type: "transferAnswered", seq: 0, answer: { kind: "offer", line: "786-504-0671" } }), asked, "an answer to an older check is ignored");
+
+  // Pressed: asked again, the button says it is checking, and a second press sends nothing.
+  const pressed = reducePage(offered, { type: "transferPressed", at: NOW });
+  eq(pressed.transfer, { kind: "rechecking", seq: 2, line: "786-504-0671" }, "Transfer now asks again");
+  const pv = pageView(pressed, ctx).transfer;
+  assert(pv?.kind === "card" && pv.pending === true, "and the button shows it is checking");
+  eq(reducePage(pressed, { type: "transferPressed", at: NOW }), pressed, "a second press while checking sends nothing");
+
+  const still = reducePage(pressed, { type: "transferAnswered", seq: 2, answer: { kind: "offer", line: "786-504-0671" } });
+  const sv = pageView(still, ctx).transfer;
+  assert(sv?.kind === "card" && sv.status === "Advisors are still free. Transfer Sam now." && !sv.pending, "still enough free says to transfer now");
+  eq(still.transferStartedAt, null, "and the still checking count stops");
+
+  const gone = reducePage(pressed, { type: "transferAnswered", seq: 2, answer: { kind: "busy" } });
+  eq(pageView(gone, ctx).transfer, { kind: "line", text: "Not enough advisors are free now. Book a time below." }, "the re-check below the threshold says so plainly");
+  eq([gone.day, gone.start, gone.phase], [asked.day, asked.start, "found"], "and leaves booking as it is");
+  eq(
+    pageView(reducePage(pressed, { type: "transferNoAnswer", seq: 2 }), ctx).transfer,
+    { kind: "line", text: "Live transfer can't be checked right now. Book a time below." },
+    "a re-check that fails is the plain line",
+  );
+
+  // Booking is never held up by the offer, and a booked call ends it.
+  const chose = run([{ type: "dayChosen", date: "2026-11-17" }, { type: "timeChosen", start: "2026-11-17T16:00:00.000-08:00" }], offered);
+  eq(chose.start, "2026-11-17T16:00:00.000-08:00", "a time can be chosen while the offer shows");
+  eq(chose.transfer, offered.transfer, "and choosing one leaves the offer as it was");
+  const placing = run([{ type: "confirmPressed" }, { type: "placePressed", submissionId: "sub-t", at: NOW }], chose);
+  const booked = reducePage(placing, { type: "placeAnswered", seq: 1, outcome: { kind: "booked", on: "advisor", advisorName: "Ada Example", startsAt: "2026-11-18T00:00:00.000Z", sentence: "" } });
+  eq(pageView(booked, ctx).transfer, null, "once the call is booked the offer is gone");
+  eq(reducePage(booked, { type: "transferPressed", at: NOW }), booked, "and cannot be pressed");
+
+  // A second customer is asked about afresh.
+  const next = run([{ type: "leadEdited", value: ID, at: NOW }, { type: "lookupAnswered", seq: 2, answer: jordan }], offered);
+  eq(next.transfer, { kind: "checking", seq: 2 }, "a new customer is asked about afresh");
+  eq(pageView(next, ctx).transfer, null, "and the old customer's offer is not shown for them");
+
+  // The customer's own first name, or "the customer" when the Lead has none.
+  const nameless = run([{ type: "transferAnswered", seq: 1, answer: { kind: "offer", line: "786-504-0671" } }], found({ ...sam, customer: { ...(sam.ok ? sam.customer : customer()), firstName: null } }));
+  const nv = pageView(nameless, ctx).transfer;
+  assert(nv?.kind === "card" && nv.lead === "Transfer the customer to an advisor while they're on the line.", "a Lead with no first name says the customer");
+}
+
 // --- the clock line follows a real clock, the day labels follow the customer's day -------
 {
   const later = pageView(found(sam), { ...ctx, nowMs: NOW + 65 * 60_000 });

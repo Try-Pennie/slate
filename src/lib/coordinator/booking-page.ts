@@ -29,6 +29,13 @@ export type LookupAnswer =
   | { ok: true; customer: Customer; existingCall: ExistingCallView; days: OfferedDays }
   | { ok: false; sentence: string };
 
+/**
+ * The live transfer check's answer as the page reads it (#4380): offer the transfer to
+ * this line, too few advisors free, or the count could not be read (the server action's
+ * `unreadable` and `refused` both draw the plain line).
+ */
+export type TransferAnswer = { kind: "offer"; line: string } | { kind: "busy" } | { kind: "unreadable" };
+
 /** The place call's answer, narrowed to what the page reads. */
 export type PlaceAnswer =
   | { kind: "booked" | "moved"; on: PlacedOn; advisorName: string | null; startsAt: string; sentence: string }
@@ -70,6 +77,29 @@ export interface PageDone {
 
 export type PagePhase = "idle" | "finding" | "found" | "placing" | "done";
 
+/**
+ * The live transfer offer (#4380, docs/design/coordinator-call-me-now.html). Asked when the
+ * customer is found and again when Transfer now is pressed, since the count reserves
+ * nothing. Booking is never held up by it: every booking event works in every state here.
+ */
+export type PageTransfer =
+  /** No customer yet. */
+  | { kind: "none" }
+  /** Asked when the customer was found; nothing is drawn until it answers. */
+  | { kind: "checking"; seq: number }
+  /** Enough advisors free: the card with the line and Transfer now. */
+  | { kind: "offered"; line: string }
+  /** Transfer now pressed: asked again. */
+  | { kind: "rechecking"; seq: number; line: string }
+  /** The re-check still found enough free: transfer now. */
+  | { kind: "confirmed"; line: string }
+  /** The re-check found too few: said plainly, booking as it is. */
+  | { kind: "gone" }
+  /** The first check found too few: nothing drawn. */
+  | { kind: "busy" }
+  /** The count could not be read: the plain line, never the card. */
+  | { kind: "unreadable" };
+
 export interface PageState {
   phase: PagePhase;
   lead: string;
@@ -98,6 +128,12 @@ export interface PageState {
   /** When the running lookup or booking started, for its still working count. */
   startedAt: number | null;
   done: PageDone | null;
+  /** The live transfer offer (#4380). */
+  transfer: PageTransfer;
+  /** Bumped per transfer check the page starts; an answer for an older one is ignored. */
+  transferSeq: number;
+  /** When the running Transfer now re-check started, for its still working count. */
+  transferStartedAt: number | null;
 }
 
 export function initialPageState(): PageState {
@@ -121,6 +157,9 @@ export function initialPageState(): PageState {
     submissionId: null,
     startedAt: null,
     done: null,
+    transfer: { kind: "none" },
+    transferSeq: 0,
+    transferStartedAt: null,
   };
 }
 
@@ -142,6 +181,9 @@ export type PageEvent =
   | { type: "placePressed"; submissionId: string; at: number }
   | { type: "placeAnswered"; seq: number; outcome: PlaceAnswer }
   | { type: "placeNoAnswer"; seq: number }
+  | { type: "transferAnswered"; seq: number; answer: TransferAnswer }
+  | { type: "transferNoAnswer"; seq: number }
+  | { type: "transferPressed"; at: number }
   | { type: "again" };
 
 // ---- The rules -------------------------------------------------------------------------------
@@ -222,7 +264,20 @@ export function reducePage(s: PageState, e: PageEvent): PageState {
         return { ...s, phase: s.found ? "found" : "idle", refusal: failed, startedAt: null };
       }
       if (!e.answer.ok) return s;
-      return { ...s, ...clearedBooking, phase: "found", refusal: null, startedAt: null, found: foundOf(e.answer) };
+      // #4380: every customer found is asked about afresh, so one customer's offer is never
+      // drawn for the next.
+      const transferSeq = s.transferSeq + 1;
+      return {
+        ...s,
+        ...clearedBooking,
+        phase: "found",
+        refusal: null,
+        startedAt: null,
+        found: foundOf(e.answer),
+        transfer: { kind: "checking", seq: transferSeq },
+        transferSeq,
+        transferStartedAt: null,
+      };
     }
     case "toldChanged":
       if (!isMove(s) || busy(s) || s.phase === "done") return s;
@@ -289,9 +344,32 @@ export function reducePage(s: PageState, e: PageEvent): PageState {
       }
       return back;
     }
+    case "transferAnswered":
+    case "transferNoAnswer": {
+      const t = s.transfer;
+      if ((t.kind !== "checking" && t.kind !== "rechecking") || e.seq !== t.seq) return s;
+      const answer: TransferAnswer = e.type === "transferNoAnswer" ? { kind: "unreadable" } : e.answer;
+      let next: PageTransfer;
+      if (answer.kind === "unreadable") next = { kind: "unreadable" };
+      else if (answer.kind === "offer") next = t.kind === "checking" ? { kind: "offered", line: answer.line } : { kind: "confirmed", line: answer.line };
+      else next = t.kind === "checking" ? { kind: "busy" } : { kind: "gone" };
+      return { ...s, transfer: next, transferStartedAt: null };
+    }
+    case "transferPressed": {
+      const t = s.transfer;
+      if (s.phase === "done" || (t.kind !== "offered" && t.kind !== "confirmed")) return s;
+      const transferSeq = s.transferSeq + 1;
+      return { ...s, transfer: { kind: "rechecking", seq: transferSeq, line: t.line }, transferSeq, transferStartedAt: e.at };
+    }
     case "again":
       return initialPageState();
   }
+}
+
+/** The transfer check the page has to send now, or null (#4380). */
+export function transferRequest(s: PageState): { seq: number } | null {
+  const t = s.transfer;
+  return t.kind === "checking" || t.kind === "rechecking" ? { seq: t.seq } : null;
 }
 
 /** What the server is asked to place, once the dialog's main button was pressed; else null. */
@@ -369,6 +447,27 @@ export interface PageView {
     overlay: string | null;
   } | null;
   dialog: { title: string; when: string; moves: string | null; back: string; go: string; placing: boolean; pending: string } | null;
+  /**
+   * The live transfer offer (#4380): the card between the customer card and the booking
+   * card (D1), the plain line in its place, or nothing.
+   */
+  transfer:
+    | {
+        kind: "card";
+        heading: string;
+        lead: string;
+        /** The transfer line, shown once (D2). */
+        line: string;
+        button: string;
+        pending: boolean;
+        pendingLabel: string;
+        /** What the last press found, or null before one. */
+        status: string | null;
+        /** The way back to booking, which stays on screen below (D3). */
+        fallback: string;
+      }
+    | { kind: "line"; text: string }
+    | null;
   done: { heading: string; when: string; with: string; link: string | null; by: string; again: string } | null;
   /** The polite live region's text. */
   live: string;
@@ -387,6 +486,7 @@ export function pageView(s: PageState, ctx: { nowMs: number; reasons: readonly {
       notice: null,
       booking: null,
       dialog: null,
+      transfer: null,
       done: {
         heading: d.moved ? o.moved : o.booked,
         when: whenOf(d.startsAt, zone),
@@ -399,7 +499,7 @@ export function pageView(s: PageState, ctx: { nowMs: number; reasons: readonly {
     };
   }
   const lead = { value: s.lead, finding: s.phase === "finding", refusal: s.refusal };
-  if (!f) return { lead, customer: null, notice: null, booking: null, dialog: null, done: null, live: "" };
+  if (!f) return { lead, customer: null, notice: null, booking: null, dialog: null, transfer: null, done: null, live: "" };
 
   const c = f.customer;
   const first = firstOf(c);
@@ -519,5 +619,23 @@ export function pageView(s: PageState, ctx: { nowMs: number; reasons: readonly {
 
   // Said on every press on the locked card; a changed string, so a repeat is spoken.
   const live = locked && s.said > 0 ? lockedSay + (s.said % 2 ? "" : " ") : "";
-  return { lead, customer, notice, booking, dialog, done: null, live };
+  return { lead, customer, notice, booking, dialog, transfer: transferView(s.transfer, first), done: null, live };
+}
+
+function transferView(t: PageTransfer, first: string): PageView["transfer"] {
+  const w = COPY.transfer;
+  if (t.kind === "unreadable") return { kind: "line", text: w.unreadable };
+  if (t.kind === "gone") return { kind: "line", text: w.gone };
+  if (t.kind !== "offered" && t.kind !== "rechecking" && t.kind !== "confirmed") return null;
+  return {
+    kind: "card",
+    heading: w.heading,
+    lead: fillCopy(w.lead, { first }),
+    line: t.line,
+    button: w.button,
+    pending: t.kind === "rechecking",
+    pendingLabel: w.pending,
+    status: t.kind === "confirmed" ? fillCopy(w.stillFree, { first }) : null,
+    fallback: w.fallback,
+  };
 }
