@@ -132,6 +132,12 @@ interface ManageBookingProps {
    * cancelled call, or a stored time the builder could not read.
    */
   calendarLinks?: CalendarLinks | null;
+  /**
+   * #4389: a signed token saying this booking is a program lead's, so its move may use
+   * the placeholder's extra times. Minted on the server from `bookings.program_lead`;
+   * read by the reschedule times (#4390) and the move (#4391). Null for every other call.
+   */
+  programLeadMoveToken?: string | null;
 }
 
 

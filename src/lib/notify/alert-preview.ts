@@ -6666,7 +6666,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
 
   // --- the hourly and every-minute lanes ---------------------------------------
   { key: "agent_sync_failures", state: "consecutive failures", channel: "alert",
-    text: agentSyncFailureAlert("SF token failed: 522 error code: 522") },
+    text: agentSyncFailureAlert("SF token failed: 522 error code: 522", PREVIEW_APP_URL) },
   { key: "agent_sync_failures", state: "working again", channel: "recovery",
     text: agentSyncRecovery() },
   // #2097. Each of the five refusals reads differently, and the two that matter most

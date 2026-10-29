@@ -336,6 +336,12 @@ export interface SyncResult {
    * silently missing from the roster.
    */
   outsideDomainSkipped: number;
+  /**
+   * Rows Slate ALREADY holds on an outside address that this run wrote nothing to,
+   * neither a refresh nor a Salesforce id (`upsertableByAddress`): a departed agent
+   * who left with one, or a coordinator on their own.
+   */
+  outsideDomainNotRefreshed: number;
   /** Emails made bookable this run because Salesforce moved them to Sales or gave
    *  them a first debt team, through the same gated service the admin toggle uses. */
   bookableFlipped: string[];
@@ -496,6 +502,25 @@ interface PlannedFlip {
 }
 
 /**
+ * Whether a row Slate already holds may be named in a batched upsert on `id`, the
+ * shape both the attribute refresh and the Salesforce id link write in.
+ *
+ * Postgres judges `users_outside_email_is_coordinator` (0212) against the PROPOSED
+ * INSERT tuple before ON CONFLICT finds the stored row, and that tuple carries the
+ * column defaults (role `agent`, no `deactivated_at`) for every column the payload
+ * leaves out. So an outside address is refused there even when the stored row is a
+ * departed agent or a coordinator the constraint allows, and that one row fails the
+ * whole batch: every hourly sync from 0212 until this fix, paged 2026-10-29 and
+ * reproduced against a real Postgres 16. The same statement as a plain UPDATE
+ * passes. Neither kind of row is anybody the hourly refresh needs to touch, so they
+ * are left out and counted rather than echoing `role` and `deactivated_at`, whose
+ * writers are elsewhere.
+ */
+function upsertableByAddress(email: string, hostedDomain: string): boolean {
+  return isAllowedEmail(email, hostedDomain);
+}
+
+/**
  * Syncs active Salesforce agents into Slate `users`, matched by email: anybody
  * on the Sales or Chatter Free profile, plus anybody carrying a debt team on any
  * other profile (#2071). New agents come in bookable=false, and become bookable
@@ -540,6 +565,8 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   const hostedDomain = deps.hostedDomain();
   /** Addresses this run would have created and left out as outside the domain. */
   const outsideDomain = new Set<string>();
+  /** Rows already held on an outside address, which no batched upsert may name. */
+  const outsideDomainHeld = new Set<string>();
 
   // Every (email, Salesforce Id) pair this run observes, from whichever query
   // happened to return it (#1587). Collected as the queries run rather than
@@ -622,7 +649,9 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     if (!email || placeholderEmails.has(email)) continue;
     const attributes = toAttributes(u);
     const current = byEmail.get(email);
-    if (current) {
+    if (current && !upsertableByAddress(email, hostedDomain)) {
+      outsideDomainHeld.add(email);
+    } else if (current) {
       const plan = planOnboardingFlip({
         prev: current.attributes ?? {},
         next: attributes,
@@ -733,6 +762,13 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   for (const batch of chunkRows(updates, 200)) {
     const { error } = await db.from("users").upsert(batch, { onConflict: "id" });
     if (error) throw new Error(`SF agent update batch failed: ${error.message}`);
+  }
+
+  if (outsideDomainHeld.size > 0) {
+    log.info("sf-sync", {
+      msg: "left rows already held on an outside address out of the refresh, since a batched upsert cannot name them",
+      count: outsideDomainHeld.size,
+    });
   }
 
   if (inserts.length) {
@@ -1109,7 +1145,13 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   // overwritten, never cleared" a property of the write rather than a promise
   // about it, and it makes the second run of an unchanged roster write literally
   // nothing.
-  const idWrites: Partial<User>[] = idPlan.assign.map((a) => ({
+  const idAssign = idPlan.assign.filter((a) => {
+    const email = normalizeEmail(emailById.get(a.userId) ?? a.email);
+    if (upsertableByAddress(email, hostedDomain)) return true;
+    outsideDomainHeld.add(email);
+    return false;
+  });
+  const idWrites: Partial<User>[] = idAssign.map((a) => ({
     id: a.userId,
     org_id: org.id,
     email: emailById.get(a.userId) ?? a.email,
@@ -1134,7 +1176,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     });
   }
   const idReport = {
-    linked: idPlan.assign.length,
+    linked: idAssign.length,
     disagreements: idPlan.disagreements.length,
     ambiguous: idPlan.ambiguous.length,
     claimed: idPlan.claimed.length,
@@ -1364,6 +1406,7 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     bookableDeferredToNextRun,
     managersCreated: managersToInsert.length,
     outsideDomainSkipped: outsideDomain.size,
+    outsideDomainNotRefreshed: outsideDomainHeld.size,
     managersLinked,
     managersUnlinked,
     managersUnresolved: managerRefusals.missing.length,
