@@ -1254,7 +1254,8 @@ median of 653ms and a p95 of 1874ms that leads felt. This check reads the databa
 memory in use (total RAM minus what Linux reports available) and swap straight from
 Supabase's privileged metrics endpoint, so the class pages on the cause rather than on the
 latency symptom. The page fires when 90% or more of memory is in use for two consecutive
-ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%.
+ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%,
+and also when committed memory reaches 95% of the kernel's commit limit (below).
 
 It first judged committed memory against the kernel's commit limit instead. That limit is
 enforced only in strict overcommit mode, which Supabase does not use, and on the Large

@@ -307,14 +307,15 @@ export async function fetchDbSaturationMetrics(): Promise<string> {
 /**
  * One monitor tick. The states, deliberately distinct:
  *
- * The PAGE is driven by MEMORY IN USE alone; swap only ever adds a whisper, never the
- * page or its resolution (so residual swap cannot hold the page open, #3588 review). States:
+ * The PAGE is driven by MEMORY IN USE alone; swap and committed memory near the commit
+ * limit only ever add a whisper, never the page or its resolution (so residual swap cannot hold the page open, #3588 review). States:
  *
  *  - PAGE (in use >= 90%): count toward the streak, page once sustained two ticks.
  *  - WARN (in use 80 to 90%): HOLD a standing page open (hysteresis), reset the page
  *    streak so re-entry debounces, and whisper. The page does NOT clear here.
  *  - OK (in use < 80%): the page is genuinely over, so clear and resolve it. If swap is
- *    still in use the whisper continues (advisory), but the page stays resolved.
+ *    still in use, or committed memory is near the commit limit, the whisper continues
+ *    (advisory), but the page stays resolved.
  *  - CONFIGURED BUT BLIND (fetch failed, or a body the parser cannot read): THROWS. The
  *    throw is contained by the lane's per-check `steps.run` boundary, and a sustained one
  *    pages through `monitor_step_failing:db_saturation`, so a renamed metric or a dead
