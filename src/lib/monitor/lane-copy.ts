@@ -39,6 +39,7 @@ import {
   CALENDAR_WINDOW_VERDICT_LANE,
   OFFSITE_ORIGIN_VERDICT_LANE,
   AUTH_SIGN_IN_VERDICT_LANE,
+  AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE,
   AWAITING_ACTIVATION_VERDICT_LANE,
   STRANDED_HIRES_VERDICT_LANE,
   AUDIT_CHAIN_VERDICT_LANE,
@@ -626,9 +627,14 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
     look: 'the Worker logs for msg="offsite origin unreadable" under tag=monitor, and whether recent bookings can be read at all',
   },
   [AUTH_SIGN_IN_VERDICT_LANE]: {
-    what: "the check asking whether Supabase Auth in production accepts anything but Google sign in",
+    what: "the check asking whether Supabase Auth in production accepts anything but Google, and Microsoft for invited coordinators",
     cost: "email sign in or another provider could be turned back on with nobody told",
     look: 'the Worker logs for tag=auth-sign-in, and whether /auth/v1/settings answers with the public key',
+  },
+  [AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE]: {
+    what: "the check asking whether anybody signed in by a way other than Google or Microsoft, or holds an account no coordinator is behind",
+    cost: "a sign in by email, or a removed coordinator's account left behind, would go unnoticed",
+    look: 'the Worker logs for tag=auth-unexpected-sign-in, and whether auth.mfa_amr_claims still gains a row when somebody signs in',
   },
   [AWAITING_ACTIVATION_VERDICT_LANE]: {
     what: "the check asking whether anybody the roster counts as working has been stuck waiting to become bookable",

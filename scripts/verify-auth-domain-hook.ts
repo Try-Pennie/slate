@@ -1,29 +1,43 @@
-// #3082: the before_user_created domain gate, proved against the REAL auth server.
+// #3082, #4379: the before_user_created gate, proved against the REAL auth server and the
+// REAL users table.
 //
-// The offline suite (scripts/test-auth-domain-hook.ts) proves the migration, the
-// local config and the app's domain agree as TEXT. It cannot prove that GoTrue
-// calls the function, reads its reply as a refusal, and creates no account, and a
-// mocked auth server would agree with whatever it was told (L52). So this starts
-// Supabase's own Postgres image and Supabase's own auth server in Docker, applies
-// the hook migration VERBATIM, registers the hook exactly as config.toml does, and
-// signs up through the auth API:
+// The offline suite (scripts/test-auth-domain-hook.ts) proves the migration, the local
+// config and the app's domain agree as TEXT. It cannot prove that GoTrue calls the
+// function, reads its reply as a refusal, and creates no account, and a mocked auth server
+// would agree with whatever it was told (L52). Since #4379 the hook also READS
+// public.users (an invited coordinator may be created through Microsoft), so it is proved
+// on the schema production has: Supabase's own Postgres image, which carries the
+// platform's default grants to anon and authenticated (L714), with EVERY migration
+// replayed into it the way `supabase db push` applies them, row level security and all.
+// Then Supabase's own auth server runs against it with the hook registered exactly as
+// config.toml does.
 //
-//   - an outside address, a subdomain and a suffix lookalike are each refused
-//     with 403 and leave no auth.users row;
-//   - a trypennie.com address (in mixed case) is created;
-//   - the CONTROL: the same outside address signs up fine with the hook switched
-//     off, so the refusals above are the hook's and not something else refusing
-//     every signup (L1, L159);
-//   - anon and authenticated cannot execute the function; supabase_auth_admin can.
+// What is proved:
 //
-// It signs up through the email route because that is the one an auth API call
-// can drive without a browser. The hook runs for EVERY way an account is created
-// (Google included), which is what makes one function the gate for all of them.
+//   - THE EVENT GoTrue really sends. A capture hook records the payload of a real signup,
+//     so the azure cases below are that same payload with the provider changed, never a
+//     shape somebody remembered (L620): the provider is read where GoTrue puts it.
+//   - THE RULE, asked of the function as GoTrue's own role, against seeded rows: an
+//     invited coordinator through azure is allowed (in any letter case); an uninvited
+//     address, a deactivated coordinator, an already linked one, the invited address
+//     through the email provider, trypennie.com through azure and through email are all
+//     refused; trypennie.com through google is allowed.
+//   - THROUGH THE AUTH SERVER: with the hook on, the invited coordinator's address, a
+//     trypennie.com address and an outsider each sign up through email and are refused
+//     with 403 and no auth.users row. The CONTROL: the same outsider signs up with the
+//     hook off, so the refusals were the hook's (L1, L159).
+//   - users_outside_email_is_coordinator refuses an outside address on any other ACTIVE
+//     row, allows a departed one, and refuses returning it as anything but a coordinator.
+//   - auth_sign_in_methods reads the claim GoTrue really writes: a password session made
+//     here comes back as method `password` with its address, through service_role, and the
+//     OAuth positive control counts an OAuth claim and nothing else.
+//   - Who may execute: anon and authenticated may run neither function;
+//     supabase_auth_admin runs the hook and service_role the sign in method read.
 //
-// It writes nothing outside its own containers, which it removes on the way out.
-// Deliberately not named test-*.ts: that glob is the offline unit suite, and this
-// needs Docker. No Docker, or a container that will not start, is exit 2, never a
-// pass (L98, L411).
+// It writes nothing outside its own containers, which it removes on the way out. Not
+// named test-*.ts: that glob is the offline unit suite, and this needs Docker. No Docker,
+// a container that will not start, or an image without the platform's default grants is
+// exit 2, never a pass (L98, L411).
 //
 // Run: pnpm verify:auth-domain-hook
 import { execFileSync } from "node:child_process";
@@ -31,21 +45,37 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { assert, eq, finish } from "./lib/harness.ts";
 import { findAuthHookMigration } from "./lib/auth-domain-hook-wiring.ts";
+import { startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
+import {
+  CLI_HISTORY_TABLE_SQL,
+  judgeDefaultGrants,
+  migrationPlan,
+  replayMigrations,
+} from "./lib/migration-replay.ts";
 
 const ROOT = join(import.meta.dirname, "..");
-const MIGRATIONS = join(ROOT, "supabase", "migrations");
-// Found by name, the same way the offline test finds it, because the number moves
-// whenever another migration merges first. Zero or several is a refusal, exit 1,
-// before any container starts: it is a fault in the tree, not a missing Docker.
-const found = findAuthHookMigration(readdirSync(MIGRATIONS));
+// Overridable only so the run can be pointed at a scratch copy, which is how this suite
+// was seen to FAIL on the tree before #4379 (the azure cases refused by 0159's hook).
+const MIGRATIONS = process.env.AUTH_HOOK_MIGRATIONS_DIR || join(ROOT, "supabase", "migrations");
+// Found by what it defines, the same way the offline test finds it. None is a refusal,
+// exit 1, before any container starts: it is a fault in the tree, not a missing Docker.
+const names = readdirSync(MIGRATIONS);
+const found = findAuthHookMigration(
+  names.filter((f) => f.endsWith(".sql")).map((name) => ({ name, sql: readFileSync(join(MIGRATIONS, name), "utf8") })),
+);
 if ("refusal" in found) {
-  console.error(`REFUSED: ${found.refusal}. There is no single migration to prove, so nothing was run.`);
+  console.error(`REFUSED: ${found.refusal}. There is no hook to prove, so nothing was run.`);
   process.exit(1);
 }
-const MIGRATION = readFileSync(join(MIGRATIONS, found.file), "utf8");
+const plan = migrationPlan(names);
+if (!plan.ok) {
+  console.error(`REFUSED: ${plan.error}`);
+  process.exit(1);
+}
 const PG_IMAGE = process.env.AUTH_HOOK_PG_IMAGE ?? "supabase/postgres:17.6.1.175";
 const AUTH_IMAGE = process.env.AUTH_HOOK_GOTRUE_IMAGE ?? "public.ecr.aws/supabase/gotrue:v2.196.0";
 const HOOK_URI = "pg-functions://postgres/public/before_user_created_domain_gate";
+const CAPTURE_URI = "pg-functions://postgres/public/verify_capture_before_user_created";
 const TAG = `slate-auth-hook-${process.pid}`;
 const NET = TAG;
 const DB = `${TAG}-db`;
@@ -56,21 +86,22 @@ function docker(args: string[], input?: string): string {
   return execFileSync("docker", args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
 }
 
-function sql(text: string, user = "postgres"): string {
-  return docker(["exec", "-i", DB, "psql", "-h", "localhost", "-U", user, "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"], text);
-}
-
-function sqlError(text: string, user = "postgres"): string | null {
-  try {
-    sql(text, user);
-    return null;
-  } catch (err) {
-    return String((err as { stderr?: string }).stderr ?? err);
-  }
-}
-
 function sleep(seconds: number): void {
   execFileSync("sleep", [String(seconds)]);
+}
+
+const pg = startThrowawayPostgres(DB, PG_IMAGE);
+const { sql, sqlError } = pg;
+
+function cleanup(): void {
+  for (const args of [["rm", "-f", AUTH], ["network", "rm", NET]]) {
+    try {
+      docker(args);
+    } catch {
+      // Already gone.
+    }
+  }
+  pg.stop();
 }
 
 function unmeasured(why: string): never {
@@ -79,18 +110,8 @@ function unmeasured(why: string): never {
   process.exit(2);
 }
 
-function cleanup(): void {
-  for (const args of [["rm", "-f", AUTH], ["rm", "-f", DB], ["network", "rm", NET]]) {
-    try {
-      docker(args);
-    } catch {
-      // Already gone.
-    }
-  }
-}
-
-/** Start the auth server with the hook on or off, and wait until it answers. */
-async function startAuth(hook: boolean): Promise<void> {
+/** Start the auth server with a hook (or none), and wait until it answers. */
+async function startAuth(hookUri: string | null): Promise<void> {
   try {
     docker(["rm", "-f", AUTH]);
   } catch {
@@ -109,8 +130,8 @@ async function startAuth(hook: boolean): Promise<void> {
     "-e", "GOTRUE_EXTERNAL_EMAIL_ENABLED=true",
     "-e", "GOTRUE_MAILER_AUTOCONFIRM=true",
     "-e", "GOTRUE_DISABLE_SIGNUP=false",
-    "-e", `GOTRUE_HOOK_BEFORE_USER_CREATED_ENABLED=${hook}`,
-    "-e", `GOTRUE_HOOK_BEFORE_USER_CREATED_URI=${HOOK_URI}`,
+    "-e", `GOTRUE_HOOK_BEFORE_USER_CREATED_ENABLED=${hookUri !== null}`,
+    "-e", `GOTRUE_HOOK_BEFORE_USER_CREATED_URI=${hookUri ?? HOOK_URI}`,
     AUTH_IMAGE,
   ]);
   for (let i = 0; i < 60; i++) {
@@ -134,65 +155,182 @@ async function signup(email: string): Promise<{ status: number; body: string }> 
   return { status: r.status, body: await r.text() };
 }
 
-const usersWith = (email: string) =>
-  sql(`select count(*) from auth.users where lower(email) = lower('${email.replace(/'/g, "''")}');`);
-
-try {
-  docker(["version", "--format", "{{.Server.Version}}"]);
-} catch {
-  console.error("UNMEASURED: Docker is not available here, so nothing was proved.");
-  process.exit(2);
+async function passwordSignIn(email: string): Promise<number> {
+  const r = await fetch(`http://127.0.0.1:${PORT}/token?grant_type=password`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ email, password: "a-throwaway-password-1" }),
+  });
+  await r.text();
+  return r.status;
 }
 
+const q = (s: string) => `'${s.replace(/'/g, "''")}'`;
+const usersWith = (email: string) => sql(`select count(*) from auth.users where lower(email) = lower(${q(email)});`);
+
+/** One batch as the image's true superuser, the only role that may become GoTrue's. */
+const superSql = (text: string): string =>
+  docker(["exec", "-i", DB, "psql", "-U", "supabase_admin", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-qtAX", "-f", "-"], text);
+
+/** The hook's answer to one event, asked as the role GoTrue runs it as. */
+const ask = (event: unknown) =>
+  superSql(`set role supabase_auth_admin; select public.before_user_created_domain_gate(${q(JSON.stringify(event))}::jsonb)::text;`);
+const allowed = (reply: string) => reply === "{}";
+const refused = (reply: string) => /"http_code": 403/.test(reply);
+
+const ORG = "00000000-0000-4000-8000-000000000001";
+const INVITED = "Dana.Coordinator@Partner.example";
+const LINKED_AUTH = "00000000-0000-4000-8000-0000000000aa";
+
 try {
+  // --- the precondition: the platform's default grants are really here ------------
+  const acl = sql(`select pg_get_userbyid(defaclrole), defaclnamespace::regnamespace::text, defaclobjtype::text, defaclacl::text from pg_default_acl;`)
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => l.split("|"))
+    .map(([owner, schema, type, a]) => ({ owner: owner ?? "", schema: schema ?? "", type: type ?? "", acl: a ?? "" }));
+  const missingGrants = judgeDefaultGrants(acl);
+  if (missingGrants.length > 0) unmeasured(`${PG_IMAGE} lacks the platform's default grants (${missingGrants.join("; ")})`);
+
+  // --- every migration, as db push applies them ------------------------------------
+  sql(CLI_HISTORY_TABLE_SQL);
+  const applied = replayMigrations(
+    plan.files,
+    (file) => readFileSync(join(MIGRATIONS, file), "utf8"),
+    (batch) => void sql(batch, undefined, { singleTransaction: true }),
+  );
+  eq(applied, plan.files.length, `every migration applied to an empty database, the hook from ${found.file}`);
+  eq(sql("select relrowsecurity from pg_class where oid = 'public.users'::regclass;"), "t", "the users table the hook reads has row level security on");
+
+  // The image creates supabase_auth_admin with no usable password; the hosted project and
+  // the CLI's local stack both set one, which is all this does.
+  // As the image's true superuser, since `postgres` may not alter that role.
+  superSql("alter role supabase_auth_admin with password 'postgres';");
   try {
     docker(["network", "create", NET]);
-    docker(["run", "-d", "--name", DB, "--network", NET, "-e", "POSTGRES_PASSWORD=postgres", PG_IMAGE]);
+    docker(["network", "connect", "--alias", DB, NET, DB]);
   } catch (err) {
-    unmeasured(`the ${PG_IMAGE} container could not start (${err instanceof Error ? err.message.split("\n")[0] : String(err)})`);
+    unmeasured(`the Docker network could not be made (${err instanceof Error ? err.message.split("\n")[0] : String(err)})`);
   }
-  let ready = false;
-  for (let i = 0; i < 60 && !ready; i++) {
-    try {
-      sql("select 1;");
-      ready = true;
-    } catch {
-      sleep(1);
-    }
+
+  // --- the seeded roster the rule reads ---------------------------------------------
+  sql(`
+    insert into organizations (id, name, is_default) values ('${ORG}', 'Pennie', true);
+    insert into auth.users (id, email) values ('${LINKED_AUTH}', 'already.linked@partner.example');
+    insert into users (org_id, email, role, bookable) values
+      ('${ORG}', ${q(INVITED.toLowerCase())}, 'coordinator', false),
+      ('${ORG}', 'left.already@partner.example', 'coordinator', false),
+      ('${ORG}', 'staff.person@trypennie.com', 'agent', false);
+    update users set deactivated_at = now() where email = 'left.already@partner.example';
+    insert into users (org_id, email, role, bookable, auth_user_id)
+      values ('${ORG}', 'already.linked@partner.example', 'coordinator', false, '${LINKED_AUTH}');
+  `);
+
+  // --- users_outside_email_is_coordinator --------------------------------------------
+  for (const role of ["agent", "manager", "admin"]) {
+    const why = sqlError(`insert into users (org_id, email, role, bookable) values ('${ORG}', 'outside.${role}@partner.example', '${role}', false);`) ?? "";
+    assert(/users_outside_email_is_coordinator/.test(why), `an outside address as ${role} is refused by users_outside_email_is_coordinator`);
   }
-  if (!ready) unmeasured("the Postgres container never accepted a connection");
+  eq(
+    sqlError(`insert into users (org_id, email, role, bookable) values ('${ORG}', 'second.coordinator@partner.example', 'coordinator', false);`),
+    null,
+    "control: an outside address as a coordinator is accepted",
+  );
+  // The CHECK binds only rows that can sign in. Production holds one departed agent on an
+  // outside address who never signed in (measured 2026-10-29), so a departed row keeps
+  // its address; returning it clears deactivated_at, and the CHECK then speaks.
+  eq(
+    sqlError(`insert into users (org_id, email, role, bookable, deactivated_at) values ('${ORG}', 'departed.agent@halo-lab.example', 'agent', false, now());`),
+    null,
+    "a departed agent on an outside address is allowed, the shape production holds",
+  );
+  assert(
+    /users_outside_email_is_coordinator/.test(
+      sqlError(`update users set deactivated_at = null where email = 'departed.agent@halo-lab.example';`) ?? "",
+    ),
+    "returning that departed outside row as an agent is refused",
+  );
+  eq(
+    sqlError(`update users set role = 'coordinator', deactivated_at = null where email = 'departed.agent@halo-lab.example';`),
+    null,
+    "returning it as a coordinator is allowed",
+  );
 
-  // The image creates supabase_auth_admin with no usable password; the hosted
-  // project and the CLI's local stack both set one, which is all this does.
-  sql("alter role supabase_auth_admin with password 'postgres';", "supabase_admin");
-  sql(MIGRATION);
-
-  // --- who can execute it ---------------------------------------------------
-  const call = `select public.before_user_created_domain_gate('{"user":{"email":"a@trypennie.com"}}'::jsonb);`;
-  // As the superuser, so SET ROLE itself can never be what refuses; the message is
-  // matched so a refusal for any other reason does not read as the revoke (L140).
+  // --- who can execute -----------------------------------------------------------------
+  const probe = `select public.before_user_created_domain_gate('{"user":{"email":"a@trypennie.com","app_metadata":{"provider":"google"}}}'::jsonb);`;
+  const methods = `select public.auth_sign_in_methods(now() - interval '1 day', now() - interval '7 days');`;
   for (const role of ["anon", "authenticated"]) {
-    const refused = sqlError(`set role ${role}; ${call}`, "supabase_admin") ?? "";
-    assert(/permission denied for function before_user_created_domain_gate/.test(refused), `${role} cannot execute the hook`);
+    assert(/permission denied for function before_user_created_domain_gate/.test(sqlError(probe, role) ?? ""), `${role} cannot execute the hook`);
+    assert(/permission denied for function auth_sign_in_methods/.test(sqlError(methods, role) ?? ""), `${role} cannot execute the sign in method read`);
   }
-  eq(sql(`set role supabase_auth_admin; ${call}`, "supabase_admin"), "{}", "supabase_auth_admin can, and a Workspace address is allowed");
 
-  // --- the hook on ----------------------------------------------------------
-  await startAuth(true);
-  for (const email of ["outsider@example.com", "someone@evil.trypennie.com", "someone@trypennie.com.evil.com"]) {
+  // --- the event GoTrue really sends -------------------------------------------------
+  sql(`
+    create table public.verify_captured_events (event jsonb not null);
+    alter table public.verify_captured_events enable row level security;
+    create function public.verify_capture_before_user_created(event jsonb) returns jsonb
+      language plpgsql security definer set search_path = pg_catalog as $$
+      begin insert into public.verify_captured_events values (event); return '{}'::jsonb; end; $$;
+    grant execute on function public.verify_capture_before_user_created(jsonb) to supabase_auth_admin;
+  `);
+  await startAuth(CAPTURE_URI);
+  const captureSignup = await signup("capture.probe@trypennie.com");
+  eq(captureSignup.status, 200, "the capture hook's empty reply lets the signup through, as the gate's allowed reply does");
+  const captured = JSON.parse(sql("select event::text from public.verify_captured_events limit 1;") || "null") as {
+    user?: { email?: string; app_metadata?: { provider?: string } };
+  } | null;
+  eq(captured?.user?.app_metadata?.provider, "email", "GoTrue sends the provider at user.app_metadata.provider, where the gate reads it");
+  eq(captured?.user?.email, "capture.probe@trypennie.com", "and the address at user.email");
+  // Asked here, once GoTrue has run its own migrations and auth.mfa_amr_claims exists.
+  eq(sqlError(methods, "service_role"), null, "service_role can execute the sign in method read, as the Worker's secret key client");
+  const as = (email: string, provider: string) => ({
+    ...captured,
+    user: { ...captured?.user, email, app_metadata: { ...captured?.user?.app_metadata, provider, providers: [provider] } },
+  });
+
+  // --- the rule, asked as GoTrue's own role --------------------------------------------
+  assert(allowed(ask(as(INVITED.toLowerCase(), "azure"))), "an invited coordinator through azure is allowed");
+  assert(allowed(ask(as(INVITED, "azure"))), "and in any letter case, since the address is compared lowercased");
+  assert(refused(ask(as("nobody.invited@partner.example", "azure"))), "an uninvited address through azure is refused");
+  assert(refused(ask(as("left.already@partner.example", "azure"))), "a deactivated coordinator through azure is refused");
+  assert(refused(ask(as("already.linked@partner.example", "azure"))), "a coordinator already linked to a sign in is refused");
+  assert(refused(ask(as(INVITED.toLowerCase(), "email"))), "the invited address through the email provider is refused");
+  assert(refused(ask(as(INVITED.toLowerCase(), "google"))), "the invited address through google is refused");
+  assert(refused(ask(as("staff.person@trypennie.com", "azure"))), "a trypennie.com address through azure is refused");
+  assert(refused(ask(as("staff.person@trypennie.com", "email"))), "a trypennie.com address through email is refused");
+  assert(allowed(ask(as("staff.person@trypennie.com", "google"))), "a trypennie.com address through google is allowed");
+  assert(allowed(ask(as("Someone.New@TryPennie.com", "google"))), "and so is a new staff address in mixed case");
+  assert(refused(ask(as("someone@evil.trypennie.com", "google"))), "a subdomain lookalike through google is refused");
+  assert(refused(ask(as("someone@trypennie.com.evil.com", "azure"))), "a suffix lookalike through azure is refused");
+
+  // --- through the auth server, with the gate on --------------------------------------
+  await startAuth(HOOK_URI);
+  for (const email of [INVITED, "Verify.Probe@TryPennie.com", "outsider@example.com", "someone@evil.trypennie.com"]) {
     const r = await signup(email);
-    eq(r.status, 403, `${email} is refused by the auth server`);
-    assert(/trypennie\.com Google accounts only/.test(r.body), `${email} is refused with the hook's own message`);
+    eq(r.status, 403, `${email} through the email provider is refused by the auth server`);
+    assert(/Slate accepts|Pennie staff sign in/.test(r.body), `${email} is refused with the hook's own message`);
     eq(usersWith(email), "0", `${email} leaves no auth.users row`);
   }
-  const staff = await signup("Verify.Probe@TryPennie.com");
-  eq(staff.status, 200, "a trypennie.com address in mixed case is created");
-  eq(usersWith("verify.probe@trypennie.com"), "1", "and its auth.users row exists");
 
-  // --- the control: the same outsider with the hook off ----------------------
-  await startAuth(false);
+  // --- the control: the same outsider with no gate, and the sign in method read -------
+  await startAuth(null);
   const control = await signup("outsider@example.com");
-  eq(control.status, 200, "control: with the hook off the same outside address signs up, so the refusals were the hook's");
+  eq(control.status, 200, "control: with no hook the same outside address signs up, so the refusals were the hook's");
+  eq(await passwordSignIn("outsider@example.com"), 200, "and signs in with a password, which its session's amr claim records");
+  type MethodsReading = { oauth_control: number; methods: { method: string; sessions: number; actors: string[] }[] };
+  const reading = JSON.parse(sql(methods, "service_role")) as MethodsReading;
+  const byPassword = reading.methods.find((m) => m.method === "password");
+  assert(Boolean(byPassword && byPassword.sessions >= 1), "a real password session comes back as a sign in by password");
+  assert(Boolean(byPassword?.actors.includes("outsider@example.com")), "naming the address that signed in");
+  eq(reading.oauth_control, 0, "and with no OAuth sign in in the week the control is zero, which the monitor reads as unmeasured");
+  // The control counts what it says: one OAuth claim on that real session, written the
+  // way GoTrue writes one, moves it to one. (No OAuth sign in can be driven offline.)
+  sql(`insert into auth.mfa_amr_claims (id, session_id, created_at, updated_at, authentication_method)
+       select gen_random_uuid(), s.id, now(), now(), 'oauth' from auth.sessions s
+       join auth.users u on u.id = s.user_id where u.email = 'outsider@example.com' limit 1;`);
+  eq((JSON.parse(sql(methods, "service_role")) as MethodsReading).oauth_control, 1, "an OAuth claim in the week is counted by the control");
+  const old = `select public.auth_sign_in_methods(now() + interval '1 minute', now() - interval '7 days');`;
+  eq((JSON.parse(sql(old, "service_role")) as MethodsReading).methods, [], "a session made before the window is not a finding");
 } catch (err) {
   assert(false, `the run threw: ${err instanceof Error ? err.message : String(err)}`);
 } finally {

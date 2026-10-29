@@ -13,6 +13,7 @@ import {
   SeveralGoogleAccountsError,
   judgeGoogleIdentity,
 } from "@/lib/auth/google-identity";
+import { CoordinatorNotInvitedError, MicrosoftAccountMismatchError } from "@/lib/auth/microsoft-identity";
 import type { Organization, User } from "@/lib/db/types";
 
 const DEFAULT_ORG_NAME = "Pennie";
@@ -101,6 +102,24 @@ async function readUserBy(
 }
 
 /**
+ * The refusals every sign in shares, judged on the row it found BEFORE anything is
+ * written to it (#2378, #4205): somebody who has left gets no session however good
+ * their account still is, and nobody signs in as the placeholder advisor. One place,
+ * so the Google sign in (`provisionUser`) and the Microsoft one (`linkCoordinator`)
+ * cannot come to differ about either.
+ */
+function settledRefusal(row: User | null): "deactivated" | "placeholder" | null {
+  if (isDeactivated(row)) return "deactivated";
+  if (isPlaceholderAccount(row)) return "placeholder";
+  return null;
+}
+
+/** The settled refusal as the error the sign in callback tells apart. */
+function settledRefusalError(kind: "deactivated" | "placeholder"): Error {
+  return kind === "deactivated" ? new DeactivatedAccountError() : new PlaceholderAccountError();
+}
+
+/**
  * Either the person's row, or the news that a unique key refused our insert
  * because a concurrent login created it first.
  */
@@ -148,11 +167,11 @@ async function resolveOrCreateUser(
   );
   // #2378: somebody who has LEFT does not get a session, however good their
   // Google account still is. The refusal comes BEFORE the avatar refresh, so a
-  // departed row is not written to on the way out.
-  if (isDeactivated(linked)) return { kind: "deactivated" };
-  // #4205: nobody signs in as the placeholder advisor, whose row holds real
-  // customers' calls. Refused before any write, like a departure.
-  if (isPlaceholderAccount(linked)) return { kind: "placeholder" };
+  // departed row is not written to on the way out. #4205: nobody signs in as the
+  // placeholder advisor, whose row holds real customers' calls. Refused before any
+  // write, like a departure.
+  const linkedRefusal = settledRefusal(linked);
+  if (linkedRefusal) return { kind: linkedRefusal };
   if (linked) {
     // #3526: this branch needs the account check as much as the email one does.
     // Supabase links a new Google identity to an existing auth user with the same
@@ -227,10 +246,10 @@ async function resolveOrCreateUser(
   const byEmail = await readUserBy("email", email, `user by email (${pass})`);
   // The same refusal, and this is the branch that mattered more: linking would
   // WRITE `auth_user_id` onto a departed row, handing a leaver a live identity
-  // the roster believes is gone.
-  if (isDeactivated(byEmail)) return { kind: "deactivated" };
-  // #4205: and never LINKED to the placeholder, which would hand a person its calls.
-  if (isPlaceholderAccount(byEmail)) return { kind: "placeholder" };
+  // the roster believes is gone. #4205: and never LINKED to the placeholder, which
+  // would hand a person its calls.
+  const byEmailRefusal = settledRefusal(byEmail);
+  if (byEmailRefusal) return { kind: byEmailRefusal };
   if (byEmail) {
     // #3526: the address found the row; the Google account says whose it is. A
     // different account is a different person on a reused address, refused here
@@ -339,10 +358,8 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   if (first.kind === "user") return first.user;
   // A deactivated account is a settled answer, not a race: retrying would read
   // the same row and refuse again, and the second pass exists only to resolve a
-  // lost insert.
-  if (first.kind === "deactivated") throw new DeactivatedAccountError();
-  // #4205: the placeholder's row is settled the same way.
-  if (first.kind === "placeholder") throw new PlaceholderAccountError();
+  // lost insert. #4205: the placeholder's row is settled the same way.
+  if (first.kind === "deactivated" || first.kind === "placeholder") throw settledRefusalError(first.kind);
   // #3526: a different person is settled too. Retrying reads the same account id
   // and refuses again, and only an admin unlinking the old account changes it.
   if (first.kind === "different-person") throw first.error;
@@ -363,11 +380,105 @@ export async function provisionUser(input: ProvisionInput): Promise<User> {
   if (second.kind === "user") return second.user;
   // The race was lost to a row belonging to somebody who has left: the same
   // refusal, reached the other way round.
-  if (second.kind === "deactivated") throw new DeactivatedAccountError();
-  if (second.kind === "placeholder") throw new PlaceholderAccountError();
+  if (second.kind === "deactivated" || second.kind === "placeholder") throw settledRefusalError(second.kind);
   // The race was lost to a sign in that recorded a different Google account on the
   // row this one found: the winner owns it now, so this one is somebody else.
   if (second.kind === "different-person") throw second.error;
 
   throw new Error(`could not provision a users row for this sign in: ${second.reason}`);
+}
+
+interface LinkCoordinatorInput {
+  authUserId: string;
+  email: string;
+  /** The Microsoft account id on the sign in, from its azure identity (`microsoftAccountIdsOf`). */
+  microsoftSub: string;
+}
+
+/** One pass of a link: the coordinator's row, or the news that the write matched nothing. */
+type LinkPass = { kind: "user"; user: User } | { kind: "lost" };
+
+/**
+ * A coordinator row already linked to this sign in's auth user, judged before it is
+ * returned: the shared settled refusals, then that it is a coordinator's row, then
+ * that the Microsoft account is the one it recorded. A linked row with none recorded
+ * belongs to a Google sign in, so a Microsoft one reaching it is somebody else.
+ */
+function judgeLinkedCoordinator(row: User, sub: string): User {
+  const refusal = settledRefusal(row);
+  if (refusal) throw settledRefusalError(refusal);
+  if (row.role !== "coordinator") throw new CoordinatorNotInvitedError();
+  if ((row.microsoft_sub ?? null) !== sub) {
+    throw new MicrosoftAccountMismatchError({ userId: row.id, why: "a different Microsoft account" });
+  }
+  return row;
+}
+
+async function linkCoordinatorPass(input: LinkCoordinatorInput, sub: string, pass: string): Promise<LinkPass> {
+  const linked = await readUserBy("auth_user_id", input.authUserId, `coordinator by auth_user_id (${pass})`);
+  if (linked) return { kind: "user", user: judgeLinkedCoordinator(linked, sub) };
+
+  // The address finds the row Team access granted, in the form it stores (#1663).
+  const row = await readUserBy("email", normalizeEmail(input.email), `coordinator by email (${pass})`);
+  if (!row) throw new CoordinatorNotInvitedError();
+  const refusal = settledRefusal(row);
+  if (refusal) throw settledRefusalError(refusal);
+  if (row.role !== "coordinator") throw new CoordinatorNotInvitedError();
+  if (row.auth_user_id !== null) {
+    throw new MicrosoftAccountMismatchError({ userId: row.id, why: "the row belongs to another sign in" });
+  }
+  const stored = row.microsoft_sub ?? null;
+  if (stored !== null && stored !== sub) {
+    throw new MicrosoftAccountMismatchError({ userId: row.id, why: "a different Microsoft account" });
+  }
+
+  // A compare and swap on everything judged above, so the write lands only on the row
+  // as it was read: still unlinked, still a coordinator, still active, still holding
+  // the account id read. Anything that moved in between matches nothing, and the
+  // second pass reads the row as it now stands.
+  const write = supabaseAdmin()
+    .from("users")
+    .update({ auth_user_id: input.authUserId, microsoft_sub: sub })
+    .eq("id", row.id)
+    .is("auth_user_id", null)
+    .eq("role", "coordinator")
+    .is("deactivated_at", null);
+  const updated = unwrap(
+    await (stored === null ? write.is("microsoft_sub", null) : write.eq("microsoft_sub", stored)).select("*").maybeSingle(),
+    `link coordinator (${pass})`,
+  );
+  return updated ? { kind: "user", user: updated as User } : { kind: "lost" };
+}
+
+/**
+ * Link a coordinator's Microsoft sign in to the row Team access granted them (#4379).
+ *
+ * The Microsoft counterpart of `provisionUser`, and deliberately narrower:
+ *
+ *  - IT NEVER INSERTS. A Microsoft account no active coordinator row holds is refused
+ *    (`CoordinatorNotInvitedError`); the before_user_created hook refuses it earlier,
+ *    and this is the same rule for an auth user that exists already.
+ *  - IT WRITES ONLY `auth_user_id` and `microsoft_sub`, as a compare and swap on
+ *    `auth_user_id is null` (and the role, the departure and the stored account as
+ *    read), so two sign ins racing for one row cannot both link it. The loser reads
+ *    the row again: its own auth user's win lets it through, anybody else's refuses.
+ *  - It shares the deactivated and placeholder refusals with the Google sign in
+ *    (`settledRefusal`), so the callback tells them apart the same way.
+ *  - Once a row holds a Microsoft account id, a different account is refused
+ *    (`MicrosoftAccountMismatchError`), as a different Google account is (#3526).
+ *
+ * Throws on an unreadable row or a refused write, never reading either as "not
+ * invited": the callback turns that into a retryable sign in error.
+ */
+export async function linkCoordinator(input: LinkCoordinatorInput): Promise<User> {
+  const sub = input.microsoftSub.trim();
+  if (!sub) throw new MicrosoftAccountMismatchError({ userId: "", why: "the sign in carried no Microsoft account id" });
+  const first = await linkCoordinatorPass(input, sub, "first pass");
+  if (first.kind === "user") return first.user;
+  // Warn, not info, for the reason provisionUser gives: a lost race is expected, and
+  // a burst of them is a fault the level makes countable (L77).
+  log.warn("provision", { msg: "lost a coordinator link race, resolving the winner" });
+  const second = await linkCoordinatorPass(input, sub, "second pass");
+  if (second.kind === "user") return second.user;
+  throw new Error("could not link this Microsoft sign in: its coordinator row changed twice mid sign in");
 }

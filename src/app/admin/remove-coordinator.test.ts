@@ -24,7 +24,15 @@ const redirect = vi.hoisted(() =>
     throw new Error(`NEXT_REDIRECT:${url}`);
   }),
 );
-type Target = { id: string; org_id: string; role: string; name: string | null; email: string; deactivated_at: string | null };
+type Target = {
+  id: string;
+  org_id: string;
+  role: string;
+  name: string | null;
+  email: string;
+  deactivated_at: string | null;
+  auth_user_id?: string | null;
+};
 const target = vi.hoisted(() => ({
   row: null as Target | null,
   error: null as { message: string; code?: string } | null,
@@ -32,6 +40,8 @@ const target = vi.hoisted(() => ({
 const eq = vi.hoisted(() => vi.fn());
 const select = vi.hoisted(() => vi.fn());
 const from = vi.hoisted(() => vi.fn());
+// #4379: removing a coordinator deletes their Supabase auth user too.
+const deleteUser = vi.hoisted(() => vi.fn(async (_id: string) => ({ data: {}, error: null as { message: string; status?: number } | null })));
 const lifecycle = vi.hoisted(() => ({
   applyLifecycleByUserId: vi.fn(),
   applyLifecycleByEmail: vi.fn(),
@@ -41,7 +51,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect }));
 vi.mock("next/cache", () => ({ revalidatePath }));
 vi.mock("next/headers", () => ({ cookies: async () => ({ set: vi.fn(), get: vi.fn(), delete: vi.fn() }) }));
-vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from }) }));
+vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ from, auth: { admin: { deleteUser } } }) }));
 vi.mock("@/lib/audit", () => ({ recordAudit }));
 vi.mock("@/lib/availability/precompute", () => ({ markAllBucketSlotsStale: vi.fn() }));
 vi.mock("@/lib/webhooks/emit", () => ({ resendDelivery: vi.fn(), replayDeadLetteredDeliveries: vi.fn() }));
@@ -165,5 +175,87 @@ describe("removeCoordinator", () => {
     const err = await fails(removeCoordinator(form({ user_id: "c1" })));
     expect(err?.message).toBe(`NEXT_REDIRECT:${PAGE}?ok=coordinator-removed`);
     expect(recordAudit).not.toHaveBeenCalled();
+  });
+});
+
+// #4379: a coordinator on their own company's Microsoft account must not leave an auth
+// user behind when they go, so nothing outside trypennie.com outlives its row. Removing
+// one departs them FIRST (so a failed delete never leaves an active row that could be
+// signed in to again) and then deletes the auth user, the way relinking a Google account
+// does. A delete that fails is said out loud, recorded, and left to the monitor's orphan
+// check, which pages until it is gone.
+describe("removeCoordinator deletes the coordinator's sign in (#4379)", () => {
+  const dana: Target = {
+    id: "c1",
+    org_id: "o1",
+    role: "coordinator",
+    name: "Dana Coordinator",
+    email: "dana@partner.example",
+    deactivated_at: null,
+    auth_user_id: "auth-ms-1",
+  };
+
+  beforeEach(() => {
+    target.row = { ...dana };
+    deleteUser.mockResolvedValue({ data: {}, error: null });
+  });
+
+  it("departs them, then deletes their auth user, and records both", async () => {
+    const order: string[] = [];
+    lifecycle.applyLifecycleByUserId.mockImplementationOnce(async () => {
+      order.push("depart");
+      return { status: "applied", userId: "c1", deactivate: true, sessionRevoke: "revoked" };
+    });
+    deleteUser.mockImplementationOnce(async () => {
+      order.push("delete");
+      return { data: {}, error: null };
+    });
+    const err = await fails(removeCoordinator(form({ user_id: "c1" })));
+    expect(err?.message).toBe(`NEXT_REDIRECT:${PAGE}?ok=coordinator-removed`);
+    expect(order).toEqual(["depart", "delete"]);
+    expect(deleteUser).toHaveBeenCalledWith("auth-ms-1");
+    expect((recordAudit.mock.calls[0]?.[0] as { details: Record<string, unknown> }).details).toMatchObject({
+      sign_in: { from: "present", to: "deleted" },
+    });
+  });
+
+  it("deletes nothing for a coordinator who never signed in", async () => {
+    target.row = { ...dana, auth_user_id: null };
+    const err = await fails(removeCoordinator(form({ user_id: "c1" })));
+    expect(err?.message).toBe(`NEXT_REDIRECT:${PAGE}?ok=coordinator-removed`);
+    expect(deleteUser).not.toHaveBeenCalled();
+  });
+
+  it("reads an auth user already gone as the state it wanted", async () => {
+    deleteUser.mockResolvedValueOnce({ data: {}, error: { message: "User not found", status: 404 } });
+    const err = await fails(removeCoordinator(form({ user_id: "c1" })));
+    expect(err?.message).toBe(`NEXT_REDIRECT:${PAGE}?ok=coordinator-removed`);
+  });
+
+  it("deletes their sign in on a second press too, when the first left it behind", async () => {
+    lifecycle.applyLifecycleByUserId.mockResolvedValueOnce({ status: "noop", userId: "c1", sessionRevoke: "revoked" });
+    target.row = { ...dana, deactivated_at: "2026-10-29T12:00:00Z" };
+    await fails(removeCoordinator(form({ user_id: "c1" })));
+    expect(deleteUser).toHaveBeenCalledWith("auth-ms-1");
+  });
+
+  it("says so when the sign in could not be deleted, and keeps the departure", async () => {
+    deleteUser.mockResolvedValueOnce({ data: {}, error: { message: "upstream timeout", status: 500 } });
+    const err = await fails(removeCoordinator(form({ user_id: "c1" })));
+    const said = decodeURIComponent(err?.message ?? "");
+    expect(said).toContain(`${PAGE}?error=`);
+    expect(said).toContain("Dana Coordinator was removed and can no longer sign in");
+    expect(said).not.toContain("upstream timeout");
+    expect(lifecycle.applyLifecycleByUserId).toHaveBeenCalledWith("c1", "deactivate");
+    expect((recordAudit.mock.calls[0]?.[0] as { details: Record<string, unknown> }).details).toMatchObject({
+      sign_in: { from: "present", to: "delete_failed" },
+    });
+    expect(revalidatePath).toHaveBeenCalledWith(PAGE);
+  });
+
+  it("never deletes a sign in when the departure itself failed", async () => {
+    lifecycle.applyLifecycleByUserId.mockRejectedValueOnce(new Error("permission denied"));
+    await fails(removeCoordinator(form({ user_id: "c1" })));
+    expect(deleteUser).not.toHaveBeenCalled();
   });
 });

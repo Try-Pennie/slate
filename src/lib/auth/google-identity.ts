@@ -29,10 +29,18 @@
  * account on a fresh one.
  */
 
-export type GoogleIdentityVerdict =
-  | { kind: "same-person" }
-  | { kind: "record"; sub: string }
-  | { kind: "different-person"; reason: GoogleMismatchReason };
+import {
+  accountIdsOf,
+  judgeAccountIdentity,
+  type AccountIdentityVerdict,
+  type AccountMismatchReason,
+  type AuthUserIdentities,
+} from "./account-identity.ts";
+
+export type { AuthUserIdentities };
+
+/** #4379: the judge itself is provider neutral (`account-identity.ts`), shared with Microsoft. */
+export type GoogleIdentityVerdict = AccountIdentityVerdict;
 
 /**
  * Why a sign in was judged to be somebody else. Three causes with three different
@@ -42,7 +50,7 @@ export type GoogleIdentityVerdict =
  * user is what GoTrue's linking by address makes of a newcomer signing in over the
  * old owner's auth user.
  */
-export type GoogleMismatchReason = "different-account" | "no-account-id" | "several-accounts";
+export type GoogleMismatchReason = AccountMismatchReason;
 
 /**
  * WHICH accounts are offered comes from the Google identities GoTrue keeps for the
@@ -55,18 +63,7 @@ export function judgeGoogleIdentity(
   stored: string | null | undefined,
   offered: readonly string[],
 ): GoogleIdentityVerdict {
-  const kept = stored?.trim() ? stored : null;
-  const accounts = [...new Set(offered.filter((s) => s.trim() !== ""))];
-  if (accounts.length === 0) return { kind: "different-person", reason: "no-account-id" };
-  if (accounts.length > 1) return { kind: "different-person", reason: "several-accounts" };
-  const [only] = accounts as [string];
-  if (kept === null) return { kind: "record", sub: only };
-  return only === kept ? { kind: "same-person" } : { kind: "different-person", reason: "different-account" };
-}
-
-/** The shape of a Supabase auth user this module reads, and nothing more. */
-export interface AuthUserIdentities {
-  identities?: readonly { provider?: string; identity_data?: Record<string, unknown> | null }[] | null;
+  return judgeAccountIdentity(stored, offered);
 }
 
 /**
@@ -74,13 +71,7 @@ export interface AuthUserIdentities {
  * writes and the session holder cannot. `user_metadata` is deliberately not read.
  */
 export function googleAccountIdsOf(user: AuthUserIdentities): string[] {
-  const ids: string[] = [];
-  for (const identity of user.identities ?? []) {
-    if (identity.provider !== "google") continue;
-    const sub = identity.identity_data?.sub;
-    if (typeof sub === "string" && sub.trim() !== "") ids.push(sub);
-  }
-  return ids;
+  return accountIdsOf(user, "google");
 }
 
 /**

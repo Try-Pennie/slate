@@ -40,6 +40,8 @@ import { acquireRunLock, portHolders, portInUseRefusal, waitForOwnServer } from 
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const WORKDIR = join(tmpdir(), "slate-e2e-supabase");
+/** #4379: the local stack's own last file, after every real migration (e2e/oauth-session-hook.sql). */
+const E2E_OAUTH_HOOK_FILE = "9999_e2e_oauth_session.sql";
 const ARTIFACTS = join(ROOT, "e2e", ".artifacts");
 const EGRESS_LOG = join(ARTIFACTS, "egress.log");
 const reuseStack = process.env.E2E_REUSE_STACK === "1";
@@ -71,6 +73,9 @@ function prepareWorkdir(): void {
       cpSync(join(ROOT, "supabase", "migrations", f), join(WORKDIR, "supabase", "migrations", f));
     }
   }
+  // #4379: the local stack's only extra, applied after every real migration: the hook
+  // that makes a magic link session carry the OAuth `amr` every production session has.
+  cpSync(join(ROOT, "e2e", "oauth-session-hook.sql"), join(WORKDIR, "supabase", "migrations", E2E_OAUTH_HOOK_FILE));
 }
 
 function readStack(): LocalStack {

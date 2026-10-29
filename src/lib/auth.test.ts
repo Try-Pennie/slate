@@ -49,6 +49,11 @@ const authUser = vi.hoisted(() => ({
   }[],
   userMetadata: {} as Record<string, unknown>,
 }));
+const claims = vi.hoisted(() => ({
+  amr: [{ method: "oauth", timestamp: 1 }] as unknown,
+  sub: undefined as string | undefined,
+  error: undefined as string | undefined,
+}));
 const cookieValue = vi.hoisted(() => ({ v: undefined as string | undefined }));
 const signOut = vi.hoisted(() => vi.fn(async (_opts?: unknown) => ({ error: null })));
 // #3526: the refusal alert, the same one the sign in callback sends.
@@ -70,6 +75,11 @@ vi.mock("@/lib/supabase/server", () => ({
             : null,
         },
       }),
+      // #4379: the verified claims. Default: an OAuth sign in for the session's auth user.
+      getClaims: async () =>
+        claims.error
+          ? { data: null, error: { message: claims.error } }
+          : { data: { claims: { sub: claims.sub ?? authUser.id, amr: claims.amr } }, error: null },
       signOut,
     },
   }),
@@ -145,6 +155,10 @@ beforeEach(() => {
   dbRows.queue = [];
   cookieValue.v = undefined;
   authUser.id = "auth-1";
+  authUser.identities = [googleIdentity("sub-1")];
+  claims.amr = [{ method: "oauth", timestamp: 1 }];
+  claims.sub = undefined;
+  claims.error = undefined;
   stamps.started = String(Date.now() - 60_000);
   stamps.seen = String(Date.now() - 60_000);
 });
@@ -604,5 +618,96 @@ describe("the placeholder advisor's row is never a session (#4205)", () => {
     signedInAs(user("marcia", "agent", { is_placeholder: true, bookable: false }));
     await realCurrentUser();
     expect(warn).toHaveBeenCalledWith("auth", expect.objectContaining({ msg: "refused a session on the placeholder advisor" }));
+  });
+});
+
+// #4379: a session is now held to HOW it was made (the verified claims' amr: OAuth
+// only) and to WHOSE account it is, which since Microsoft sign in depends on the row:
+// a coordinator's Microsoft row needs exactly its Microsoft account and no Google one,
+// every other row its Google account and no Microsoft one. `coordinatorDeskUser` reads
+// `realCurrentUser`, so the coordinator page, and an admin on it, are covered by the
+// same gate. Each refusal sits beside the same session admitted (L159).
+describe("the session gate reads how the session was made, and whose account it is (#4379)", () => {
+  const azureIdentity = (sub: string): FakeIdentity => ({ provider: "azure", identity_data: { sub } });
+  const msCoordinator = () =>
+    user("coord-ms", "coordinator", {
+      email: "dana@partner.example",
+      bookable: false,
+      microsoft_sub: "ms-1",
+    });
+
+  beforeEach(() => {
+    signOut.mockClear();
+    dispatch.sendThrottledAlert.mockClear();
+  });
+
+  it("refuses an admin on the coordinator desk whose session was not an OAuth sign in, and ends it", async () => {
+    for (const amr of [[{ method: "magiclink", timestamp: 1 }], [{ method: "password", timestamp: 1 }], ["otp"]]) {
+      signOut.mockClear();
+      signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+      claims.amr = amr;
+      expect(await coordinatorDeskUser()).toBeNull();
+      expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    }
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+    claims.amr = [{ method: "oauth", timestamp: 1 }];
+    expect((await coordinatorDeskUser())?.id).toBe("admin-1");
+  });
+
+  it("refuses a session with no amr claim, and one whose claims cannot be read", async () => {
+    signedInAs(user("admin-1", "admin"));
+    claims.amr = undefined;
+    expect(await realCurrentUser()).toBeNull();
+
+    // An unreadable claim may be a passing fault, so it refuses this request without
+    // ending the session.
+    signOut.mockClear();
+    signedInAs(user("admin-1", "admin"));
+    claims.amr = [{ method: "oauth", timestamp: 1 }];
+    claims.error = "jwks unreachable";
+    expect(await realCurrentUser()).toBeNull();
+    expect(signOut).not.toHaveBeenCalled();
+
+    claims.error = undefined;
+    signedInAs(user("admin-1", "admin"));
+    expect((await realCurrentUser())?.id).toBe("admin-1");
+  });
+
+  it("refuses claims that belong to another auth user", async () => {
+    signedInAs(user("admin-1", "admin"));
+    claims.sub = "auth-somebody-else";
+    expect(await realCurrentUser()).toBeNull();
+  });
+
+  it("admits a Microsoft coordinator with no Google account, to the coordinator page only", async () => {
+    signedInAs(msCoordinator());
+    authUser.identities = [azureIdentity("ms-1")];
+    expect((await realCurrentUser())?.id).toBe("coord-ms");
+    signedInAs(msCoordinator());
+    authUser.identities = [azureIdentity("ms-1")];
+    expect((await coordinatorDeskUser())?.id).toBe("coord-ms");
+    signedInAs(msCoordinator());
+    authUser.identities = [azureIdentity("ms-1")];
+    expect(await currentUser()).toBeNull();
+    expect(signOut).not.toHaveBeenCalled();
+    expect(dispatch.sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("refuses a Microsoft coordinator holding a Google account, or a different Microsoft one", async () => {
+    signedInAs(msCoordinator());
+    authUser.identities = [azureIdentity("ms-1"), googleIdentity("sub-9")];
+    expect(await coordinatorDeskUser()).toBeNull();
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+
+    signedInAs(msCoordinator());
+    authUser.identities = [azureIdentity("ms-2")];
+    expect(await coordinatorDeskUser()).toBeNull();
+  });
+
+  it("refuses a staff session whose auth user also holds a Microsoft account", async () => {
+    signedInAs(user("admin-1", "admin", { google_sub: "sub-1" }));
+    authUser.identities = [googleIdentity("sub-1"), azureIdentity("ms-x")];
+    expect(await requireAdmin().catch(() => null)).toBeNull();
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
   });
 });

@@ -17,6 +17,7 @@ import {
   staffEmailError,
   requiresAdminCount,
   planStaffAccess,
+  staffAccessInputError,
   staffAccessMessage,
   STAFF_ACCESS_OUTCOMES,
   type StaffAccessTarget,
@@ -164,6 +165,46 @@ assert(
   !offDomain.ok && offDomain.outcome === "wrong_domain",
   "an address outside the Workspace domain is refused on submit, because it could never sign in",
 );
+// #4379: a scheduling coordinator signs in with their own company Microsoft account,
+// so an outside address IS a login for them, and for nobody else. Each refusal below
+// sits beside the same address granted as a coordinator (L159).
+{
+  const outside = "Dana.Coordinator@Partner.example";
+  const asCoordinator = planStaffAccess({ ...SUPER, email: outside, requestedRole: "coordinator", existing: null, adminCount: null });
+  assert(
+    asCoordinator.ok && asCoordinator.outcome === "granted" && asCoordinator.email === "dana.coordinator@partner.example",
+    "an outside address is granted as a coordinator, normalised the way the Microsoft sign in matches it",
+  );
+  eq(
+    staffAccessInputError({ actorRole: "super_admin", email: outside, requestedRole: "coordinator", allowedDomain: "trypennie.com" }),
+    null,
+    "the submit check passes an outside coordinator before any read",
+  );
+  const moved = planStaffAccess({ ...SUPER, email: outside, requestedRole: "coordinator", existing: target({ role: "coordinator" }), adminCount: null });
+  assert(moved.ok && moved.outcome === "unchanged", "an outside coordinator granted again changes nothing");
+  for (const role of ["manager", "team_lead", "admin"] as const) {
+    const refused = planStaffAccess({ ...SUPER, email: outside, requestedRole: role, existing: null, adminCount: null });
+    assert(!refused.ok && refused.outcome === "wrong_domain", `an outside address as ${role} is refused, because only a coordinator signs in with one`);
+    eq(
+      staffAccessInputError({ actorRole: "super_admin", email: outside, requestedRole: role, allowedDomain: "trypennie.com" }),
+      "wrong_domain",
+      `and refused on submit as ${role}, before any read`,
+    );
+    const promoted = planStaffAccess({ ...SUPER, email: outside, requestedRole: role, existing: target({ role: "coordinator" }), adminCount: null });
+    assert(!promoted.ok && promoted.outcome === "wrong_domain", `an outside coordinator is never moved to ${role}`);
+  }
+  // A shape that is not an address at all is still the address refusal, not the domain one.
+  eq(
+    staffAccessInputError({ actorRole: "super_admin", email: "not an address", requestedRole: "coordinator", allowedDomain: "trypennie.com" }),
+    "invalid_email",
+    "an unusable address is refused as one, whatever the role",
+  );
+  assert(
+    /coordinator/i.test(staffAccessMessage("wrong_domain", "contractor@partner.example").text),
+    "the refusal says an outside address is for a coordinator, so the reader knows what would work",
+  );
+}
+
 assert(
   planStaffAccess({
     ...SUPER,

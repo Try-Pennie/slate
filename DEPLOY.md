@@ -91,7 +91,7 @@ wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-
 wrangler secret put REGAL_INBOUND_KEY       # optional; bearer Regal's reporting webhook sends to POST /api/regal/calls (#2090). Its own secret, never the outbound Regal key. Empty = that endpoint returns 503 naming it.
 # wrangler secret put REGAL_INBOUND_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put REGAL_WEBHOOK_KEY       # the OUTBOUND Regal API key, sent as the Authorization header on every Regal webhook delivery (#3091). Moved out of webhook_endpoints.auth_header so only the Worker can read it; the admin webhooks page shows whether it is set and cannot edit it, so changing it is this command. The column was nulled by migration 0163 and is never read. Empty = every Regal delivery is refused and recorded as failed (#600), and the dead letter alert pages. Never the same value as REGAL_INBOUND_KEY.
-wrangler secret put WEBHOOK_SIGNING_SECRET  # the HMAC secret a generic format endpoint's x-slate-signature is made with (#3091). Moved out of webhook_endpoints.secret like the key above, and nulled by 0163 and never read. NOT SET today, on purpose: the only endpoint is Regal format, which never signs. Empty = generic deliveries are refused rather than sent unsigned. Rotating it means telling the subscriber the new value in the same change.
+wrangler secret put WEBHOOK_SIGNING_SECRET  # the HMAC secret a generic format endpoint's x-slate-signature is made with (#3091). Moved out of webhook_endpoints.secret like the key above, and nulled by 0163 and never read. SET since 2026-10-29, for the one generic format endpoint: the dialer partner's lead sender, subscribed to booking created, rescheduled and cancelled (#4381); the Regal endpoint never signs. That subscriber holds the same value to check each signature, so rotating it means giving the subscriber the new value in the same change, or every delivery to it fails verification. Empty = generic deliveries are refused rather than sent unsigned.
 wrangler secret put BOOKING_API_KEY_REGAL   # optional; Regal's own booking API key (its journeys cancel through it, as the SLATE_BOOKING_API_KEY brand secret). Logs and the rate ceiling name the caller "regal". One key per caller (#2645): the shared BOOKING_API_KEY pair is retired and read by nothing (#2865). Every booking key empty = POST /api/bookings returns 503.
 # wrangler secret put BOOKING_API_KEY_REGAL_2   # optional; Regal's rotation slot, set only when rotating.
 wrangler secret put BOOKING_API_KEY_TRYPENNIE # optional; trypennie's own booking API key (the booking confirmed page's lookup, #2643).
@@ -689,6 +689,35 @@ in this repository can see it change.
 The monitor lane reads the live `/auth/v1/settings` every tick and pages
 `auth_sign_in_beyond_google` while email is on or another provider can create an
 account, with an all clear once it is off.
+
+### Invited coordinators: Microsoft (#4379)
+The call center partner's scheduling coordinators sign in with their **own company
+Microsoft account**, through the **Azure** provider, and nobody else may. Healthy is
+**Google on, Azure on, Email off, every other provider off**; the settings check above
+treats Azure on or off as healthy. Migration 0212 replaced the hook's function under the
+same name, so the dashboard registration does not change: `trypennie.com` is created
+through Google only, an outside address through Azure only when an active, unlinked
+coordinator row holds it (Team access grants one), and everything else is refused. The
+callback links the coordinator's row (`linkCoordinator`) and records the Microsoft
+account id; `realCurrentUser` refuses any session whose `amr` is not OAuth alone, and a
+coordinator's session without exactly that Microsoft account or with a Google one.
+Removing a coordinator deletes their auth user. The monitor's hourly
+`auth_unexpected_sign_in` pages on a session made by anything but OAuth (read from
+`auth.mfa_amr_claims`, since production writes no auth audit log to the database) and on an
+outside account no active coordinator holds.
+
+**Rollout order, which must not change:** apply 0212 with `supabase db push` before the
+merge; deploy and confirm the code is live; only then switch Azure on in the dashboard
+(Authentication, Sign In / Providers, Azure, with the Entra app's client id and secret and
+the `xms_edov` and `email` optional claims, so Supabase marks the address verified).
+**Rollback is switching Azure off.** The Azure app's client secret expires; its renewal
+reminder is on the Phase 0 card for #4379.
+
+A Pennie staffer who signs in with a Microsoft account on their own `trypennie.com`
+address is refused, and GoTrue links that Microsoft account onto their auth user by
+address, so their next Google sign in is refused too (an auth user holding both). An
+admin clears it with "Link a new Google account" on their page, which deletes the auth
+user.
 
 **There is no enforced second factor for Slate staff accounts (as of 2026-10-03).**
 Slate has no MFA of its own and relies on Google for the second factor, and **Google
