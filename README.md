@@ -289,6 +289,7 @@ src/lib/log-shipping   what the slate-log-tail Worker ships to Better Stack: the
 src/lib/advisor-photos advisor photos from the Google directory: the daily refresh, its guards, and the one resolver every face goes through
 src/lib/advisors       the one real advisor rule: which users rows (not test, not the placeholder, not a coordinator) any advisor surface lists (#4201, #4205)
 src/lib/coordinator    the coordinator booking page's operations: find the customer by Salesforce Lead id, their call and the day's hours, the placeholder count, placing a call, and every sentence (#4205)
+src/lib/program-leads  registering a program lead (#4388): Bidspoke's Lead id read, checked and marked for 30 days
 src/lib/zip-zones      a customer's time zone from their Lead's zip, then state, through a table generated from GeoNames (scripts/generate-zip-zones.ts)
 src/lib/{calcom,date,db,embed,supabase}   cal.com dual-write, Luxon helpers, hand-written DB types, embed origin, Supabase clients
 src/app/api            availability, bookings, auth callback, google push, cron/* lanes, keyed reassign/booking/offboarding APIs
