@@ -24,6 +24,8 @@ import {
   type RepeatChange,
 } from "@/lib/notify/repeat-policy";
 import { foldFor, foldMarkKey, judgeFold, type FoldRead } from "@/lib/notify/alert-folds";
+import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { findStaleLanes, LANE_STALE_BOUNDS_MS, type LaneName } from "@/lib/monitor/health";
 import { isChangeOnly } from "@/lib/notify/alert-catalog";
 import { withSeverityLead, type AlertVoice } from "@/lib/notify/severity-lead";
 
@@ -483,6 +485,21 @@ async function readStampsOf(keys: string[]): Promise<Map<string, number | null> 
 }
 
 /**
+ * Whether `lane` is past its bound now, by the lane watchdog's own read and predicate,
+ * so a fold and the page explaining it can never disagree about it. null when the read
+ * fails or throws, which holds nothing.
+ */
+async function laneIsStopped(lane: LaneName, nowMs: number): Promise<boolean | null> {
+  try {
+    const heartbeats = await readAllHeartbeatMs();
+    return findStaleLanes(heartbeats, nowMs, { [lane]: LANE_STALE_BOUNDS_MS[lane] }).length > 0;
+  } catch (err) {
+    log.warn("slack-alert", { msg: "lane heartbeat unreadable for a fold, so it posts as usual", lane }, err);
+    return null;
+  }
+}
+
+/**
  * Whether `key` waits because the alert that explains it is firing (#3802). The rule
  * is `judgeFold` (`src/lib/notify/alert-folds.ts`); this is its one read and its two
  * writes. Every key the fold table does not name answers false without a read.
@@ -502,6 +519,11 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
   const ownMark = firingKey(key);
   const holdMark = foldMarkKey(key);
   const stamps = await readStampsOf([explainerMark, ownMark, holdMark]);
+  // A lane bound fold reads the lane only while its explainer is firing: otherwise it
+  // can hold nothing, and the heartbeat read is spent only during an incident.
+  const lane = fold.folded.onlyWhileLaneStopped;
+  const laneStopped =
+    lane !== undefined && stamps?.has(explainerMark) ? await laneIsStopped(lane, nowMs) : undefined;
   const read: FoldRead | null =
     stamps === null
       ? null
@@ -509,8 +531,9 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
           explainerFiringMs: stamps.get(explainerMark) ?? null,
           ownFiring: stamps.has(ownMark),
           markMs: stamps.get(holdMark) ?? null,
+          ...(laneStopped === undefined ? {} : { laneStopped }),
         };
-  const decision = judgeFold(read, nowMs, fold.folded.graceMs);
+  const decision = judgeFold(read, nowMs, fold.folded.graceMs, lane !== undefined);
   const db = supabaseAdmin();
   if (decision.act === "hold") {
     log.info("slack-alert", {

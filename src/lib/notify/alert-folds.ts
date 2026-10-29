@@ -30,6 +30,11 @@
  *     `EXPLAINER_FRESH_MS` explains nothing: a firing condition repeats daily, so a
  *     marker that old is no longer being measured, and a hold resting on it would be
  *     a suppression nobody can see the end of (L523).
+ *   - An explainer whose one key covers several lanes (`cron_lanes_stale`) explains an
+ *     alert only while the lane that alert depends on is one of them NOW
+ *     (`onlyWhileLaneStopped`), judged by the watchdog's own read and predicate. The
+ *     page's stored subjects cannot say it: a lane leaving is not a change, so they
+ *     still name a lane that has come back until the page next posts.
  *
  * The all-clear needs nothing here: an explained alert that never posted has no
  * firing marker, so `resolveAlert` sends nothing for it, and the explaining alert's
@@ -38,9 +43,11 @@
 import {
   CANARY_STALE_BOUNDS_MS,
   LANE_STALE_BOUNDS_MS,
+  type LaneName,
   POOL_GROUPING_STALE_BOUNDS_MS,
   VERDICT_STALE_BOUNDS_MS,
 } from "@/lib/monitor/health";
+import { SYNC_STALENESS_THRESHOLD_MS } from "@/lib/monitor/sync-staleness";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 
 /** One alert held while its explainer fires. */
@@ -60,6 +67,13 @@ export interface FoldedAlert {
   label: string;
   /** How long it waits after the explainer clears before it may post: its own bound. */
   graceMs: number;
+  /**
+   * For an explainer that names several lanes under one key: held only while THIS lane
+   * is past its bound (`LANE_STALE_BOUNDS_MS`), read live as the watchdog reads it.
+   * The rest of the explainer's lanes stopping says nothing about this alert, and this
+   * lane running again means the alert is its own fault, which must post.
+   */
+  onlyWhileLaneStopped?: LaneName;
 }
 
 export interface AlertFold {
@@ -125,6 +139,23 @@ export const ALERT_FOLDS: readonly AlertFold[] = [
         key: staleLaneKey("pool-grouping"),
         label: "the pool grouping",
         graceMs: POOL_GROUPING_STALE_BOUNDS_MS["pool-grouping"],
+      },
+    ],
+  },
+  {
+    // The same page again, for the advisors' calendars the sync lane keeps fresh.
+    explainer: "cron_lanes_stale",
+    why:
+      "Every advisor's calendar is refreshed by the sync lane, so once it stops each one passes the " +
+      "staleness threshold by construction; on 2026-10-29 one stop posted as both pages three seconds " +
+      "apart. Held only while the sync lane itself is still stopped, so sync running with advisors " +
+      "stale, the rotation's own fault, posts at once, and after sync restarts it waits one threshold.",
+    explains: [
+      {
+        key: "sync_staleness",
+        label: "advisors' calendar sync",
+        graceMs: SYNC_STALENESS_THRESHOLD_MS,
+        onlyWhileLaneStopped: "sync",
       },
     ],
   },
@@ -234,6 +265,12 @@ export interface FoldRead {
   ownFiring: boolean;
   /** When the explained key was last held under a firing explainer. */
   markMs: number | null;
+  /**
+   * Whether the fold's `onlyWhileLaneStopped` lane is past its bound now: null when the
+   * heartbeat could not be read, absent when it was not asked (the fold has no lane, or
+   * the explainer is not firing, when it could hold nothing anyway).
+   */
+  laneStopped?: boolean | null;
 }
 
 export type FoldDecision =
@@ -241,12 +278,23 @@ export type FoldDecision =
   | { act: "hold"; why: "explained"; refreshMark: boolean }
   | { act: "hold"; why: "grace"; untilMs: number };
 
-/** The whole rule, pure, so every edge is drivable without a database or a clock. */
-export function judgeFold(read: FoldRead | null, nowMs: number, graceMs: number): FoldDecision {
+/**
+ * The whole rule, pure, so every edge is drivable without a database or a clock.
+ * `laneBound` is whether the fold carries `onlyWhileLaneStopped`: it is passed rather
+ * than inferred from `read.laneStopped`, so a lane state nobody read can never hold.
+ */
+export function judgeFold(read: FoldRead | null, nowMs: number, graceMs: number, laneBound = false): FoldDecision {
   if (read === null) return { act: "post", why: "unreadable" };
   if (read.ownFiring) return { act: "post", why: "told-already" };
-  const explaining =
+  const explainerFiring =
     read.explainerFiringMs !== null && nowMs - read.explainerFiringMs <= EXPLAINER_FRESH_MS;
+  // A firing explainer whose lane cannot be read explains nothing we can see (fail loud).
+  if (explainerFiring && laneBound && (read.laneStopped === undefined || read.laneStopped === null)) {
+    return { act: "post", why: "unreadable" };
+  }
+  // Its lane running again, with the explainer still firing for others, is the same as
+  // the explainer clearing for this alert: it waits out its grace, then posts.
+  const explaining = explainerFiring && (!laneBound || read.laneStopped === true);
   if (explaining) {
     return {
       act: "hold",
@@ -295,6 +343,9 @@ export function foldTableProblems(
       seen.set(e.key, fold.explainer);
       if (!Number.isFinite(e.graceMs) || e.graceMs <= 0) problems.push(`${e.key} has no usable grace (${String(e.graceMs)})`);
       if (e.label.trim() === "") problems.push(`${e.key} has no label for the explaining page`);
+      if (e.onlyWhileLaneStopped !== undefined && !(e.onlyWhileLaneStopped in LANE_STALE_BOUNDS_MS)) {
+        problems.push(`${e.key} waits on lane ${e.onlyWhileLaneStopped}, which has no bound to be stopped past`);
+      }
     }
   }
   return problems;
