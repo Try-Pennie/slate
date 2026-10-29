@@ -192,6 +192,7 @@ eq(seenAgent.size, cases.length, "every reason reads differently to the agent (L
   assert(/both told/i.test(l1) && !/no manager of record/i.test(l1), `the first request's block carries its own reason (${l1})`);
   assert(/no manager of record/i.test(l2) && !/both told/i.test(l2), `the second request's block carries its own reason (${l2})`);
   assert(l1.split("\n").at(-1) === `${APP}/admin/ooo?request=req_9f2`, "and its link sits alone on the block's last line");
+  assert(!/both told/i.test(blocks[0] ?? ""), "and the opening sentence states neither reason for every request");
   // Dan (2026-10-29): a shortened event's open hours come first, then the reason, then the link.
   eq(
     l1,
@@ -232,7 +233,6 @@ eq(seenAgent.size, cases.length, "every reason reads differently to the agent (L
   );
   const goneText = oooEventMismatchAlert("Heather McLellen", [gone], APP, { agent: "told", manager: "told" });
   assert(!/Calendar leaves/.test(goneText), "a missing event carries no open hours line");
-  assert(!/both told/i.test(blocks[0] ?? ""), "and the opening sentence states neither reason for every request");
 }
 {
   // Dan's own wording (2026-10-29), pinned word for word against the page that posted
