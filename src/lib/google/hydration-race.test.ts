@@ -162,10 +162,13 @@ class FakeQuery implements PromiseLike<DbResult> {
   wantCount = false;
   selectedAfterWrite = false;
 
-  constructor(
-    private readonly db: FakeDb,
-    readonly table: string,
-  ) {}
+  private readonly db: FakeDb;
+  readonly table: string;
+
+  constructor(db: FakeDb, table: string) {
+    this.db = db;
+    this.table = table;
+  }
 
   select(_cols?: string, opts?: { count?: string; head?: boolean }): this {
     if (this.mode === "select") {

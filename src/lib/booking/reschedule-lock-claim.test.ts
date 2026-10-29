@@ -35,7 +35,10 @@ function makeFakeDb(
     private selected = false;
     private single = false;
     private filters: ((r: Row) => boolean)[] = [];
-    constructor(private table: string) {}
+    private table: string;
+    constructor(table: string) {
+      this.table = table;
+    }
     insert(row: Row) {
       this.mode = "insert";
       this.insertRow = row;
