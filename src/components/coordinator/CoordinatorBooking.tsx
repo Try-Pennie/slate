@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { lookupCoordinatorCustomer, placeCoordinatorCall } from "@/app/coordinator/actions";
+import { checkCoordinatorTransfer, lookupCoordinatorCustomer, placeCoordinatorCall } from "@/app/coordinator/actions";
 import { btnCls, btnSecondaryCls, cardCls, inputCls, labelCls, proseCls } from "@/components/ui/styles";
 import { SelectField } from "@/components/ui/SelectField";
 import { WarningNotice } from "@/components/ui/WarningNotice";
@@ -13,9 +13,11 @@ import {
   pageView,
   placeRequest,
   reducePage,
+  transferRequest,
   type LookupAnswer,
   type PageState,
   type PlaceAnswer,
+  type TransferAnswer,
 } from "@/lib/coordinator/booking-page";
 import styles from "./coordinator-booking.module.css";
 
@@ -27,6 +29,12 @@ const LOOKUP_TIMEOUT_MS = 30_000;
  * making a second one (D30).
  */
 const PLACE_TIMEOUT_MS = 60_000;
+/**
+ * Past this the live transfer check is said as unanswered (#4380). The server gives the
+ * transfer queue endpoint three seconds; this covers that, the settings read and the
+ * round trip, and then the page says live transfer can't be checked rather than wait.
+ */
+const TRANSFER_TIMEOUT_MS = 10_000;
 /** How often the customer's clock line is redrawn. */
 const CLOCK_TICK_MS = 15_000;
 
@@ -93,6 +101,7 @@ export function CoordinatorBooking({
   const [state, dispatch] = useReducer(reducePage, initial);
   const [nowMs, setNowMs] = useState(() => fixedNowMs ?? Date.now());
   const [elapsedMs, setElapsedMs] = useState(0);
+  const [transferElapsedMs, setTransferElapsedMs] = useState(0);
   const view = pageView(state, { nowMs, reasons });
 
   const leadRef = useRef<HTMLInputElement>(null);
@@ -103,6 +112,8 @@ export function CoordinatorBooking({
   /** The lookup and booking already sent, so a redraw never sends one twice. */
   const sentLookup = useRef(initial.lookup.seq);
   const sentPlace = useRef(initial.place.seq);
+  /** The transfer check already sent: a state handed in already checking (a design frame) sends none. */
+  const sentTransfer = useRef(transferRequest(initial)?.seq ?? 0);
   /** Where focus goes once the next answer is drawn. */
   const focusNext = useRef<"after-lookup" | "lead" | "again" | null>(null);
 
@@ -124,6 +135,34 @@ export function CoordinatorBooking({
       setElapsedMs(0);
     };
   }, [busy, state.startedAt]);
+
+  // Still alive: Transfer now's re-check counts up while it runs.
+  const transferStartedAt = state.transferStartedAt;
+  useEffect(() => {
+    if (transferStartedAt === null) return;
+    const t = window.setInterval(() => setTransferElapsedMs(Date.now() - transferStartedAt), 1_000);
+    return () => {
+      window.clearInterval(t);
+      setTransferElapsedMs(0);
+    };
+  }, [transferStartedAt]);
+
+  // The live transfer check (#4380), once per one the reducer started: when the customer
+  // is found and when Transfer now is pressed. Anything but an answer is unreadable.
+  const transferAsk = transferRequest(state);
+  useEffect(() => {
+    if (!transferAsk || transferAsk.seq === sentTransfer.current) return;
+    const seq = transferAsk.seq;
+    sentTransfer.current = seq;
+    withTimeout(checkCoordinatorTransfer(), TRANSFER_TIMEOUT_MS).then(
+      (out) => {
+        if (out === TIMED_OUT) return dispatch({ type: "transferNoAnswer", seq });
+        const answer: TransferAnswer = out.kind === "offer" ? { kind: "offer", line: out.line } : out.kind === "busy" ? { kind: "busy" } : { kind: "unreadable" };
+        dispatch({ type: "transferAnswered", seq, answer });
+      },
+      () => dispatch({ type: "transferNoAnswer", seq }),
+    );
+  }, [transferAsk]);
 
   // The lookup, once per one the reducer started.
   useEffect(() => {
@@ -195,6 +234,9 @@ export function CoordinatorBooking({
 
   const b = view.booking;
   const finding = view.lead.finding;
+  const tr = view.transfer;
+  // The offer arrives after the customer does, so it is said in the polite live region.
+  const transferSay = !tr ? "" : tr.kind === "line" ? tr.text : `${tr.heading}. ${tr.status ?? tr.lead}`;
 
   return (
     <>
@@ -302,6 +344,34 @@ export function CoordinatorBooking({
                   </WarningNotice>
                 )}
               </section>
+
+              {/* #4380, D1: the live transfer offer, between the customer card and the booking
+                  card, with booking left on screen below it (D3). */}
+              {tr?.kind === "card" && (
+                <div className="py-4">
+                  <section className={`${cardCls} ${styles.stack}`} aria-labelledby="co-transfer-heading">
+                    <h2 id="co-transfer-heading" className="text-base font-semibold text-fg">
+                      {tr.heading}
+                    </h2>
+                    <p className="mt-1 text-sm text-fg-muted">{tr.lead}</p>
+                    <p className="mt-4 text-2xl font-semibold tabular-nums text-fg">{tr.line}</p>
+                    <div className="mt-4 flex flex-wrap items-center gap-3">
+                      <button
+                        id="co-transfer"
+                        type="button"
+                        className={btnCls}
+                        aria-disabled={tr.pending ? true : undefined}
+                        onClick={() => dispatch({ type: "transferPressed", at: Date.now() })}
+                      >
+                        {tr.pending ? <SubmitPending elapsedMs={transferElapsedMs} pendingLabel={tr.pendingLabel} slowLabel={COPY.more.slow} /> : tr.button}
+                      </button>
+                    </div>
+                    {tr.status && <p className="mt-3 text-sm font-semibold text-fg">{tr.status}</p>}
+                    <p className="mt-3 text-sm text-fg-muted">{tr.fallback}</p>
+                  </section>
+                </div>
+              )}
+              {tr?.kind === "line" && <p className={`text-sm text-fg-muted ${proseCls}`}>{tr.text}</p>}
 
               {b && (
                 <section
@@ -556,7 +626,7 @@ export function CoordinatorBooking({
         </div>
       </div>
       <div className="sr-only" aria-live="polite">
-        {view.live}
+        {[view.live, transferSay].filter((x) => x !== "").join(" ")}
       </div>
     </>
   );

@@ -121,7 +121,9 @@ import {
   parseDefaultBucketForm,
   parseEventDescriptionForm,
   readNearlyFullPct,
+  readTransferOfferSettings,
 } from "@/lib/booking/settings";
+import { parseTransferOfferForm } from "@/lib/admin/transfer-offer-form";
 import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
 import {
@@ -3781,6 +3783,56 @@ export async function setPlaceholderBookingEnabled(form: FormData): Promise<void
 }
 
 const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1);
+
+/**
+ * Save when the coordinator page offers a live transfer, and to which line (#4380,
+ * `booking_settings.transfer_offer_threshold` and `transfer_line`, migration 0212). SUPER
+ * ADMIN only, like the rest of the coordinators' settings on this page.
+ *
+ * WHO: `requireSuperAdmin`, checked here, never trusted to the page. WHOSE DATA: the one org
+ * wide settings row. Read on every transfer check (`readTransferOfferSettings`), so a save
+ * lands from the next customer a coordinator finds.
+ *
+ * Both values are read by `parseTransferOfferForm`, whose bounds are the column checks', and
+ * a refusal names what to enter and writes nothing. A column scoped upsert on id=1, so it
+ * cannot clobber the other settings, and idempotent (assume it runs twice). Refused before
+ * the audit entry, the cache invalidation and the saved notice, so none of them claims a
+ * value that was not stored.
+ */
+export async function setTransferOfferSettings(form: FormData): Promise<void> {
+  const actor = await requireSuperAdmin();
+  const parsed = parseTransferOfferForm(String(form.get("transfer_offer_threshold") ?? ""), String(form.get("transfer_line") ?? ""));
+  if (!parsed.ok) {
+    redirect(`${COORDINATOR_BOOKING_HREF}${refusedQuery(parsed.error)}`);
+  }
+  // The values it replaces, so the trail says what they were as well as what they became
+  // (L529). A read that fails does not stop the save; the entry says they could not be read.
+  const before = await readTransferOfferSettings();
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      transfer_offer_threshold: parsed.threshold,
+      transfer_line: parsed.line,
+      updated_at: new Date().toISOString(),
+      updated_by: actor.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(`${COORDINATOR_BOOKING_HREF}${refusedQuery(writeRefused("The live transfer settings", error))}`);
+  }
+  await recordAudit({
+    orgId: actor.org_id,
+    actorId: actor.id,
+    action: "booking.settings",
+    details: {
+      from: before ? { transfer_offer_threshold: before.threshold, transfer_line: before.line } : "unreadable",
+      to: { transfer_offer_threshold: parsed.threshold, transfer_line: parsed.line },
+    },
+  });
+  revalidatePath(COORDINATOR_BOOKING_HREF);
+  redirect(`${COORDINATOR_BOOKING_HREF}${savedQuery("transfer-offer")}`);
+}
 
 /**
  * Take a scheduling coordinator's access away (#4264, D12). SUPER ADMIN only.

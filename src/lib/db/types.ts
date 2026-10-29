@@ -626,6 +626,13 @@ export interface BookingSettings {
    *  false: a prerender is a no op until an admin turns it on. Read through
    *  `src/lib/embed/prerender-switch.ts`. */
   embed_prerender_enabled: boolean;
+  /** #4380, migration 0212: free advisors in the transfer queue at or above which the
+   *  coordinator booking page offers Transfer now. NOT NULL DEFAULT 3, 1 to 100. Read
+   *  through `readTransferOfferSettings`. */
+  transfer_offer_threshold: number;
+  /** #4380, migration 0212: the line a partner agent transfers the customer to, as
+   *  786-504-0671. NOT NULL DEFAULT '786-504-0671', held to that shape by a check. */
+  transfer_line: string;
   updated_at: string;
   updated_by: string | null;
 }
@@ -1537,6 +1544,17 @@ export interface LeadTextingLine {
   line: string;
   given_at: string;
   replaced_at: string | null;
+}
+
+/** #4380, migration 0212: what the monitor lane's transfer queue probe measured on one
+ *  business day (the org's zone). Written only by `record_transfer_queue_reading`. */
+export interface TransferQueueDay {
+  day: string;
+  readings: number;
+  reached: number;
+  most_free: number;
+  first_read_at: string;
+  last_read_at: string;
 }
 
 /** Dead-man's switch heartbeat (#420): one row per cron lane, stamped each tick. */

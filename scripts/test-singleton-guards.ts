@@ -120,6 +120,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "sync_locks", category: "lock/counter", why: "one lock row per text lock key (PK)" },
   { table: "rate_limits", category: "lock/counter", why: "one window row per text rate-limit key (PK)" },
   { table: "lane_heartbeats", category: "lock/counter", why: "one heartbeat row per text lane name (PK)" },
+  { table: "transfer_queue_days", category: "lock/counter", why: "#4380/0212: one tally row per business day, the date being the primary key, written only by record_transfer_queue_reading's upsert" },
   { table: "monitor_settings", category: "lock/counter", why: "single pinned settings row keyed by PK" },
   { table: "selfheal_scan_cursor", category: "lock/counter", why: "single scan-cursor row keyed by PK" },
   { table: "booking_failure_rate_state", category: "lock/counter", why: "#1313: one rolling-window state row keyed by a fixed text PK; the window lives in a jsonb column, not in extra rows" },

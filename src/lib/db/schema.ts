@@ -55,6 +55,7 @@ import type {
   BusyBlock,
   EventType,
   LaneHeartbeat,
+  TransferQueueDay,
   SelfhealScanCursor,
   AuditLogChainVerify,
   BookingFailureRateState,
@@ -261,6 +262,7 @@ export interface Database {
         ]
       >;
       lane_heartbeats: Table<LaneHeartbeat>;
+      transfer_queue_days: Table<TransferQueueDay>;
       api_caller_seen: Table<ApiCallerSeen>;
       frame_origin_daily: Table<FrameOriginDaily>;
       pilot_offer_samples: Table<PilotOfferSample>;
@@ -455,6 +457,11 @@ export interface Database {
       rate_limit_hit: {
         Args: { p_key: string; p_window_seconds: number; p_max: number };
         Returns: boolean;
+      };
+      /** #4380 (migration 0212): count one transfer queue reading against its business day. */
+      record_transfer_queue_reading: {
+        Args: { p_day: string; p_free: number; p_reached: boolean };
+        Returns: undefined;
       };
       rate_limit_refund: {
         Args: { p_key: string };

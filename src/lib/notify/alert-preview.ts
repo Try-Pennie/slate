@@ -165,6 +165,12 @@ import {
   formatRegalFeedUnreadableRecovery,
 } from "@/lib/monitor/regal-call-feed";
 import {
+  formatTransferQueueNeverFreeAlert,
+  formatTransferQueueNeverFreeRecovery,
+  formatTransferQueueUnreadableAlert,
+  formatTransferQueueUnreadableRecovery,
+} from "@/lib/monitor/transfer-queue-probe";
+import {
   formatRegalCallOutcomesAlert,
   formatRegalCallOutcomesRecovery,
 } from "@/lib/monitor/regal-call-outcomes";
@@ -3999,6 +4005,42 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     state: "the switch was turned off",
     channel: "recovery",
     text: PLACEHOLDER_MISSING_SWITCHED_OFF,
+  },
+  {
+    key: "transfer_queue_unreadable",
+    state: "the endpoint did not answer",
+    channel: "alert",
+    text: formatTransferQueueUnreadableAlert("timeout"),
+  },
+  {
+    key: "transfer_queue_unreadable",
+    state: "the endpoint answered without a count",
+    channel: "alert",
+    text: formatTransferQueueUnreadableAlert("shape"),
+  },
+  {
+    key: "transfer_queue_unreadable",
+    state: "the endpoint answers again",
+    channel: "recovery",
+    text: formatTransferQueueUnreadableRecovery(),
+  },
+  {
+    key: "transfer_queue_never_free",
+    state: "never enough advisors free all day",
+    channel: "alert",
+    text: formatTransferQueueNeverFreeAlert(REGAL_PREVIEW_DAY, { readings: 144, mostFree: 2 }, 3),
+  },
+  {
+    key: "transfer_queue_never_free",
+    state: "the settings could not be read when it was judged",
+    channel: "alert",
+    text: formatTransferQueueNeverFreeAlert(REGAL_PREVIEW_DAY, { readings: 144, mostFree: 2 }, null),
+  },
+  {
+    key: "transfer_queue_never_free",
+    state: "enough advisors are free again",
+    channel: "recovery",
+    text: formatTransferQueueNeverFreeRecovery(6),
   },
   {
     key: "regal_calls_quiet",

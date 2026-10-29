@@ -4,6 +4,13 @@ import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
 import { parseStampMs } from "@/lib/date/stamp";
 import { DAYS_OFFERED_CEILING } from "@/lib/booking/days-offered";
+import {
+  isTransferLine,
+  TRANSFER_OFFER_DEFAULTS,
+  TRANSFER_THRESHOLD_MAX,
+  TRANSFER_THRESHOLD_MIN,
+  type TransferOfferSettings,
+} from "@/lib/coordinator/transfer-queue";
 
 /**
  * Org-wide booking horizon (#216, folds in audit AUD-076). Precedence store > env >
@@ -332,6 +339,44 @@ export async function readPlaceholderBookingEnabled(): Promise<boolean | null> {
     return row?.placeholder_booking_enabled === true;
   } catch (err) {
     log.error("booking-settings", { msg: "placeholder booking switch read failed, treating as unreadable" }, err);
+    return null;
+  }
+}
+
+/**
+ * When the coordinator page offers a live transfer, and to which line (#4380, migration
+ * 0212): `{ threshold, line }`, or **null** when the read failed.
+ *
+ * Read when a coordinator finds a customer, when they press Transfer now, and by the
+ * monitor lane's probe. An absent settings row is a real answer (nobody has changed them)
+ * and is the column defaults. A read ERROR answers null, never the defaults and never a
+ * throw: the page then says live transfer can't be checked and offers nothing, rather
+ * than offering against a threshold nobody read (L10). A stored value outside the shape
+ * the column checks hold is treated the same way, said in the log.
+ */
+export async function readTransferOfferSettings(): Promise<TransferOfferSettings | null> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db.from("booking_settings").select("transfer_offer_threshold, transfer_line").eq("id", 1).maybeSingle(),
+      "booking_settings.transfer_offer_threshold",
+    ) as Pick<BookingSettings, "transfer_offer_threshold" | "transfer_line"> | null;
+    if (!row) return { ...TRANSFER_OFFER_DEFAULTS };
+    const threshold = row.transfer_offer_threshold;
+    const line = row.transfer_line;
+    if (
+      !Number.isInteger(threshold) ||
+      threshold < TRANSFER_THRESHOLD_MIN ||
+      threshold > TRANSFER_THRESHOLD_MAX ||
+      typeof line !== "string" ||
+      !isTransferLine(line)
+    ) {
+      log.error("booking-settings", { msg: "live transfer settings out of shape, treating as unreadable" });
+      return null;
+    }
+    return { threshold, line };
+  } catch (err) {
+    log.error("booking-settings", { msg: "live transfer settings read failed, treating as unreadable" }, err);
     return null;
   }
 }

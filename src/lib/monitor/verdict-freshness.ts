@@ -870,4 +870,11 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
       "step, so `monitor_step_failing:placeholder_calls` pages a sustained one, and its only gate is the " +
       "bucket list, whose own failing read pages as `monitor_step_failing:setup_buckets`",
   },
+  transferQueue: {
+    exempt:
+      "every way it can stop concluding already pages (#4380): an endpoint it cannot read pages as " +
+      "`transfer_queue_unreadable`, a failed read or write of its days or the settings is thrown out of its " +
+      "step, so `monitor_step_failing:transfer_queue` pages a sustained one, and its only gate is the org's " +
+      "week, whose own failing read pages as `monitor_step_failing:setup_business_hours`",
+  },
 };

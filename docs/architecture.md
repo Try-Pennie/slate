@@ -372,6 +372,32 @@ advisor is at risk"):
 - `placeholder_missing`: the switch on with no usable placeholder (no row, deactivated,
   or no address).
 
+## The live transfer offer on the coordinator page (#4380)
+
+Settled as `docs/design/coordinator-call-me-now.html`. When a coordinator finds a
+customer, the page asks the server action `checkCoordinatorTransfer`
+(`src/app/coordinator/actions.ts`, `requireCoordinatorDesk`, rate limited per person, no
+input from the browser) whether to offer a live transfer. The server, never the browser,
+asks Pennie's transfer queue endpoint
+(`https://queues.trypennie.app/boomsource-inbound-transfer`, no key, the queue chosen on
+the worker's side) with a 3 second deadline and a strict parse
+(`src/lib/coordinator/transfer-queue.ts`): anything but
+`{queue, queueId, availableAgents}` with a whole count, a non 2xx or a timeout is
+unreadable, never 0. At or above `booking_settings.transfer_offer_threshold` (default 3)
+the page shows "Advisors are free now" with `booking_settings.transfer_line` and Transfer
+now, between the customer card and the booking card; both settings are a super admin's,
+on `/admin/coordinator-booking`. Transfer now asks again, since the count reserves
+nothing; below the threshold it says so, and an unreadable count shows a plain line.
+Booking stays on screen and works the same in every state. The rules live in
+`reducePage` (`src/lib/coordinator/booking-page.ts`).
+
+Slate records nothing about offers and cannot see whether a transfer happened. The
+monitor lane's `transfer_queue` step (`src/lib/monitor/transfer-queue-probe.ts`) reads the
+endpoint every tick while the org is open, counts each reading per business day in
+`transfer_queue_days` (migration 0212, kept 30 days), and pages
+`transfer_queue_unreadable` after three failed ticks and `transfer_queue_never_free` when
+the last whole business day, read from open to close, never reached the threshold.
+
 ## One availability compute per POOL, not per bucket code (#2245)
 
 Moved out of `AGENTS.md` on 2026-10-15, where every character was loaded into

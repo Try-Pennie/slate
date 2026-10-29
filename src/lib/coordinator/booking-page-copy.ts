@@ -79,6 +79,21 @@ export const COORDINATOR_PAGE_COPY = {
     book: "Book the call",
     move: "Move the call",
   },
+  /**
+   * The live transfer offer (#4380), settled as docs/design/coordinator-call-me-now.html:
+   * the card's heading, line, button and fallback are the design's words. The re-check's
+   * answers and the unreadable line are states its frame does not draw, in the same voice.
+   */
+  transfer: {
+    heading: "Advisors are free now",
+    lead: "Transfer {first} to an advisor while they're on the line.",
+    button: "Transfer now",
+    pending: "Checking advisors",
+    fallback: "If it doesn't connect, book a time below.",
+    stillFree: "Advisors are still free. Transfer {first} now.",
+    gone: "Not enough advisors are free now. Book a time below.",
+    unreadable: "Live transfer can't be checked right now. Book a time below.",
+  },
   /** States the design's frames do not draw, in the same voice. */
   more: {
     /**

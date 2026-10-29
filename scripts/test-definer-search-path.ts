@@ -341,6 +341,9 @@ const EXPECTED_PINNED = [
   // #3137: adds one batch of framed booker loads. Security definer, pinned; now() and the
   // date arithmetic are pg_catalog built ins.
   "record_frame_origins",
+  // #4380: counts one transfer queue reading against its business day and prunes past 30
+  // days. Security INVOKER, plain SQL; now(), greatest and least are pg_catalog built ins.
+  "record_transfer_queue_reading",
   // #3592: the reconcile-missing sweep's conditional re-create. Security INVOKER, plain
   // SQL; now() is a pg_catalog built in.
   "recreate_missing_busy_blocks",
