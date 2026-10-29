@@ -163,13 +163,13 @@ export const ALERT_FIELDS: {
     key: "db_saturation",
     urgency: "page",
     label: "Database low on memory",
-    help: "The booking database's committed memory is critically high (over 90% of its ceiling), which slows every availability and booking request while Postgres query execution still looks idle. Scaling the instance or shedding load clears it.",
+    help: "Over 90% of the booking database's memory is in use, which slows every availability and booking request while Postgres query execution still looks idle. Scaling the instance or shedding load clears it.",
   },
   {
     key: "db_saturation_warn",
     urgency: "whisper",
     label: "Database memory getting tight",
-    help: "The booking database's committed memory is elevated (over 80%) or it is swapping, an early warning before it reaches the critical mark. Below the level that pages, but worth scaling the instance proactively.",
+    help: "Over 80% of the booking database's memory is in use, or it is swapping, an early warning before it reaches the critical mark. Below the level that pages, but worth scaling the instance proactively.",
   },
   {
     key: "busy_cache_drift",

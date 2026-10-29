@@ -15,6 +15,17 @@ import { publicSupabaseUrl, supabaseSecretKey } from "@/lib/env";
  * indirectly as a latency symptom a lead had already felt. This reads the database's
  * memory directly so the class pages early instead.
  *
+ * It judges MEMORY IN USE (MemTotal minus MemAvailable), not the committed address space
+ * against CommitLimit that it first judged. CommitLimit is enforced only under strict
+ * overcommit (`vm.overcommit_memory=2`), and Supabase's image leaves the kernel default
+ * (its tuned profile sets no overcommit mode, but does set `vm.panic_on_oom=1`, so running
+ * out of REAL memory restarts the database). On the Large instance the commit limit (half
+ * of RAM plus swap, 4.77 GB) sits below physical RAM (7.54 GB), and on 2026-10-29 at the
+ * 50% pilot committed reached 80% of it, whispering, with 78% of RAM free and no swap. The
+ * committed figure rises with load, so at 100% it could have paged on a healthy
+ * database. On the small instance of 2026-10-10 the two figures happened to agree
+ * because it was swapping heavily, which means MemAvailable was near zero too.
+ *
  * Fail safe like the rest of the monitor family: an unreadable value is never scored as
  * healthy (the NaN lands healthy shape, #1169, L11). A read that FAILS or a body that
  * cannot be PARSED (a wrong credential's 4xx, a renamed metric) is a CONFIGURED blind
@@ -32,7 +43,7 @@ import { publicSupabaseUrl, supabaseSecretKey } from "@/lib/env";
  * blind spot.
  */
 
-/** alert_state key for the PAGE: committed memory is critically high. A condition, so it
+/** alert_state key for the PAGE: memory in use is critically high. A condition, so it
  *  resolves when the reading comes back under the page threshold. */
 export const DB_SATURATION_KEY = "db_saturation";
 
@@ -40,14 +51,15 @@ export const DB_SATURATION_KEY = "db_saturation";
  *  so it never resolves (a healthy reading simply stops whispering). */
 export const DB_SATURATION_WARN_KEY = "db_saturation_warn";
 
-/** Committed memory as a percent of the commit ceiling. Page at 90 (the incident sat at
- *  ~92), warn at 80 for early visibility before it reaches the page. */
+/** Memory in use as a percent of physical RAM. Page at 90 (about 750 MB left on Large, close
+ *  to where the kernel starts reclaiming hard and an OOM restarts the database), warn at 80
+ *  for early visibility before it reaches the page. Chosen by Dan on 2026-10-29. */
 export const DB_SATURATION_PAGE_PCT = 90;
 export const DB_SATURATION_WARN_PCT = 80;
 
 /** Swap is a SECONDARY, corroborating signal: a database should not be swapping at all, so
  *  any sustained swap use is worth a warn, but it never pages on its own (the page trigger
- *  is the well grounded committed percent), to avoid a guessed swap threshold false paging. */
+ *  is memory in use), to avoid a guessed swap threshold false paging. */
 export const DB_SATURATION_SWAP_WARN_PCT = 10;
 
 /** Consecutive monitor ticks over the page threshold before paging. The lane runs every 5
@@ -69,16 +81,16 @@ export const DB_METRICS_FETCH_TIMEOUT_MS = 10_000;
  * `monitor_step_failing`), rather than guessing a wrong value or reading healthy.
  */
 export const DB_METRIC_NAMES = {
-  committed: "node_memory_Committed_AS_bytes",
-  limit: "node_memory_CommitLimit_bytes",
+  total: "node_memory_MemTotal_bytes",
+  available: "node_memory_MemAvailable_bytes",
   swapTotal: "node_memory_SwapTotal_bytes",
   swapFree: "node_memory_SwapFree_bytes",
 } as const;
 
 /** The four memory figures, each null when the metric was absent or unparseable. */
 export interface DbMemoryReading {
-  committedBytes: number | null;
-  limitBytes: number | null;
+  totalBytes: number | null;
+  availableBytes: number | null;
   swapTotalBytes: number | null;
   swapFreeBytes: number | null;
 }
@@ -88,12 +100,12 @@ export interface DbMemoryReading {
  * or its value is not a finite number. A gauge line is `name value` (node_memory_* carry
  * no labels, but an optional `{...}` label set is tolerated), and `# HELP`/`# TYPE`
  * comment lines are ignored. A null is the fail safe value: the judge turns a null
- * committed or limit into `unreadable`, never into a guessed percentage (L50).
+ * total or available into `unreadable`, never into a guessed percentage (L50).
  */
 function readGauge(text: string, name: string): number | null {
   // Anchored to a line start, and the name must be followed by whitespace or a `{...}`
-  // label set, so `node_memory_Committed_AS_bytes` never matches inside
-  // `node_memory_Committed_AS_bytes_total`. The VALUE is the first token after the name;
+  // label set, so `node_memory_MemAvailable_bytes` never matches inside
+  // `node_memory_MemAvailable_bytes_total`. The VALUE is the first token after the name;
   // a trailing token (Prometheus allows an optional timestamp, `name value 1700000000000`)
   // is ignored rather than making the whole line read as a missing metric.
   const re = new RegExp(`^${name}(?:\\{[^}]*\\})?[ \\t]+([^\\s]+)`, "m");
@@ -106,8 +118,8 @@ function readGauge(text: string, name: string): number | null {
 /** Pure Prometheus parser: pull the four memory gauges out of the metrics body. */
 export function parseDbMemoryMetrics(text: string): DbMemoryReading {
   return {
-    committedBytes: readGauge(text, DB_METRIC_NAMES.committed),
-    limitBytes: readGauge(text, DB_METRIC_NAMES.limit),
+    totalBytes: readGauge(text, DB_METRIC_NAMES.total),
+    availableBytes: readGauge(text, DB_METRIC_NAMES.available),
     swapTotalBytes: readGauge(text, DB_METRIC_NAMES.swapTotal),
     swapFreeBytes: readGauge(text, DB_METRIC_NAMES.swapFree),
   };
@@ -116,37 +128,44 @@ export function parseDbMemoryMetrics(text: string): DbMemoryReading {
 /** What the judge decided, and the figures the copy reads. `unreadable` carries nulls. */
 export interface DbSaturationVerdict {
   status: "ok" | "warn" | "page" | "unreadable";
-  committedPct: number | null;
+  usedPct: number | null;
   swapUsedPct: number | null;
 }
 
 /**
- * Pure judge. The `status` is COMMITTED MEMORY ONLY (page >= 90%, warn >= 80%, ok below),
- * because committed memory is the one signal that decides the critical page and its
- * recovery. A missing or zero commit ceiling is `unreadable` (nothing can be judged).
+ * Pure judge. The `status` is MEMORY IN USE ONLY (page >= 90%, warn >= 80%, ok below),
+ * because memory in use is the one signal that decides the critical page and its
+ * recovery. A missing or zero total, or an available figure outside 0 to total, is
+ * `unreadable` (nothing can be judged, and a broken read must never score healthy).
  *
  * Swap is deliberately NOT folded into the status: it is a secondary, corroborating signal
  * the RUNNER turns into an extra whisper, never into the page or its resolution. If swap
  * gated the status, residual swap (Linux does not eagerly reclaim it) would hold the
- * committed-memory page open long after the pressure eased (#3588 review). Swap missing or
+ * memory page open long after the pressure eased (#3588 review). Swap missing or
  * unconfigured is fine (a database with no swap), so an absent swap figure reads as zero.
  */
 export function judgeDbSaturation(r: DbMemoryReading): DbSaturationVerdict {
-  if (r.committedBytes === null || r.limitBytes === null || r.limitBytes <= 0) {
-    return { status: "unreadable", committedPct: null, swapUsedPct: null };
+  if (
+    r.totalBytes === null ||
+    r.availableBytes === null ||
+    r.totalBytes <= 0 ||
+    r.availableBytes < 0 ||
+    r.availableBytes > r.totalBytes
+  ) {
+    return { status: "unreadable", usedPct: null, swapUsedPct: null };
   }
-  const committedPct = (r.committedBytes / r.limitBytes) * 100;
+  const usedPct = ((r.totalBytes - r.availableBytes) / r.totalBytes) * 100;
   const swapUsedPct =
     r.swapTotalBytes !== null && r.swapTotalBytes > 0 && r.swapFreeBytes !== null
       ? ((r.swapTotalBytes - r.swapFreeBytes) / r.swapTotalBytes) * 100
       : 0;
   const status: DbSaturationVerdict["status"] =
-    committedPct >= DB_SATURATION_PAGE_PCT ? "page" : committedPct >= DB_SATURATION_WARN_PCT ? "warn" : "ok";
-  return { status, committedPct, swapUsedPct };
+    usedPct >= DB_SATURATION_PAGE_PCT ? "page" : usedPct >= DB_SATURATION_WARN_PCT ? "warn" : "ok";
+  return { status, usedPct, swapUsedPct };
 }
 
 /** Whether swap use alone is worth a whisper, decided by the runner separately from the
- *  committed-memory status so swap never gates the page (#3588 review). */
+ *  memory status so swap never gates the page (#3588 review). */
 export function swapWarrantsWhisper(swapUsedPct: number | null): boolean {
   return swapUsedPct !== null && swapUsedPct >= DB_SATURATION_SWAP_WARN_PCT;
 }
@@ -160,11 +179,11 @@ const pct = (n: number | null): string => (n === null ? "unknown" : `${Math.roun
  */
 export function formatDbSaturationAlert(v: DbSaturationVerdict): string {
   return (
-    `The booking database is running low on memory: committed memory is at ${pct(v.committedPct)} ` +
-    `of its ceiling and swap is ${pct(v.swapUsedPct)} used. Under load this shows up as slow ` +
+    `The booking database is running low on memory: ${pct(v.usedPct)} of its memory is in use ` +
+    `and ${pct(v.swapUsedPct)} of its swap is used. Under load this shows up as slow ` +
     `availability and booking requests that leads feel, while Postgres query execution still ` +
     `looks idle, so the query based checks will read healthy. Scale the database instance up ` +
-    `or shed load; this clears once committed memory falls fully back under ${DB_SATURATION_WARN_PCT}% ` +
+    `or shed load; this clears once memory in use falls fully back under ${DB_SATURATION_WARN_PCT}% ` +
     `(it holds through the ${DB_SATURATION_WARN_PCT} to ${DB_SATURATION_PAGE_PCT}% band so it does not flap).`
   );
 }
@@ -173,7 +192,7 @@ export function formatDbSaturationAlert(v: DbSaturationVerdict): string {
  *  fully healthy, because the reading may still be in the warn band. */
 export function formatDbSaturationRecovery(): string {
   return (
-    `The booking database's committed memory is back under the ${DB_SATURATION_WARN_PCT}% early ` +
+    `The booking database's memory in use is back under the ${DB_SATURATION_WARN_PCT}% early ` +
     `warning line, so the memory pressure that was slowing availability and booking requests has ` +
     `fully eased, not merely dipped under the critical ${DB_SATURATION_PAGE_PCT}% mark. No action is needed.`
   );
@@ -182,18 +201,26 @@ export function formatDbSaturationRecovery(): string {
 /** The warn whisper: elevated but not critical, so somebody can scale proactively. An info,
  *  so it never sends an all clear; it simply stops once the reading is healthy again. */
 export function formatDbSaturationWarn(v: DbSaturationVerdict): string {
-  // The warn fires when committed memory is over 80% OR swap is in use, so the copy names
-  // both figures and the two lines without asserting committed specifically crossed 80: a
-  // swap-triggered warn can sit at 50% committed, and claiming 80 there would contradict the
-  // number in the same sentence (L11).
+  // The warn fires when memory in use is over 80% OR swap is in use, so the copy names only
+  // the line or lines this reading actually crossed (L11). The first version named both as a
+  // disjunction and always said "a database that is swapping", which on 2026-10-29 read out
+  // beside "swap is 0% used".
+  const memoryOver = v.usedPct !== null && v.usedPct >= DB_SATURATION_WARN_PCT;
+  const swapping = swapWarrantsWhisper(v.swapUsedPct);
+  const reasons = [
+    memoryOver ? `that is past the ${DB_SATURATION_WARN_PCT}% early warning line` : null,
+    swapping
+      ? `it is using ${pct(v.swapUsedPct)} of its swap, and a database that is swapping is already working harder than it should`
+      : null,
+  ].filter((r): r is string => r !== null);
   return (
-    `The booking database's memory is getting tight: committed memory is at ${pct(v.committedPct)} ` +
-    `of its ceiling and swap is ${pct(v.swapUsedPct)} used. One of those is past its early warning ` +
-    `line (committed over ${DB_SATURATION_WARN_PCT}%, or swap over ${DB_SATURATION_SWAP_WARN_PCT}% used), ` +
-    `below the level that pages but worth acting on: a database that is swapping is already working ` +
-    `harder than it should. Scale the instance before committed memory reaches ${DB_SATURATION_PAGE_PCT}%.`
+    `The booking database's memory is getting tight: ${pct(v.usedPct)} of its memory is in use. ` +
+    `${capitalise(reasons.join("; and "))}. This is below the level that pages but worth acting on: ` +
+    `scale the instance before memory in use reaches ${DB_SATURATION_PAGE_PCT}%.`
   );
 }
+
+const capitalise = (t: string): string => t.charAt(0).toUpperCase() + t.slice(1);
 
 /**
  * What one tick measured. A configured blind spot does not reach a result at all, it
@@ -201,7 +228,7 @@ export function formatDbSaturationWarn(v: DbSaturationVerdict): string {
  */
 export interface DbSaturationResult {
   status: "clear" | "warn" | "saturated";
-  committedPct: number | null;
+  usedPct: number | null;
   swapUsedPct: number | null;
 }
 
@@ -242,13 +269,13 @@ export async function fetchDbSaturationMetrics(): Promise<string> {
 /**
  * One monitor tick. The states, deliberately distinct:
  *
- * The PAGE is driven by COMMITTED memory alone; swap only ever adds a whisper, never the
+ * The PAGE is driven by MEMORY IN USE alone; swap only ever adds a whisper, never the
  * page or its resolution (so residual swap cannot hold the page open, #3588 review). States:
  *
- *  - PAGE (committed >= 90%): count toward the streak, page once sustained two ticks.
- *  - WARN (committed 80 to 90%): HOLD a standing page open (hysteresis), reset the page
+ *  - PAGE (in use >= 90%): count toward the streak, page once sustained two ticks.
+ *  - WARN (in use 80 to 90%): HOLD a standing page open (hysteresis), reset the page
  *    streak so re-entry debounces, and whisper. The page does NOT clear here.
- *  - OK (committed < 80%): the page is genuinely over, so clear and resolve it. If swap is
+ *  - OK (in use < 80%): the page is genuinely over, so clear and resolve it. If swap is
  *    still in use the whisper continues (advisory), but the page stays resolved.
  *  - CONFIGURED BUT BLIND (fetch failed, or a body the parser cannot read): THROWS. The
  *    throw is contained by the lane's per-check `steps.run` boundary, and a sustained one
@@ -300,8 +327,8 @@ export async function runDbSaturationCheck(deps: {
         logAlertSendFailure(DB_SATURATION_KEY),
       );
     }
-    deps.logTick?.({ status: "saturated", committedPct: verdict.committedPct, swapUsedPct: verdict.swapUsedPct, sustained });
-    return { status: "saturated", committedPct: verdict.committedPct, swapUsedPct: verdict.swapUsedPct };
+    deps.logTick?.({ status: "saturated", usedPct: verdict.usedPct, swapUsedPct: verdict.swapUsedPct, sustained });
+    return { status: "saturated", usedPct: verdict.usedPct, swapUsedPct: verdict.swapUsedPct };
   }
 
   const whisper = async (): Promise<DbSaturationResult> => {
@@ -309,32 +336,32 @@ export async function runDbSaturationCheck(deps: {
     await sendThrottledInfo(DB_SATURATION_WARN_KEY, deps.cooldownMs.warn, formatDbSaturationWarn(verdict)).catch(
       logAlertSendFailure(DB_SATURATION_WARN_KEY),
     );
-    deps.logTick?.({ status: "warn", committedPct: verdict.committedPct, swapUsedPct: verdict.swapUsedPct });
-    return { status: "warn", committedPct: verdict.committedPct, swapUsedPct: verdict.swapUsedPct };
+    deps.logTick?.({ status: "warn", usedPct: verdict.usedPct, swapUsedPct: verdict.swapUsedPct });
+    return { status: "warn", usedPct: verdict.usedPct, swapUsedPct: verdict.swapUsedPct };
   };
 
   if (verdict.status === "warn") {
-    // Committed memory is elevated but under the page threshold. HYSTERESIS (#3588 review):
+    // Memory in use is elevated but under the page threshold. HYSTERESIS (#3588 review):
     // reset the page streak so a reading hovering around 90 has to climb and hold again
     // before it can re-page, but do NOT resolve a standing page here. The page clears only
-    // once committed is fully back under the warn line (the `ok` branch below); resolving in
+    // once memory in use is fully back under the warn line (the `ok` branch below); resolving in
     // the 80 to 90 band would all-clear a reading oscillating across 90 over and over and
     // land "no action is needed" while it is still elevated (L11, L36).
     await clearFailureStreak(DB_SATURATION_KEY);
     return whisper();
   }
 
-  // OK: committed memory is fully back under the warn line, so the critical condition is
-  // genuinely over. Resolve the page on COMMITTED alone (a no-op unless one was delivered),
-  // never gated on swap: residual swap must not hold the committed-memory page open.
+  // OK: memory in use is fully back under the warn line, so the critical condition is
+  // genuinely over. Resolve the page on MEMORY IN USE alone (a no-op unless one was
+  // delivered), never gated on swap: residual swap must not hold the memory page open.
   await clearFailureStreak(DB_SATURATION_KEY);
   // alert-key: db_saturation
   await resolveAlert(DB_SATURATION_KEY, formatDbSaturationRecovery()).catch(logResolveFailure(DB_SATURATION_KEY));
 
-  // Committed is fine, but swap can still be in use: whisper (advisory) while it is, with the
+  // Memory in use is fine, but swap can still be in use: whisper (advisory) while it is, with the
   // page already resolved. The whisper simply stops when swap falls back, no all-clear owed.
   if (swapWarrantsWhisper(verdict.swapUsedPct)) return whisper();
 
-  deps.logTick?.({ status: "clear", committedPct: verdict.committedPct, swapUsedPct: verdict.swapUsedPct });
-  return { status: "clear", committedPct: verdict.committedPct, swapUsedPct: verdict.swapUsedPct };
+  deps.logTick?.({ status: "clear", usedPct: verdict.usedPct, swapUsedPct: verdict.swapUsedPct });
+  return { status: "clear", usedPct: verdict.usedPct, swapUsedPct: verdict.swapUsedPct };
 }

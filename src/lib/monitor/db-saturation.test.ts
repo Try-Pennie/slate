@@ -3,8 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // #3588: the database's own memory pressure must page directly, early, instead of
 // surfacing as the availability latency a lead already felt. What is under test is the
 // DECISION: the Prometheus parse (a missing or garbage metric is unreadable, never a
-// guessed number), the judge (ok/warn/page by committed percent, swap corroborating), and
-// that a reading it cannot take does NEITHER page nor clear (#1134, #1169).
+// guessed number), the judge (ok/warn/page by the percent of memory in use, swap
+// corroborating), and that a reading it cannot take does NEITHER page nor clear (#1134,
+// #1169).
 const recordConsecutiveStreak = vi.hoisted(() =>
   vi.fn(async (_key: string, _windowSeconds: number, _afterTicks: number) => false),
 );
@@ -37,95 +38,121 @@ import {
 
 const GB = 1024 * 1024 * 1024;
 
-/** A realistic metrics body at a given committed/limit and swap, in node_exporter shape. */
-const body = (committed: number, limit: number, swapTotal: number, swapFree: number): string =>
+/** A realistic metrics body at a given total/available memory and swap, in node_exporter
+ *  shape. It also carries the commit accounting gauges, which the check must ignore. */
+const body = (total: number, available: number, swapTotal: number, swapFree: number): string =>
   [
-    "# HELP node_memory_Committed_AS_bytes committed address space",
-    "# TYPE node_memory_Committed_AS_bytes gauge",
-    `${DB_METRIC_NAMES.committed} ${committed}`,
-    `${DB_METRIC_NAMES.limit} ${limit}`,
+    "# HELP node_memory_MemTotal_bytes Memory information field MemTotal_bytes.",
+    "# TYPE node_memory_MemTotal_bytes gauge",
+    `${DB_METRIC_NAMES.total} ${total}`,
+    `${DB_METRIC_NAMES.available} ${available}`,
     `${DB_METRIC_NAMES.swapTotal} ${swapTotal}`,
     `${DB_METRIC_NAMES.swapFree} ${swapFree}`,
     "node_memory_MemFree_bytes 123456",
+    "node_memory_Committed_AS_bytes 999999999999",
+    "node_memory_CommitLimit_bytes 1",
   ].join("\n");
 
 describe("parseDbMemoryMetrics (#3588)", () => {
   it("reads the four memory gauges from a Prometheus body", () => {
-    const r = parseDbMemoryMetrics(body(1.55 * GB, 1.69 * GB, 2 * GB, 1.8 * GB));
-    expect(r.committedBytes).toBe(1.55 * GB);
-    expect(r.limitBytes).toBe(1.69 * GB);
+    const r = parseDbMemoryMetrics(body(7.54 * GB, 5.87 * GB, 2 * GB, 1.8 * GB));
+    expect(r.totalBytes).toBe(7.54 * GB);
+    expect(r.availableBytes).toBe(5.87 * GB);
     expect(r.swapTotalBytes).toBe(2 * GB);
     expect(r.swapFreeBytes).toBe(1.8 * GB);
   });
 
   it("tolerates a label set on the gauge line", () => {
-    const text = `${DB_METRIC_NAMES.committed}{instance="db"} 42\n${DB_METRIC_NAMES.limit} 100`;
-    expect(parseDbMemoryMetrics(text).committedBytes).toBe(42);
+    const text = `${DB_METRIC_NAMES.available}{instance="db"} 42\n${DB_METRIC_NAMES.total} 100`;
+    expect(parseDbMemoryMetrics(text).availableBytes).toBe(42);
   });
 
   it("tolerates an optional Prometheus timestamp trailing the value", () => {
-    const text = `${DB_METRIC_NAMES.committed} 42 1700000000000\n${DB_METRIC_NAMES.limit} 100`;
-    expect(parseDbMemoryMetrics(text).committedBytes).toBe(42);
-    expect(parseDbMemoryMetrics(text).limitBytes).toBe(100);
+    const text = `${DB_METRIC_NAMES.available} 42 1700000000000\n${DB_METRIC_NAMES.total} 100`;
+    expect(parseDbMemoryMetrics(text).availableBytes).toBe(42);
+    expect(parseDbMemoryMetrics(text).totalBytes).toBe(100);
   });
 
   it("returns null for a metric that is absent, never a guess", () => {
-    const text = `${DB_METRIC_NAMES.committed} 42`; // no limit/swap lines
+    const text = `${DB_METRIC_NAMES.available} 42`; // no total/swap lines
     const r = parseDbMemoryMetrics(text);
-    expect(r.committedBytes).toBe(42);
-    expect(r.limitBytes).toBeNull();
+    expect(r.availableBytes).toBe(42);
+    expect(r.totalBytes).toBeNull();
     expect(r.swapTotalBytes).toBeNull();
   });
 
   it("returns null for a non-numeric value", () => {
-    const text = `${DB_METRIC_NAMES.committed} not-a-number\n${DB_METRIC_NAMES.limit} 100`;
-    expect(parseDbMemoryMetrics(text).committedBytes).toBeNull();
+    const text = `${DB_METRIC_NAMES.available} not-a-number\n${DB_METRIC_NAMES.total} 100`;
+    expect(parseDbMemoryMetrics(text).availableBytes).toBeNull();
   });
 
   it("does not match a metric name as a substring of another", () => {
     // Only a longer-named metric is present; the short name must not match inside it.
-    const text = "node_memory_Committed_AS_bytes_total 999";
-    expect(parseDbMemoryMetrics(text).committedBytes).toBeNull();
+    const text = "node_memory_MemAvailable_bytes_total 999";
+    expect(parseDbMemoryMetrics(text).availableBytes).toBeNull();
   });
 
   it("reads a garbage body as all nulls, which the judge turns into unreadable", () => {
     const r = parseDbMemoryMetrics("<html>502 Bad Gateway</html>");
-    expect([r.committedBytes, r.limitBytes, r.swapTotalBytes, r.swapFreeBytes]).toEqual([null, null, null, null]);
+    expect([r.totalBytes, r.availableBytes, r.swapTotalBytes, r.swapFreeBytes]).toEqual([null, null, null, null]);
   });
 });
 
 describe("judgeDbSaturation (#3588)", () => {
+  // 1 GB of RAM makes the percent in use read straight off the available figure.
   const read = (over: Partial<DbMemoryReading> = {}): DbMemoryReading => ({
-    committedBytes: 0.5 * GB,
-    limitBytes: 1 * GB,
+    totalBytes: 1 * GB,
+    availableBytes: 0.5 * GB,
     swapTotalBytes: 1 * GB,
     swapFreeBytes: 1 * GB, // no swap used
     ...over,
   });
 
   it("is ok below the warn threshold", () => {
-    expect(judgeDbSaturation(read({ committedBytes: 0.7 * GB })).status).toBe("ok");
+    expect(judgeDbSaturation(read({ availableBytes: 0.3 * GB })).status).toBe("ok"); // 70% in use
   });
 
-  it("warns from 80 up to but not including 90", () => {
-    expect(judgeDbSaturation(read({ committedBytes: 0.8 * GB })).status).toBe("warn");
-    expect(judgeDbSaturation(read({ committedBytes: 0.899 * GB })).status).toBe("warn");
+  it("warns from 80% in use up to but not including 90", () => {
+    expect(judgeDbSaturation(read({ availableBytes: 0.2 * GB })).status).toBe("warn");
+    expect(judgeDbSaturation(read({ availableBytes: 0.101 * GB })).status).toBe("warn");
   });
 
-  it("pages at 90 and above (the 2026-10-10 incident sat at ~92)", () => {
-    expect(judgeDbSaturation(read({ committedBytes: 0.9 * GB })).status).toBe("page");
-    expect(judgeDbSaturation(read({ committedBytes: 0.92 * GB })).status).toBe("page");
+  it("pages at 90% in use and above", () => {
+    expect(judgeDbSaturation(read({ availableBytes: 0.1 * GB })).status).toBe("page");
+    expect(judgeDbSaturation(read({ availableBytes: 0.05 * GB })).status).toBe("page");
   });
 
-  it("keeps the status COMMITTED-only: swap in use does not change the status, it is reported apart", () => {
-    const v = judgeDbSaturation(read({ committedBytes: 0.5 * GB, swapFreeBytes: 0.8 * GB })); // 20% swap used
-    expect(v.status).toBe("ok"); // committed is 50%, so the committed-only status is ok
+  it("reads the 2026-10-29 Large instance as ok: 80% committed against the commit limit, 22% in use", () => {
+    // The live reading behind the false whisper. Committed_AS was 3.85 GB against a 4.77 GB
+    // CommitLimit, but Supabase runs the default heuristic overcommit, where CommitLimit is
+    // never enforced, and on Large it sits BELOW physical RAM (half of 7.54 GB plus 1 GB of
+    // swap). Memory actually in use was 1.67 GB of 7.54 GB, nothing swapped.
+    const v = judgeDbSaturation(
+      parseDbMemoryMetrics(
+        [
+          `${DB_METRIC_NAMES.total} ${7.54 * GB}`,
+          `${DB_METRIC_NAMES.available} ${5.87 * GB}`,
+          `${DB_METRIC_NAMES.swapTotal} ${1 * GB}`,
+          `${DB_METRIC_NAMES.swapFree} ${1 * GB}`,
+          `node_memory_Committed_AS_bytes ${3.85 * GB}`,
+          `node_memory_CommitLimit_bytes ${4.77 * GB}`,
+        ].join("\n"),
+      ),
+    );
+    expect(v.status).toBe("ok");
+    expect(Math.round(v.usedPct ?? -1)).toBe(22);
+    expect(swapWarrantsWhisper(v.swapUsedPct)).toBe(false);
+  });
+
+  it("keeps the status MEMORY-only: swap in use does not change the status, it is reported apart", () => {
+    const v = judgeDbSaturation(read({ swapFreeBytes: 0.8 * GB })); // 50% in use, 20% swap used
+    expect(v.status).toBe("ok");
     expect(Math.round(v.swapUsedPct ?? -1)).toBe(20);
     expect(swapWarrantsWhisper(v.swapUsedPct)).toBe(true); // the swap is what the runner whispers on
   });
 
-  it("never lets swap drive the status, even at 100% used (committed decides the page)", () => {
-    const v = judgeDbSaturation(read({ committedBytes: 0.5 * GB, swapFreeBytes: 0 })); // 100% swap used
+  it("never lets swap drive the status, even at 100% used (memory in use decides the page)", () => {
+    const v = judgeDbSaturation(read({ swapFreeBytes: 0 })); // 100% swap used
     expect(v.status).toBe("ok");
     expect(swapWarrantsWhisper(v.swapUsedPct)).toBe(true);
   });
@@ -136,21 +163,31 @@ describe("judgeDbSaturation (#3588)", () => {
     expect(swapWarrantsWhisper(null)).toBe(false);
   });
 
-  it("is unreadable when committed or the ceiling is missing", () => {
-    expect(judgeDbSaturation(read({ committedBytes: null })).status).toBe("unreadable");
-    expect(judgeDbSaturation(read({ limitBytes: null })).status).toBe("unreadable");
-    expect(judgeDbSaturation(read({ limitBytes: 0 })).status).toBe("unreadable");
+  it("is unreadable when total or available memory is missing, or the figures cannot be true", () => {
+    expect(judgeDbSaturation(read({ totalBytes: null })).status).toBe("unreadable");
+    expect(judgeDbSaturation(read({ availableBytes: null })).status).toBe("unreadable");
+    expect(judgeDbSaturation(read({ totalBytes: 0 })).status).toBe("unreadable");
+    // More available than exists, or a negative figure, is a broken read, never a healthy one.
+    expect(judgeDbSaturation(read({ availableBytes: 2 * GB })).status).toBe("unreadable");
+    expect(judgeDbSaturation(read({ availableBytes: -1 })).status).toBe("unreadable");
   });
 
-  it("treats absent swap as zero pressure, judging on committed alone", () => {
-    const v = judgeDbSaturation(read({ committedBytes: 0.5 * GB, swapTotalBytes: null, swapFreeBytes: null }));
+  it("treats absent swap as zero pressure, judging on memory in use alone", () => {
+    const v = judgeDbSaturation(read({ swapTotalBytes: null, swapFreeBytes: null }));
     expect(v.status).toBe("ok");
     expect(v.swapUsedPct).toBe(0);
   });
 });
 
 describe("the db-saturation copy (#3588)", () => {
-  const v = judgeDbSaturation({ committedBytes: 0.92 * GB, limitBytes: 1 * GB, swapTotalBytes: 1 * GB, swapFreeBytes: 0.5 * GB });
+  const verdict = (inUse: number, swapUsed: number) =>
+    judgeDbSaturation({
+      totalBytes: 1 * GB,
+      availableBytes: (1 - inUse) * GB,
+      swapTotalBytes: 1 * GB,
+      swapFreeBytes: (1 - swapUsed) * GB,
+    });
+  const v = verdict(0.92, 0.5);
   for (const [name, text] of [
     ["alert", formatDbSaturationAlert(v)],
     ["warn", formatDbSaturationWarn(v)],
@@ -163,16 +200,36 @@ describe("the db-saturation copy (#3588)", () => {
     });
   }
 
-  it("the warn copy prints the real figures and frames the two lines as a disjunction, not a false claim", () => {
-    // committed 50%, swap 100% used -> warn on swap alone. The copy must print the ACTUAL
-    // committed figure and must not state committed crossed its line, because here it did
-    // not; it names both thresholds as a disjunction instead (L11).
-    const v = judgeDbSaturation({ committedBytes: 0.5 * GB, limitBytes: 1 * GB, swapTotalBytes: 1 * GB, swapFreeBytes: 0 });
-    const text = formatDbSaturationWarn(v);
-    expect(text).toContain("committed memory is at 50%"); // the real committed figure, stated plainly
-    expect(text).toContain("swap is 100% used"); // the real swap figure
-    // The disjunction names both lines without asserting committed specifically exceeded 80.
-    expect(text).toContain("committed over 80%, or swap over 10% used");
+  it("no copy speaks of committed memory or a ceiling, the figure that misled on Large", () => {
+    for (const text of [formatDbSaturationAlert(v), formatDbSaturationWarn(v), formatDbSaturationRecovery()]) {
+      expect(text).not.toMatch(/committed|ceiling/i);
+    }
+  });
+
+  it("the page names the percent of memory in use", () => {
+    expect(formatDbSaturationAlert(v)).toContain("92% of its memory is in use");
+  });
+
+  it("a warn on memory alone names that line and says nothing of swapping", () => {
+    // The 2026-10-29 whisper said "a database that is swapping is already working harder
+    // than it should" with swap at 0%: a sentence about a cause that was not present (L11).
+    const text = formatDbSaturationWarn(verdict(0.85, 0));
+    expect(text).toContain("85% of its memory is in use");
+    expect(text).toContain("past the 80% early warning line");
+    expect(text).not.toMatch(/swapping/i);
+  });
+
+  it("a warn on swap alone names the swap and does not claim memory crossed its line", () => {
+    const text = formatDbSaturationWarn(verdict(0.5, 1));
+    expect(text).toContain("50% of its memory is in use");
+    expect(text).toContain("100% of its swap");
+    expect(text).not.toContain("past the 80% early warning line");
+  });
+
+  it("a warn on both names both", () => {
+    const text = formatDbSaturationWarn(verdict(0.85, 0.4));
+    expect(text).toContain("past the 80% early warning line");
+    expect(text).toContain("40% of its swap");
   });
 });
 
@@ -202,7 +259,7 @@ describe("runDbSaturationCheck (#3588)", () => {
   });
 
   it("clears the page condition on a measured healthy reading", async () => {
-    const res = await run(async () => body(0.5 * GB, 1 * GB, 1 * GB, 1 * GB));
+    const res = await run(async () => body(1 * GB, 0.5 * GB, 1 * GB, 1 * GB));
     expect(res.status).toBe("clear");
     expect(clearFailureStreak).toHaveBeenCalledWith(DB_SATURATION_KEY);
     expect(resolveAlert).toHaveBeenCalledWith(DB_SATURATION_KEY, expect.any(String));
@@ -211,7 +268,7 @@ describe("runDbSaturationCheck (#3588)", () => {
   });
 
   it("whispers in the warn band and resets the page streak, but does NOT resolve a standing page (hysteresis)", async () => {
-    const res = await run(async () => body(0.85 * GB, 1 * GB, 1 * GB, 1 * GB));
+    const res = await run(async () => body(1 * GB, 0.15 * GB, 1 * GB, 1 * GB));
     expect(res.status).toBe("warn");
     // Hysteresis: a reading at 85 is still elevated, so the page must not all-clear here, or a
     // reading oscillating across 90 would page and resolve over and over.
@@ -223,16 +280,16 @@ describe("runDbSaturationCheck (#3588)", () => {
   });
 
   it("resolves the page only once the reading is fully back under the warn line (ok)", async () => {
-    const res = await run(async () => body(0.7 * GB, 1 * GB, 1 * GB, 1 * GB)); // 70%, below the 80 warn line
+    const res = await run(async () => body(1 * GB, 0.3 * GB, 1 * GB, 1 * GB)); // 70% in use, below the 80 warn line
     expect(res.status).toBe("clear");
     expect(resolveAlert).toHaveBeenCalledWith(DB_SATURATION_KEY, expect.any(String));
     expect(sendThrottledInfo).not.toHaveBeenCalled();
   });
 
-  it("resolves the page when committed recovers EVEN IF swap is still in use, and keeps whispering", async () => {
-    // committed 60% (recovered), swap 100% used. Residual swap must not hold the committed
-    // page open: the page resolves on committed alone, and the swap keeps whispering.
-    const res = await run(async () => body(0.6 * GB, 1 * GB, 1 * GB, 0));
+  it("resolves the page when memory in use recovers EVEN IF swap is still in use, and keeps whispering", async () => {
+    // 60% in use (recovered), swap 100% used. Residual swap must not hold the memory page
+    // open: the page resolves on memory in use alone, and the swap keeps whispering.
+    const res = await run(async () => body(1 * GB, 0.4 * GB, 1 * GB, 0));
     expect(res.status).toBe("warn"); // still whispering about swap
     expect(resolveAlert).toHaveBeenCalledWith(DB_SATURATION_KEY, expect.any(String)); // but the page IS resolved
     expect(sendThrottledInfo).toHaveBeenCalledWith(DB_SATURATION_WARN_KEY, 60 * 60_000, expect.any(String));
@@ -241,7 +298,7 @@ describe("runDbSaturationCheck (#3588)", () => {
 
   it("does not page on one tick over the threshold, only on a sustained streak", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(false); // first tick: not sustained
-    const res = await run(async () => body(0.92 * GB, 1 * GB, 1 * GB, 1 * GB));
+    const res = await run(async () => body(1 * GB, 0.08 * GB, 1 * GB, 1 * GB));
     expect(res.status).toBe("saturated");
     expect(recordConsecutiveStreak).toHaveBeenCalled();
     expect(sendThrottledAlert).not.toHaveBeenCalled();
@@ -250,7 +307,7 @@ describe("runDbSaturationCheck (#3588)", () => {
 
   it("pages once the streak is sustained", async () => {
     recordConsecutiveStreak.mockResolvedValueOnce(true); // sustained
-    const res = await run(async () => body(0.92 * GB, 1 * GB, 1 * GB, 1 * GB));
+    const res = await run(async () => body(1 * GB, 0.08 * GB, 1 * GB, 1 * GB));
     expect(res.status).toBe("saturated");
     // The page throttles on the PAGE cooldown.
     expect(sendThrottledAlert).toHaveBeenCalledWith(DB_SATURATION_KEY, 30 * 60_000, expect.any(String));

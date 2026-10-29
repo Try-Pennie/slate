@@ -1251,10 +1251,15 @@ a query, a lane or anything inside Slate. On 2026-10-10 committed memory sat at 
 its ceiling with heavy swap, CPU was 4%, and Postgres query execution looked idle, so
 every query based check read healthy while `/api/availability` slowed from ~60ms to a
 median of 653ms and a p95 of 1874ms that leads felt. This check reads the database's
-committed memory and swap straight from Supabase's privileged metrics endpoint, so the
-class pages on the cause rather than on the latency symptom. The page fires when
-committed memory is at or over 90% of its ceiling for two consecutive ticks; the whisper
-fires one step earlier, when committed memory is over 80% or swap use is over 10%.
+memory in use (total RAM minus what Linux reports available) and swap straight from
+Supabase's privileged metrics endpoint, so the class pages on the cause rather than on the
+latency symptom. The page fires when 90% or more of memory is in use for two consecutive
+ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%.
+
+It first judged committed memory against the kernel's commit limit instead. That limit is
+enforced only in strict overcommit mode, which Supabase does not use, and on the Large
+instance it sits below physical RAM, so on 2026-10-29 at the 50% pilot it whispered at 80%
+committed with 78% of RAM free and no swap. Do not go back to it.
 
 **First checks.** The alert itself carries the two figures (committed percent and swap
 percent); that is the first read, not any Slate log. Confirm it against the Supabase
@@ -1263,7 +1268,7 @@ the whisper's swap line is low (10%), and it is worth acting on even below the p
 
 **Fix or escalate.** The repair is infrastructure, not code: scale the database instance
 up (more memory) or shed load. There is nothing to fix in Slate. The page is a condition
-and clears itself once committed memory falls fully back under the 80% warning line (it
+and clears itself once memory in use falls fully back under the 80% warning line (it
 deliberately holds through the 80 to 90% band so it does not flap); the whisper is an
 info and simply stops once the reading is healthy. If instead
 `monitor_step_failing:db_saturation` is what paged, the check could not READ the metrics

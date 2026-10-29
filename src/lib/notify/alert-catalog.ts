@@ -112,7 +112,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
   {
     key: "db_saturation",
     kind: "condition",
-    why: "The database's committed memory is critically high (#3588), which slows every booking and availability request; it falls back under the threshold and the monitor lane sees it on its next pass.",
+    why: "The database's memory in use is critically high (#3588), which slows every booking and availability request; it falls back under the threshold and the monitor lane sees it on its next pass.",
   },
   {
     key: "cron_lanes_stale",
@@ -1451,7 +1451,7 @@ export const ALERT_CATALOG: AlertEntry[] = [
     key: "db_saturation_warn",
     kind: "info",
     why:
-      "The database's committed memory is elevated but not yet critical (#3588), an early " +
+      "The database's memory in use is elevated but not yet critical (#3588), an early " +
       "warning so somebody can scale proactively. Nothing is broken for leads at this level, so " +
       "nobody is woken, and there is no all-clear worth sending: a healthy database simply stops " +
       "whispering, and absence of the whisper is the healthy state. The critical page (db_saturation) " +

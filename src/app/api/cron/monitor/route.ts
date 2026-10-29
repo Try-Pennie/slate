@@ -4180,7 +4180,7 @@ export async function GET(req: NextRequest) {
       },
     );
 
-    // --- Is the database itself memory pressured (#3588)? Read its committed memory and
+    // --- Is the database itself memory pressured (#3588)? Read its memory in use and
     // swap straight from Supabase's privileged metrics endpoint, so this class pages
     // early rather than surfacing as the availability latency a lead already felt. The
     // metrics fetch is an external HTTP call, so it lives inside this step's own boundary:
