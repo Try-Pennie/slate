@@ -105,7 +105,6 @@ assert(page(tonight, { poolGroupingStopped: true }).includes("The pool grouping,
 assert(page([lane("sync", 12 * MIN)], { poolGroupingStopped: true }).includes("The pool grouping publish has stopped too."), "without recompute it is only named");
 assert(!/pool grouping/.test(five), "no pool grouping line while it is publishing");
 
-// --- The all-clear names nothing it cannot know and asks for nothing.
 // --- the sync sentence and the every minute trigger (2026-10-29) ---------------------
 // Dan's exact words for the consequence of a stopped sync lane.
 const SYNC_SENTENCE = "Advisors' calendars aren't syncing, so offered times may be out of date.";
@@ -130,6 +129,7 @@ assert(!/every-minute tick/.test(fiveMinuteOnly), "no every minute sentence when
 const holdSweepOnly = page([lane("reroute-hold-sweep", 14 * MIN)], { minuteTrigger: { kind: "silent", sinceMs: silentSince } });
 assert(holdSweepOnly.includes("every-minute tick since"), "the reroute hold sweep runs inside selfheal, so it is on the trigger");
 
+// --- The all-clear names nothing it cannot know and asks for nothing.
 const recovery = coreLanesRecoveryText();
 assert(/running again/.test(recovery) && /No action is needed\./.test(recovery), "the all-clear says the lanes are running and nothing is needed");
 clean(recovery, "recovery");

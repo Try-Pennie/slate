@@ -107,6 +107,11 @@ const now = at("2026-10-29T09:05:53Z");
   eq(today, { kind: "silent", sinceMs: at("2026-10-29T08:51:57Z") }, "today: silent since 4:51:57 AM ET, the backstop's claims not counted");
   eq(minuteTriggerReading([], now, { truncated: false }), { kind: "silent", sinceMs: null }, "no minute tick in the whole window is silent, since unknown");
   eq(minuteTriggerReading([], now, { truncated: true }).kind, "unknown", "a cut short read that found no delivery claims nothing");
+  eq(
+    minuteTriggerReading([row("aaaa00000000000d", "sync", "not a time")], now, { truncated: false }).kind,
+    "unknown",
+    "an unreadable stamp that might be the last delivery claims nothing (L50)",
+  );
   const lateButThere = minuteTriggerReading([...minuteTick("aaaa00000000000c", new Date(now - 2 * MIN).toISOString())], now, { truncated: true });
   eq(lateButThere.kind, "delivered", "a delivery found in a cut short read still counts");
 }

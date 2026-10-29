@@ -25,7 +25,9 @@ export const dynamic = "force-dynamic";
  * Asked by the Worker's five minute tick, which starts exactly the lanes named here
  * (worker/lane-backstop.ts), because Cloudflare has stopped delivering the every minute
  * trigger on its own while the others fired. Not a lane and never scheduled itself: it
- * claims no tick, takes no lock and stamps no heartbeat, because it writes nothing.
+ * claims no tick, takes no lock and stamps no heartbeat, because it writes nothing to
+ * `lane_runs` or any lane's state. Its only writes are its own page's `alert_state` rows,
+ * through the alert dispatcher.
  *
  * WHO MAY CALL: the cron bearer only (the dispatcher). WHOSE DATA: `lane_runs`, which holds
  * tick ids, lane names and instants, nothing about a lead or an agent.

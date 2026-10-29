@@ -107,7 +107,8 @@ export function overdueMinuteLanes(
  * - `silent`: no such tick inside the line. `sinceMs` is the last one in the window read,
  *   or null when the window held none at all.
  * - `unknown`: the read was cut short (a full page) and found no delivery, so the last
- *   delivery may sit in rows that were never read. Claims nothing.
+ *   delivery may sit in rows that were never read; or a stamp would not parse, so it may
+ *   be the last delivery. Claims nothing.
  */
 export type MinuteTriggerReading =
   | { kind: "delivered"; lastMs: number }
@@ -120,11 +121,15 @@ export function minuteTriggerReading(
   read: { truncated: boolean },
 ): MinuteTriggerReading {
   const byTick = new Map<string, { onlyMinute: boolean; latestMs: number | null }>();
+  // A stamp that will not parse could be the last delivery, so a reading that finds none
+  // with one present cannot say the trigger is silent (L50): it is unknown.
+  let unreadableStamp = false;
   for (const r of rows) {
     const entry = byTick.get(r.tick_id) ?? { onlyMinute: true, latestMs: null };
     if (!MINUTE_LANE_NAMES.has(r.lane)) entry.onlyMinute = false;
     const ms = parseStampMs(r.claimed_at);
     if (ms !== null) entry.latestMs = Math.max(entry.latestMs ?? -Infinity, ms);
+    else unreadableStamp = true;
     byTick.set(r.tick_id, entry);
   }
   let last: number | null = null;
@@ -133,7 +138,8 @@ export function minuteTriggerReading(
     last = Math.max(last ?? -Infinity, t.latestMs);
   }
   if (last !== null && nowMs - last <= MINUTE_LANE_OVERDUE_MS) return { kind: "delivered", lastMs: last };
-  if (last === null && read.truncated) return { kind: "unknown" };
+  if (read.truncated && last === null) return { kind: "unknown" };
+  if (unreadableStamp) return { kind: "unknown" };
   return { kind: "silent", sinceMs: last };
 }
 

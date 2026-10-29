@@ -12,8 +12,7 @@
  */
 import { describeGap, laneQuietClause, stoppedTogether, type StaleLane } from "@/lib/monitor/health";
 import type { CloudflareCronStatus } from "@/lib/monitor/cloudflare-status";
-import { DateTime } from "luxon";
-import { formatClockTime } from "@/lib/date/parse";
+import { formatSlotTime } from "@/lib/booking/slot-label";
 import { MINUTE_LANE_PATHS, TRIGGER_READING_WINDOW_MS, type MinuteTriggerReading } from "@/lib/monitor/minute-lane-claims";
 import { laneFieldName } from "@/lib/monitor/lane-timing";
 import {
@@ -84,9 +83,9 @@ export interface CoreLanesPage {
 /** The zone every time of day in this copy is given in. */
 const COPY_ZONE = "America/New_York";
 
-/** "4:51am ET", in the one spelling every surface uses (formatClockTime). */
+/** "4:51am ET", in the one spelling every surface uses (formatSlotTime over formatClockTime). */
 function timeEt(ms: number): string {
-  return `${formatClockTime(DateTime.fromMillis(ms, { zone: COPY_ZONE })) ?? "an unreadable time"} ET`;
+  return `${formatSlotTime(new Date(ms).toISOString(), COPY_ZONE)} ET`;
 }
 
 const MINUTE_LANE_NAMES = new Set(MINUTE_LANE_PATHS.map(laneFieldName));
