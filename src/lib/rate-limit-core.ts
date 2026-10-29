@@ -301,7 +301,8 @@ export const RATE_LIMIT_PRUNE_MARGIN_SECONDS = 3600;
  * A count kept in `rate_limits` under `${prefix}:${signature}` that decides nothing
  * about a caller (#3176): the error boundary's catch count (#1974) and the count of
  * reports from pages Slate does not serve (#2755), and the opaque cross origin
- * script error burst count with its per address row (#3323). They borrow `rate_limit_hit`
+ * script error burst count with its per address row (#3323), and the same pair for
+ * unhandled rejections that name no location. They borrow `rate_limit_hit`
  * for its atomic rolling window, so they need pruning like a limiter row, but they
  * are not limiter rules and their window is their own.
  *
@@ -349,12 +350,34 @@ export const OPAQUE_SCRIPT_ERROR_BURST_COUNTER: WindowCounter = {
   windowSeconds: OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS,
 };
 
+/** The window unhandled rejections that name no location are counted over: the same
+ *  15 minutes as the opaque script errors, for the same reason (see
+ *  `UNATTRIBUTED_REJECTION_BURST_THRESHOLD`). */
+export const UNATTRIBUTED_REJECTION_WINDOW_SECONDS = OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS;
+
+/** One row per surface and ADDRESS that sent an unhandled rejection naming no file
+ *  and no stack frame, so a browser reloading is counted once. */
+export const UNATTRIBUTED_REJECTION_ADDRESS_COUNTER: WindowCounter = {
+  prefix: "unattributed_rejection_address",
+  windowSeconds: UNATTRIBUTED_REJECTION_WINDOW_SECONDS,
+};
+
+/** How many distinct addresses sent one on a surface in the window: the figure the
+ *  burst page is decided on. Its own rows, so opaque script errors and these never
+ *  fill each other's burst. */
+export const UNATTRIBUTED_REJECTION_BURST_COUNTER: WindowCounter = {
+  prefix: "unattributed_rejection_count",
+  windowSeconds: UNATTRIBUTED_REJECTION_WINDOW_SECONDS,
+};
+
 /** Every window counter, which is exactly what the counter group of the prune covers. */
 export const WINDOW_COUNTERS: readonly WindowCounter[] = [
   BOUNDARY_CATCH_COUNTER,
   UNRECOGNISED_PAGE_COUNTER,
   OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER,
   OPAQUE_SCRIPT_ERROR_BURST_COUNTER,
+  UNATTRIBUTED_REJECTION_ADDRESS_COUNTER,
+  UNATTRIBUTED_REJECTION_BURST_COUNTER,
 ];
 
 /** `prune_rate_limits` refuses an age under an hour, so no group is planned below it. */

@@ -7,6 +7,7 @@ import {
   embedOriginMismatchAlert,
   opaqueScriptErrorBurstAlert,
   testBucketClientErrorInfo,
+  unattributedRejectionBurstAlert,
   unrecognisedPageReports,
 } from "@/lib/notify/misc-alert-copy";
 import { parseOriginMismatchMessage } from "@/lib/embed/parent-origin";
@@ -15,10 +16,13 @@ import { shortErrorReason } from "@/lib/notify/error-text";
 import {
   countBoundaryCatch,
   countOpaqueScriptError,
+  countUnattributedRejection,
   countUnrecognisedPageReport,
   BOUNDARY_WINDOW_MS,
   OPAQUE_BURST_THRESHOLD,
   OPAQUE_BURST_WINDOW_MS,
+  UNATTRIBUTED_REJECTION_BURST_THRESHOLD,
+  UNATTRIBUTED_REJECTION_WINDOW_MS,
 } from "@/lib/api/boundary-count";
 
 /**
@@ -57,6 +61,7 @@ import {
   clientErrorSurface,
   isHarmlessBrowserMessage,
   isOpaqueScriptError,
+  whereClientErrorCameFrom,
 } from "@/lib/api/client-error-scrub";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 import { loggedUserAgent } from "@/lib/http/user-agent";
@@ -229,6 +234,69 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
       log.error("client-errors", { msg: "opaque script error alert failed", page: report.page }, alertErr);
     });
     return done();
+  }
+
+  // L477: a window error or an unhandled rejection is judged by WHERE it came from,
+  // its file and stack frames, never its message. A browser extension's script runs
+  // inside the page, so its uncaught errors arrive here exactly as Slate's do (on
+  // 2026-10-29, "Failed to connect to MetaMask" from MetaMask's injected provider
+  // paged from /book). A boundary catch is React's own report from Slate's tree, so
+  // it is never judged this way. Classified HERE, as the opaque errors are, because
+  // the route sees every report whatever bundle the page is on.
+  if (report.kind === "error" || report.kind === "unhandledrejection") {
+    const origin = whereClientErrorCameFrom(report);
+
+    // Every location it names is an extension's: nothing Slate ships is on the stack,
+    // so nobody here can act on it. Logged below error, with the reason, and never
+    // paged. One frame anywhere else, Slate's bundle included, and it pages below.
+    if (origin.from === "extension") {
+      log.warn("client-errors", {
+        msg: "browser extension error",
+        reason: "every file and stack frame it names is a browser extension's, so Slate's code is not on it",
+        kind: report.kind,
+        page: report.page,
+        scheme: origin.scheme,
+        message: report.message,
+        source: report.source,
+        user_agent: loggedUserAgent(req.headers),
+      });
+      return done();
+    }
+
+    // A rejection naming nowhere at all cannot be attributed: an extension rejecting
+    // with a plain value sends this, and so would a Slate fault with no stack. One is
+    // logged and counted and never pages; a burst across several browsers pages,
+    // because a fault in the page's own code fails for every lead who opens it.
+    if (report.kind === "unhandledrejection" && origin.from === "no_location") {
+      const signature = clientErrorSignature(report);
+      const seen = await countUnattributedRejection(signature, clientIp(req.headers));
+      log.warn("client-errors", {
+        msg: "unattributed unhandled rejection",
+        reason: "it names no file and no stack frame, so it cannot be told from an extension's",
+        page: report.page,
+        message: report.message,
+        addresses: seen.addresses,
+        new_address: seen.newAddress,
+        burst: seen.burst,
+        measured: seen.measured,
+        user_agent: loggedUserAgent(req.headers),
+      });
+      if (!seen.burst) return done();
+      // alert-key: unattributed_rejections:*
+      await sendThrottledAlert(
+        `unattributed_rejections:${clientErrorSurface(report.page)}`,
+        UNATTRIBUTED_REJECTION_WINDOW_MS,
+        unattributedRejectionBurstAlert({
+          surface: clientErrorSurface(report.page),
+          addresses: seen.addresses,
+          threshold: UNATTRIBUTED_REJECTION_BURST_THRESHOLD,
+          windowMinutes: Math.round(UNATTRIBUTED_REJECTION_WINDOW_MS / 60_000),
+        }),
+      ).catch((alertErr: unknown) => {
+        log.error("client-errors", { msg: "unattributed rejection alert failed", page: report.page }, alertErr);
+      });
+      return done();
+    }
   }
 
   // #1974: a BOUNDARY catch is a different event from an unexpected 500 and gets

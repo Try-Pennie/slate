@@ -18,6 +18,7 @@ import {
   withoutUrlQuery,
   isHarmlessBrowserMessage,
   isOpaqueScriptError,
+  whereClientErrorCameFrom,
   normalizeClientError,
   clientErrorSignature,
   clientErrorSurface,
@@ -335,6 +336,107 @@ import { assert, eq, finish } from "./lib/harness.ts";
   put("[slug]/page.tsx");
   eq(scanPageSurfaces(root).refusals.length, 1, "a dynamic top level segment is refused rather than listed");
   rmSync(root, { recursive: true, force: true });
+}
+
+// --- whereClientErrorCameFrom: judged by the locations a report names ---
+// A browser extension's script runs inside Slate's page, so its uncaught errors
+// reach the beacon as if they were Slate's (L477). Measured 2026-10-29 12:14 ET:
+// "Failed to connect to MetaMask" paged from /book with one stack frame, in
+// MetaMask's own `chrome-extension://` script. The judgement reads WHERE the
+// error came from (the source and every stack frame), never the message, so the
+// next extension needs no new string. Fixtures go through `normalizeClientError`,
+// which is what the route holds.
+{
+  const report = (over: Record<string, unknown> = {}) =>
+    normalizeClientError({ kind: "unhandledrejection", message: "Failed to connect to MetaMask", page: "/book", ...over })!;
+  const METAMASK_STACK =
+    "i: Failed to connect to MetaMask\n" +
+    "    at Object.connect (chrome-extension://nkbihfbeogaeaoehlefnkodbefgpgknn/scripts/inpage.js:12:4822)";
+  const SLATE_FRAME = "    at submit (https://slate.trypennie.app/_next/static/chunks/0booker.js:1:20345)";
+
+  eq(
+    whereClientErrorCameFrom(report({ stack: METAMASK_STACK })),
+    { from: "extension", scheme: "chrome-extension" },
+    "the measured MetaMask report: its only frame is the extension's own script",
+  );
+  eq(
+    whereClientErrorCameFrom(
+      report({ kind: "error", message: "boom", source: "moz-extension://4f1c2b/content.js", line: 3, col: 9 }),
+    ),
+    { from: "extension", scheme: "moz-extension" },
+    "a window error whose file is a Firefox extension's",
+  );
+  eq(
+    whereClientErrorCameFrom(report({ stack: "connect@safari-web-extension://ABCD-EF/inpage.js:1:2\nr@safari-web-extension://ABCD-EF/inpage.js:3:4" })),
+    { from: "extension", scheme: "safari-web-extension" },
+    "Safari's frame shape (fn@url:line:col), every frame an extension's",
+  );
+  eq(
+    whereClientErrorCameFrom(
+      report({ stack: `${METAMASK_STACK}\n    at new Promise (<anonymous>)\n    at Array.forEach (native)` }),
+    ),
+    { from: "extension", scheme: "chrome-extension" },
+    "an engine's own frames (<anonymous>, native) name no script, so they neither excuse nor accuse",
+  );
+
+  // CONTROLS: one frame anywhere but an extension, and the report is not excused.
+  eq(
+    whereClientErrorCameFrom(report({ stack: `${METAMASK_STACK}\n${SLATE_FRAME}` })),
+    { from: "other_location" },
+    "an extension frame AND a Slate bundle frame: Slate's code is on the stack, so it is not the extension's alone",
+  );
+  eq(
+    whereClientErrorCameFrom(report({ stack: `TypeError: x is undefined\n${SLATE_FRAME}` })),
+    { from: "other_location" },
+    "a Slate bundle frame alone",
+  );
+  eq(
+    whereClientErrorCameFrom(report({ stack: "at submit (main.js:1:20)" })),
+    { from: "other_location" },
+    "a frame with no scheme at all is still a location, and not an extension's",
+  );
+  eq(
+    whereClientErrorCameFrom(
+      report({ kind: "error", source: "chrome-extension://abc/x.js", stack: `Error: x\n${SLATE_FRAME}` }),
+    ),
+    { from: "other_location" },
+    "an extension file but a Slate frame in the stack",
+  );
+  eq(
+    whereClientErrorCameFrom(report({ stack: "Error: x\n    at f (https://chrome-extension.example.com/x.js:1:2)" })),
+    { from: "other_location" },
+    "an ordinary site whose HOST merely contains the word is not an extension",
+  );
+  eq(
+    whereClientErrorCameFrom(report({ kind: "error", source: "https://slate.trypennie.app/book", line: 1, col: 2 })),
+    { from: "other_location" },
+    "a Slate page as the file",
+  );
+
+  // A stack cut at FIELD_LIMITS.stack may have lost the frames that name Slate's
+  // bundle, so extension frames at its head excuse nothing.
+  const LONG_EXTENSION_STACK = `${METAMASK_STACK}\n`.repeat(30) + SLATE_FRAME;
+  const cut = report({ stack: LONG_EXTENSION_STACK });
+  assert(cut.stack!.length === FIELD_LIMITS.stack && !cut.stack!.includes("slate.trypennie.app"), "fixture: the cap cut the Slate frame off");
+  eq(
+    whereClientErrorCameFrom(cut),
+    { from: "other_location" },
+    "a stack cut at its cap is never excused as an extension's, since the cut may have taken Slate's frames",
+  );
+
+  // Nothing named at all: no file and no frame. Not excused as an extension's,
+  // because nothing says it was; the route decides what that costs.
+  eq(whereClientErrorCameFrom(report()), { from: "no_location" }, "no stack and no file names nowhere");
+  eq(
+    whereClientErrorCameFrom(report({ message: "Failed to fetch", stack: "TypeError: Failed to fetch" })),
+    { from: "no_location" },
+    "a stack that is only its message line names nowhere",
+  );
+  eq(
+    whereClientErrorCameFrom(report({ message: "chrome-extension://abc/x.js failed" })),
+    { from: "no_location" },
+    "the MESSAGE is never read for a location: free text could claim anything",
+  );
 }
 
 // --- isOpaqueScriptError (#3323) ---

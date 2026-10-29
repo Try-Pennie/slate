@@ -449,6 +449,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // on the page; the procedure is to read those log lines, see which browsers they
   // came from, and try the page in one of them.
   opaque_script_errors: "an-unexpected-fault-was-reported",
+  // The same family. Browsers reported failures that named no file and no line of
+  // code; the procedure is to read those log lines, see which browsers they came
+  // from, and try the page in one of them.
+  unattributed_rejections: "an-unexpected-fault-was-reported",
 };
 
 /**
