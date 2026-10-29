@@ -21,6 +21,35 @@ test("the sign in button sends the browser to Google through Supabase, asking fo
   expect(url.searchParams.get("code_challenge"), "the flow is PKCE").toBeTruthy();
 });
 
+test("the partner sign in button sends the browser to Microsoft through Supabase, asking for the address alone (#4379)", async ({
+  page,
+}) => {
+  await page.goto("/partner/sign-in");
+  // One way in, and it is not Google (docs/design/partner-sign-in.html, D1).
+  await expect(page.getByRole("button")).toHaveCount(1);
+  const authorize = page.waitForRequest((r) => r.url().includes("/auth/v1/authorize"));
+  await page.getByRole("button", { name: /continue with microsoft/i }).click();
+  const url = new URL((await authorize).url());
+  expect(url.searchParams.get("provider")).toBe("azure");
+  expect(url.searchParams.get("scopes")).toBe("email");
+  expect(url.searchParams.get("redirect_to")).toBe(`${E2E_APP_ORIGIN}/api/auth/callback`);
+  expect(url.searchParams.get("hd"), "the Google domain hint is Google's alone").toBeNull();
+  expect(url.searchParams.get("code_challenge"), "the flow is PKCE").toBeTruthy();
+  // The mark that brings a hand off with no code back to this page, not to /login.
+  const cookies = await page.context().cookies();
+  expect(cookies.find((c) => c.name === "slate_sign_in_from")?.value).toBe("partner");
+});
+
+test("a hand off that comes back with no code lands on the page it started from (#4379)", async ({ page }) => {
+  await page.context().addCookies([{ name: "slate_sign_in_from", value: "partner", url: E2E_APP_ORIGIN }]);
+  await page.goto("/api/auth/callback?error=access_denied");
+  await expect(page).toHaveURL(/\/partner\/sign-in\?error=missing_code$/);
+  await expect(page.getByRole("alert")).toHaveText("That sign-in didn't complete. Please try again.");
+  await page.context().clearCookies();
+  await page.goto("/api/auth/callback?error=access_denied");
+  await expect(page).toHaveURL(/\/login\?error=missing_code$/);
+});
+
 test("an admin signs in through the callback and lands on the console, linked to their row", async ({ page }) => {
   const landed = await signIn(page, seed.users.admin.email);
   expect(landed.pathname).toBe("/admin");

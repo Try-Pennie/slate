@@ -68,6 +68,10 @@ import {
   MICROSOFT_NOT_INVITED_LOGIN_ERROR,
   MicrosoftAccountMismatchError,
 } from "@/lib/auth/microsoft-identity";
+import { SIGN_IN_FROM_COOKIE } from "@/lib/auth/sign-in-page";
+
+/** The partner sign in page, where a refused Microsoft sign in lands (#4379). */
+const PARTNER = "https://slate.trypennie.app/partner/sign-in";
 
 const SESSION = {
   session: {
@@ -99,11 +103,15 @@ function sessionWithIdentities(
   };
 }
 
-// The handler reads only `req.nextUrl`, and a real NextRequest is not
-// constructible outside a server runtime, so hand it the URL it asks for.
-function request() {
+// The handler reads only `req.nextUrl` and `req.cookies`, and a real NextRequest is
+// not constructible outside a server runtime, so hand it the URL and cookies it asks for.
+function request(opts: { url?: string; cookies?: Record<string, string> } = {}) {
+  const cookies = opts.cookies ?? {};
   return {
-    nextUrl: new URL("https://slate.trypennie.app/api/auth/callback?code=abc"),
+    nextUrl: new URL(opts.url ?? "https://slate.trypennie.app/api/auth/callback?code=abc"),
+    cookies: {
+      get: (name: string) => (Object.hasOwn(cookies, name) ? { name, value: cookies[name] } : undefined),
+    },
   } as never;
 }
 
@@ -502,7 +510,8 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
 
     const res = await GET(request());
 
-    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=domain_not_allowed");
+    // Back on the partner page, whose button they pressed, which points them at /login.
+    expect(res.headers.get("location")).toBe(`${PARTNER}?error=domain_not_allowed`);
     expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
     expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
@@ -513,7 +522,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       signOut.mockReset();
       exchangeCodeForSession.mockResolvedValue(microsoftSession({ meta: { email_verified: claim } }));
       const res = await GET(request());
-      expect(res.headers.get("location"), String(claim)).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+      expect(res.headers.get("location"), String(claim)).toBe(`${PARTNER}?error=sign_in_unavailable`);
       expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     }
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
@@ -525,7 +534,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       throw new Error("GOOGLE_HOSTED_DOMAIN is not set");
     });
     const res = await GET(request());
-    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+    expect(res.headers.get("location")).toBe(`${PARTNER}?error=sign_in_unavailable`);
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
   });
 
@@ -550,6 +559,20 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
     expect(logged.errors).toContain("auth-callback sign in carried both a google and a microsoft account");
   });
 
+  it("sends that refusal back to the partner page when the sign in started there", async () => {
+    // The identities cannot say which button was pressed, so the page's own mark decides.
+    exchangeCodeForSession.mockResolvedValue(
+      microsoftSession({
+        identities: [
+          { provider: "google", identity_data: { sub: "g-1" } },
+          { provider: "azure", identity_data: { sub: "ms-sub-1" } },
+        ],
+      }),
+    );
+    const res = await GET(request({ cookies: { [SIGN_IN_FROM_COOKIE]: "partner" } }));
+    expect(res.headers.get("location")).toBe(`${PARTNER}?error=sign_in_unavailable`);
+  });
+
   it("refuses two Microsoft accounts on one sign in", async () => {
     exchangeCodeForSession.mockResolvedValue(
       microsoftSession({
@@ -560,7 +583,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       }),
     );
     const res = await GET(request());
-    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+    expect(res.headers.get("location")).toBe(`${PARTNER}?error=sign_in_unavailable`);
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
   });
 
@@ -578,7 +601,8 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
   ])("refuses %s, ends this session, and says so in its own words", async (_what, err, code) => {
     provision.linkCoordinator.mockRejectedValue(err);
     const res = await GET(request());
-    expect(res.headers.get("location")).toBe(`https://slate.trypennie.app/login?error=${code}`);
+    // On the partner page, never /login: the staff page's only button is Google.
+    expect(res.headers.get("location")).toBe(`${PARTNER}?error=${code}`);
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
@@ -591,5 +615,38 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
     await GET(request());
     expect(provision.provisionUser).toHaveBeenCalledTimes(1);
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
+  });
+
+  it("keeps a Google refusal on /login even if the partner page's mark is still set", async () => {
+    // The identities are what decide once the exchange has run; the mark never overrules them.
+    exchangeCodeForSession.mockResolvedValue({ data: SESSION, error: null });
+    provision.provisionUser.mockRejectedValue(new DeactivatedAccountError());
+    const res = await GET(request({ cookies: { [SIGN_IN_FROM_COOKIE]: "partner" } }));
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=account_deactivated");
+  });
+});
+
+// #4379: before the exchange nothing says which provider this was, so a hand off that came back
+// with no code (Microsoft refused it, or the person cancelled) or would not exchange goes back to
+// the page its button was on, read from the mark that page set.
+describe("auth callback before it knows the provider (#4379)", () => {
+  it.each([
+    ["no code", "https://slate.trypennie.app/api/auth/callback?error=access_denied", "missing_code"],
+    ["a code that would not exchange", undefined, "exchange_failed"],
+  ])("sends %s from the partner page back there", async (_what, url, code) => {
+    exchangeCodeForSession.mockResolvedValue({ data: { session: null }, error: { message: "bad code" } });
+    const res = await GET(request({ url, cookies: { [SIGN_IN_FROM_COOKIE]: "partner" } }));
+    expect(res.headers.get("location")).toBe(`${PARTNER}?error=${code}`);
+  });
+
+  it.each([
+    ["no mark at all", {}],
+    ["a mark that is not exactly partner", { [SIGN_IN_FROM_COOKIE]: "https://evil.example" }],
+  ])("sends them to /login with %s", async (_what, cookies) => {
+    exchangeCodeForSession.mockResolvedValue({ data: { session: null }, error: { message: "bad code" } });
+    const noCode = await GET(request({ url: "https://slate.trypennie.app/api/auth/callback", cookies }));
+    expect(noCode.headers.get("location")).toBe("https://slate.trypennie.app/login?error=missing_code");
+    const failed = await GET(request({ cookies }));
+    expect(failed.headers.get("location")).toBe("https://slate.trypennie.app/login?error=exchange_failed");
   });
 });

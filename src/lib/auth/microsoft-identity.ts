@@ -56,9 +56,9 @@ export class MicrosoftAccountMismatchError extends Error {
 
 /**
  * The codes the sign in callback bounces a refused Microsoft sign in back with, and
- * the sentence for each. The sign in page shows them once its Microsoft button ships
- * (#4379, plan step 4, which goes through a design round first); until then no
- * Microsoft sign in can reach the callback, since the provider stays off.
+ * the sentence for each. The partner sign in page (`/partner/sign-in`, whose one button is
+ * Microsoft) shows them, through `partner-sign-in-copy.ts`; the callback sends every
+ * refused Microsoft sign in there, never to the staff page.
  */
 export const MICROSOFT_NOT_INVITED_LOGIN_ERROR = "microsoft_not_invited";
 export const MICROSOFT_NOT_INVITED_MESSAGE =
