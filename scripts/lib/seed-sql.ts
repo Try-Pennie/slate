@@ -110,6 +110,19 @@ export function bucketsInsertSql(rows: readonly SeedBucket[]): string {
 }
 
 /**
+ * A real bucket "100" and a test world bucket "T100" on one event type, the pair the
+ * placeholder suites judge every world rule against (a test bucket's call belongs to the
+ * test placeholder, and never counts as real).
+ */
+export function realAndTestBucketsSql(orgId: string, eventTypeId: string, realId: string, testId: string): string {
+  return `${bucketsInsertSql([
+    { id: realId, orgId, code: "100", name: "Low", eventTypeId },
+    { id: testId, orgId, code: "T100", name: "Test", eventTypeId },
+  ])}
+    update buckets set is_test = true where id = '${testId}';`;
+}
+
+/**
  * One unconsumed reroute hold (migration 0166) on an advisor, for a booking already
  * written. Times are SQL timestamptz literals; it expires `expiresIn` (an SQL interval)
  * from now, so a suite never sleeps to reach either side of it.

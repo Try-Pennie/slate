@@ -41,6 +41,8 @@ import type {
   RegalCallOutcome,
   AdvisorPhotoRow,
   RegalCallIgnore,
+  ProgramLead,
+  PlaceholderDayClaim,
   BookingOutbox,
   BookingReservation,
   BookingApiOutcomeDaily,
@@ -239,6 +241,8 @@ export interface Database {
         ]
       >;
       regal_call_ignores: Table<RegalCallIgnore>;
+      program_leads: Table<ProgramLead>;
+      placeholder_day_claims: Table<PlaceholderDayClaim>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
@@ -759,6 +763,26 @@ export interface Database {
           p_payload: unknown;
         };
         Returns: string | null;
+      };
+      /** #4387: register a Lead for the program, or extend its mark; returns when it lapses. */
+      register_program_lead: {
+        Args: { p_lead_key: string; p_caller: string };
+        Returns: string;
+      };
+      /** #4387: what holds a place on a day's placeholder limit, leaving out a moving booking. */
+      placeholder_day_held: {
+        Args: { p_day: string; p_exclude_booking: string | null };
+        Returns: number;
+      };
+      /** #4387: take a place on a day's placeholder limit; false when the day is full. */
+      claim_placeholder_day: {
+        Args: { p_day: string; p_claim_key: string; p_booking_id: string | null };
+        Returns: boolean;
+      };
+      /** #4387: the held count for every day from p_from to p_to. */
+      placeholder_day_counts: {
+        Args: { p_from: string; p_to: string };
+        Returns: { call_day: string; held: number }[];
       };
       /**
        * #4202, migration 0208: commit_reschedule for a move onto the placeholder advisor,

@@ -2539,3 +2539,32 @@ No Docker is exit 2, UNMEASURED. It runs in the DB replay workflow with the othe
 `verify-*-sql.ts` suites. Seen failing on planted breakages of 0211, one at a time: no
 advisory lock (both racers claimed), no shorter email rule, no gap rule, `effective_from`
 stamped on every save, ON DELETE CASCADE in place of RESTRICT, and no stale check.
+
+# Proving the placeholder day limit in a real database (`pnpm verify:program-leads-sql`)
+
+#4387 (phase 1 of #4255, program leads booking any time with the placeholder advisor as
+overflow): migration 0213 adds `program_leads`, `bookings.program_lead`,
+`booking_settings.placeholder_day_limit`, `placeholder_day_claims` and four functions. The
+limit is decided by Postgres alone, under a per day advisory lock, and the HELD count is
+derived from the bookings themselves (`placeholder_day_held`), so a cancel, a move off the
+placeholder and a move to another day free a place with no release step anywhere.
+
+`pnpm verify:program-leads-sql` replays every migration into the `supabase/postgres`
+image and checks, each beside a control: a Lead registers under its 15 character key, a
+non Lead key is refused, and registering again keeps one row and never shortens the
+mark; only an active program booking on the real world placeholder holds a place (a
+coordinator's call, a real advisor and the test world do not), counted on the call's
+Eastern day rather than its UTC day; at the limit a new claim is refused while a move
+within the day is allowed; a cancel, a move to another day and a move off the
+placeholder each free the place (a move claim whose booking left the placeholder holds it until it lapses, the safe side); a fresh claim holds a place, a retry of it takes no
+second one, a claim whose booking committed is counted once, a claim that never
+committed lapses after 15 minutes and a retry of a lapsed one is judged afresh; two
+concurrent claims for the last place grant exactly one; the per day counts agree with
+the per day figure; the limit refuses -1 and 501 and starts at 50; and the web roles see
+no rows and can run none of the functions. No Docker is exit 2, UNMEASURED; any failed
+check is exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts`
+suites. Seen failing on a planted breakage of 0213: with the advisory lock removed, both
+racers were granted the last place.
+
+**Re-run it after any change to `placeholder_day_held`, `claim_placeholder_day` or what
+`staff_placed`, `program_lead` and the placeholder mean.**
