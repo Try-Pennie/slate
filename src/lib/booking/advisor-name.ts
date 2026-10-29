@@ -13,6 +13,17 @@
  * module mocking.
  */
 
+/**
+ * Whether a lead may be told who their call is with (#4391). Never for a call on the
+ * placeholder advisor (`staff_placed`): Marcia holds the time, and a real advisor from the
+ * pool makes the call, so "Your loan advisor, Marcia" would promise the lead somebody who
+ * never rings. The one rule for the confirmation, the moved call, the manage page and the
+ * existing call notice, so no surface can name her while another does not.
+ */
+export function namesAdvisorToLead(booking: { kind?: string | null }): boolean {
+  return booking.kind !== "staff_placed";
+}
+
 /** The narrow slice of the Supabase client this needs. */
 export interface AdvisorNameReader {
   from(table: "users"): {

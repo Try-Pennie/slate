@@ -1474,6 +1474,12 @@ export type BookingInsert = {
   allow_double_book?: boolean;
   /** #4202: the coordinator who placed it; absent on every booking a lead or machine made. */
   placed_by_user_id?: string | null;
+  /**
+   * #4391: true on a program lead's booking (migration 0213), on a real advisor or the
+   * placeholder alike. Optional for the same reason as `allow_double_book`: omitted, the
+   * column keeps its default (false), and a reservation written before it still resumes.
+   */
+  program_lead?: boolean;
 };
 
 /** The calendar-event input, captured in a reservation so a resume re-creates

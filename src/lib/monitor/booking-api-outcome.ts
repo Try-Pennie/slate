@@ -111,6 +111,21 @@ export const EMBED_REFUSAL_OUTCOME = {
   honeypot: "refused_embed_honeypot",
 } as const satisfies Record<string, SelfInflictedRefusal>;
 
+/**
+ * #4391: a program lead's call that went on the placeholder advisor, recorded under its
+ * own name OUTSIDE `OUTCOME_ORDER`, like the proven offer race (#3797). Neither is a
+ * refusal: the lead was booked. Neither is `created` either: nothing was routed, and
+ * counting a placeholder call there would grow the denominator the failure share is
+ * judged against with bookings no advisor pool made. `afterRace` is a served time whose
+ * normal create lost for want of a free advisor and fell to the placeholder; `straight`
+ * a time only the placeholder was offering; `move` a lead's move onto it.
+ */
+export const PROGRAM_PLACEHOLDER_OUTCOME = {
+  afterRace: "program_placeholder_after_race",
+  straight: "program_placeholder",
+  move: "program_placeholder_move",
+} as const;
+
 /** Zero-filled counts, so a reader never has to decide what an absent key meant. */
 export type RefusalCounts = Record<SelfInflictedRefusal, number>;
 

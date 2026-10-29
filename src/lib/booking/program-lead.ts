@@ -13,7 +13,22 @@
  * the booking and the move (#4391), so the times a lead is offered and the booking Slate
  * accepts cannot disagree (L261, L370). Pure: the clock is passed in.
  */
+import { DateTime } from "luxon";
 import { parseStampMs } from "../date/stamp.ts";
+
+/** The zone the placeholder day limit counts in (migration 0213, `placeholder_day_held`). */
+export const PLACEHOLDER_DAY_ZONE = "America/New_York";
+
+/**
+ * The day a placeholder call counts against (#4387, #4391): the Eastern date of the
+ * call's START, never the day it was booked, as `placeholder_day_held` counts it. The one
+ * place the booking and the move derive the `p_day` they claim.
+ */
+export function placeholderCallDay(startMs: number): string {
+  const day = DateTime.fromMillis(startMs, { zone: PLACEHOLDER_DAY_ZONE }).toISODate();
+  if (day === null) throw new Error(`placeholderCallDay: ${startMs} is not an instant`);
+  return day;
+}
 
 export interface ProgramLeadQuestion {
   /** The lead's `program_leads` row, or null when it has none. Read for a new booking only. */

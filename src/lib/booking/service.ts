@@ -693,6 +693,7 @@ import { confirmLineFor, lineGroupOfLive, settleLineGrouping } from "@/lib/booki
 import type { ConfirmLineFacts } from "@/lib/booking/confirm-latency";
 import { timeStage } from "@/lib/booking/confirm-profile";
 import { realAdvisorsOnly } from "@/lib/advisors/real-advisor";
+import { programLeadMoveTokenFor } from "@/lib/booking/program-lead-gate";
 export type { BookingResult, CreateBookingInput };
 export type { ExistingCall } from "@/lib/booking/orchestration";
 export type { BookingActor } from "@/lib/booking/core";
@@ -3094,6 +3095,8 @@ async function rescheduleWithLog(
   contact?: { name?: string; firstName?: string; email?: string; phone?: string },
   leadZone?: string | null,
   lineFacts?: ConfirmLineFacts,
+  /** #4391: set only by `rescheduleProgramLeadOntoPlaceholder`. */
+  ontoPlaceholder?: User,
 ): Promise<BookingResult> {
   try {
     // #3401: the whole move as one stage of the request's profile; a reroute's
@@ -3102,7 +3105,7 @@ async function rescheduleWithLog(
       orchestration.rescheduleBooking(
         token, newStartIso, reason, initiator, realDeps(deferWebhookSend, lineFacts), Date.now(), actor, contact,
         // #4031: a correction the move did not carry, and could not tell either.
-        { leadZone, onCorrectionUntold: pagePhoneCorrectionUnsent },
+        { leadZone, onCorrectionUntold: pagePhoneCorrectionUnsent, ...(ontoPlaceholder ? { ontoPlaceholder } : {}) },
       ),
     );
     logRescheduleSuccess(res.booking.id, initiator, res.rescheduleDecline);
@@ -3207,6 +3210,10 @@ export async function existingCallForLanding(
       },
       realDeps(),
       world,
+      // #4391: a program lead's call carries the token its Move panel needs to reach the
+      // placeholder's extra times. Minted from the booking's own mark, never a read the
+      // id in the link could steer, so it reveals nothing the manage token does not.
+      { moveTokenFor: programLeadMoveTokenFor },
     );
   } catch (err) {
     log.warn("booking", { msg: "landing existing-call check failed, showing the picker" }, err);
@@ -3503,6 +3510,28 @@ export function rescheduleBooking(
 ): Promise<BookingResult> {
   return alertOnBookingFailure(() =>
     rescheduleWithLog(token, newStartIso, reason, initiator, undefined, contact, leadZone, lineFacts),
+  );
+}
+
+/**
+ * #4391: a program lead's OWN move of their call onto the placeholder advisor, the one
+ * exception to #4203, called only by the lead facing reschedule route through
+ * `program-lead-booking-service.ts` once the lead's token, the day claim and the start's
+ * checks have all passed. Everything else about the move is the lead's ordinary one
+ * (`rescheduleBooking` above): the same log, the same pages, the same correction rule.
+ * `scripts/test-onto-placeholder-callers.ts` holds who may call it.
+ */
+export function rescheduleProgramLeadOntoPlaceholder(
+  token: string,
+  newStartIso: string,
+  reason: ValidatedReason,
+  placeholder: User,
+  contact?: { name?: string; firstName?: string; email?: string; phone?: string },
+  leadZone?: string | null,
+  lineFacts?: ConfirmLineFacts,
+): Promise<BookingResult> {
+  return alertOnBookingFailure(() =>
+    rescheduleWithLog(token, newStartIso, reason, "customer", undefined, contact, leadZone, lineFacts, placeholder),
   );
 }
 

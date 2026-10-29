@@ -133,7 +133,8 @@ import { budgetCovers, expectedCommitMs, type CommitCostLog } from "./commit-cos
 import type { WaitPoint } from "./wait-marks.ts";
 import { budgetLeftMs } from "../call-budget.ts";
 import { log } from "@/lib/log";
-import { readBookingSource, SOURCE_COORDINATOR, type SourceReading } from "./booking-source.ts";
+import { readBookingSource, SOURCE_COORDINATOR, type BookingSource, type SourceReading } from "./booking-source.ts";
+import { namesAdvisorToLead } from "./advisor-name.ts";
 import type { AuditChannel } from "../audit-channel.ts";
 import type { FullApiCaller } from "./api-callers.ts";
 import { rescheduleTimesFrom, type RescheduleTimesFrom } from "./reschedule-times-url.ts";
@@ -669,6 +670,12 @@ export type ExistingCall =
       /** Lets the lead move THIS call into the slot they just picked. */
       manageToken: string;
       /**
+       * #4391: lets a program lead move THIS call onto the placeholder's extra times,
+       * scoped to this booking (`program-lead-token.ts`). Null on every other call.
+       * Optional only so a call built before it existed still type checks.
+       */
+      programLeadMoveToken?: string | null;
+      /**
        * Where the times for moving THIS call come from (#2827). A call booked
        * through an advisor's own link can only move to a time that advisor can
        * take, so the booker's picker reads that advisor's times by the manage token
@@ -1120,6 +1127,12 @@ export interface CreateBookingInput {
    * whichever advisor it lands on, written by the save itself (L593).
    */
   placedByUserId?: string;
+  /**
+   * #4391: this lead holds a verified program lead token (`verifyProgramLeadToken`), set
+   * ONLY by the booker's confirm route. The booking is then written `program_lead` true,
+   * which every later move carries. It changes nothing about how the call is routed.
+   */
+  programLead?: true;
 }
 
 export interface BookingResult {
@@ -4790,6 +4803,14 @@ export async function findExistingCallForIdentity(
   /** The world of the bucket in play (#2660), named by the caller: the landing
    *  page from the row it read, the confirm from the bucket it resolved. */
   world: PersonWorld,
+  opts: {
+    /**
+     * #4391: the token that lets a program lead move THIS call onto the placeholder's
+     * extra times (`programLeadMoveTokenFor`), passed by the landing's caller, which owns
+     * the secret. Absent, the panel carries none and the move is an ordinary one.
+     */
+    moveTokenFor?: (booking: Booking) => string | null;
+  } = {},
 ): Promise<ExistingCall | null> {
   let match: PersonMatch | null;
   try {
@@ -4809,11 +4830,13 @@ export async function findExistingCallForIdentity(
   return {
     disclose: true,
     startsAt: match.booking.starts_at,
-    // Read live, and left null rather than guessed when unresolvable.
-    advisorName: await deps
-      .loadAgentDisplayName(match.booking.assigned_user_id ?? null)
-      .catch(() => null),
+    // Read live, and left null rather than guessed when unresolvable. #4391: never the
+    // placeholder's name, which is nobody the lead will speak to (`namesAdvisorToLead`).
+    advisorName: namesAdvisorToLead(match.booking)
+      ? await deps.loadAgentDisplayName(match.booking.assigned_user_id ?? null).catch(() => null)
+      : null,
     manageToken: match.booking.manage_token,
+    programLeadMoveToken: opts.moveTokenFor?.(match.booking) ?? null,
     rescheduleTimesFrom: rescheduleTimesFrom(match.booking),
     mayCancel: match.strength === "strong",
     // #2213: the whole number. The panel let a recognised lead move and cancel and
@@ -5981,6 +6004,7 @@ async function createHeld(
       // sent (which can carry a lead's details) never reaches the row.
       referrer_origin: readReferrerOrigin(input.referrerOrigin),
       ...(input.placedByUserId !== undefined ? { placed_by_user_id: input.placedByUserId } : {}),
+      ...(input.programLead ? { program_lead: true } : {}),
       kind: agentLinkUserId !== undefined ? "agent_link" : "routed",
       // #2073: nothing was routed, so there is no trace, and a fabricated one would
       // read as a routing decision to every reader of the column.
@@ -6412,7 +6436,11 @@ async function createHeld(
   return { result, verdict };
 }
 
-/** #4202: what a coordinator's call placed on the placeholder advisor is made from. */
+/**
+ * #4202: what a call placed on the placeholder advisor is made from. Placed either by a
+ * coordinator on the phone (`placedByUserId`) or, since #4391, by a program lead from the
+ * booker (`programLead`): exactly one of the two, refused otherwise.
+ */
 export interface PlaceholderBookingInput {
   /** The customer's own bucket and its event type, already resolved by the caller. */
   bucket: Bucket;
@@ -6424,9 +6452,50 @@ export interface PlaceholderBookingInput {
   timezone: string;
   salesforceId: string;
   attendee: CreateBookingInput["attendee"];
-  /** The submission's key (`coordinatorKeyFor`), so a double submit books once. */
+  /**
+   * The key a double submit is recognised by: the coordinator's submission
+   * (`coordinatorKeyFor`), or the booker's own `stableKeyFor` for a program lead, so the
+   * lead's second click is answered with the first's booking whichever path made it.
+   */
   idempotencyKey: string;
-  placedByUserId: string;
+  /** The coordinator who placed it: source `coordinator`, no link fields. */
+  placedByUserId?: string;
+  /**
+   * #4391: a program lead booking from the texted link. The row carries what the normal
+   * create carries for a lead (the source read off the link, the prefill with its partner
+   * join keys, the framing page reduced to its origin), names nobody as having placed it,
+   * and is marked `program_lead`.
+   */
+  programLead?: { prefill: Record<string, string>; referrerOrigin?: string | null };
+}
+
+/** The columns that say who placed a placeholder call and from where (#4202, #4391). */
+function placementColumns(input: PlaceholderBookingInput): {
+  prefill: Record<string, string>;
+  source: BookingSource;
+  referrerOrigin: string | null;
+  placedByUserId: string | null;
+  programLead: boolean;
+} {
+  const { placedByUserId, programLead } = input;
+  if ((placedByUserId === undefined) === (programLead === undefined)) {
+    throw new Error("createPlaceholderBooking: name exactly one of a coordinator (placedByUserId) and a program lead (programLead)");
+  }
+  if (placedByUserId !== undefined) {
+    return { prefill: withLeadIdFrom({}, null), source: SOURCE_COORDINATOR, referrerOrigin: null, placedByUserId, programLead: false };
+  }
+  // The same readings the normal create makes for a lead's own booking (`createHeld`).
+  const reading = readBookingSource(programLead!.prefill);
+  if (reading.unrecognisedRaw !== null) {
+    log.warn("booking-source", { msg: "unrecognised source on the booking link", raw: reading.unrecognisedRaw, bucket_code: input.bucket.code });
+  }
+  return {
+    prefill: withLeadIdFrom(programLead!.prefill, null),
+    source: reading.source,
+    referrerOrigin: readReferrerOrigin(programLead!.referrerOrigin),
+    placedByUserId: null,
+    programLead: true,
+  };
 }
 
 /**
@@ -6460,6 +6529,9 @@ export async function createPlaceholderBooking(
   if (!placeholder.email) {
     throw new Error(`the placeholder advisor ${placeholder.id} has no calendar address, so no invite can be written`);
   }
+  // Judged before anything is read or written, so a caller that names neither placement
+  // (or both) is a programming mistake refused at once, never a row with no author.
+  const placed = placementColumns(input);
 
   // A double submit (the coordinator's second click) is answered with the first's booking.
   const replay = await replayOf(deps, idempotencyKey);
@@ -6494,17 +6566,18 @@ export async function createPlaceholderBooking(
     attendee_first_name: storedFirstName(input.attendee.name, input.attendee.firstName),
     attendee_email: input.attendee.email ?? null,
     attendee_phone: phone,
-    prefill: withLeadIdFrom({}, null),
+    prefill: placed.prefill,
     gcal_event_id: gcalClientId,
     manage_token: manageToken,
     idempotency_key: idempotencyKey,
     external_id: null,
-    source: SOURCE_COORDINATOR,
-    referrer_origin: null,
+    source: placed.source,
+    referrer_origin: placed.referrerOrigin,
     kind: "staff_placed",
     routing_trace: null,
     allow_double_book: true,
-    placed_by_user_id: input.placedByUserId,
+    placed_by_user_id: placed.placedByUserId,
+    ...(placed.programLead ? { program_lead: true } : {}),
   };
   const event: ReservationPayload["event"] = {
     summary: eventSummary({ eventType: eventType.name, advisor: placeholder.name, lead: input.attendee.name ?? null }),

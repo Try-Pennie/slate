@@ -35,6 +35,13 @@ import { manageWithinLimit } from "@/lib/rate-limit";
 // also having to hand back a working clientIp.
 import { clientIp } from "@/lib/rate-limit-core";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
+import type { BookingContext } from "@/lib/booking/orchestration";
+import { verifyProgramLeadToken } from "@/lib/booking/program-lead-gate";
+import { isProgramLead } from "@/lib/booking/program-lead";
+import { loadProgramLeadMoveContext, moveProgramLeadLive } from "@/lib/booking/program-lead-booking-service";
+import { PLACEHOLDER_DAY_FULL_CODE, PlaceholderDayFullError } from "@/lib/booking/program-lead-booking";
+import { PROGRAM_PLACEHOLDER_OUTCOME } from "@/lib/monitor/booking-api-outcome";
+import { namesAdvisorToLead } from "@/lib/booking/advisor-name";
 
 export const dynamic = "force-dynamic";
 
@@ -75,7 +82,31 @@ const schema = z.object({
    * as the booker's field, so a long value is refused before it is read.
    */
   timezone: timezoneSchema.optional(),
+  /**
+   * #4391: the token that lets a program lead move THIS call onto the placeholder's
+   * extra times, minted for this booking by the manage page or the booker's landing.
+   * Judged against the booking the manage token names; a value that is too long or not
+   * a string is DROPPED, and the move is the ordinary one.
+   */
+  programLeadMoveToken: z.string().max(256).optional().catch(undefined),
 });
+
+/**
+ * #4391: the booking this move may take onto the placeholder, or null for the ordinary
+ * move. The exception to #4203 lives here and nowhere else: only this lead facing route
+ * reads a move token, and only for a booking whose own mark says it is a program lead's
+ * (`isProgramLead`), the token signed for that very booking and its Lead. Every other
+ * caller of the shared reschedule (Marcia's MCP channel, admin moves, the direct API, the
+ * coordinator) never reaches it. Reads nothing unless a token was presented.
+ */
+async function programLeadMove(token: string, presented: string | undefined): Promise<BookingContext | null> {
+  if (presented === undefined) return null;
+  const ctx = await loadProgramLeadMoveContext(token);
+  if (!ctx?.booking.salesforce_id) return null;
+  const facts = verifyProgramLeadToken(presented, { salesforceId: ctx.booking.salesforce_id, bookingId: ctx.booking.id });
+  if (facts?.purpose !== "move") return null;
+  return isProgramLead({ booking: ctx.booking, nowMs: Date.now() }) ? ctx : null;
+}
 
 /**
  * #2561: one wrapper rather than a header on each of the returns below. Every
@@ -165,18 +196,35 @@ async function handlePost(
     return NextResponse.json({ error: reason.error }, { status: 400 });
   }
 
+  const programCtx = await programLeadMove(token, parsed.data.programLeadMoveToken);
+
   endChecks?.();
   try {
-    const { booking, manageUrl, contactChanged, isTest } = await rescheduleBooking(
-      token,
-      parsed.data.start,
-      reason.reason,
-      "customer",
-      parsed.data.attendee,
-      parsed.data.timezone,
-      // #3401: the line's facts, so the move charges its profile and names its lead.
-      facts,
-    );
+    // #4391: a program lead's own move tries a real advisor first and then the
+    // placeholder (`program-lead-booking.ts`); every other move, as before.
+    const program = programCtx
+      ? await moveProgramLeadLive({
+          token,
+          ctx: programCtx,
+          startIso: parsed.data.start,
+          reason: reason.reason,
+          attendee: parsed.data.attendee,
+          zone: parsed.data.timezone,
+          lineFacts: facts,
+        })
+      : null;
+    const { booking, manageUrl, contactChanged, isTest } = program
+      ? program.result
+      : await rescheduleBooking(
+          token,
+          parsed.data.start,
+          reason.reason,
+          "customer",
+          parsed.data.attendee,
+          parsed.data.timezone,
+          // #3401: the line's facts, so the move charges its profile and names its lead.
+          facts,
+        );
     // A lead moving their own call is a booking ATTEMPT, and its refusals below are
     // counted (#1318). The success has to be counted with them or the share stops being
     // a share: adding only the failures would inflate the very number #1313 pages on.
@@ -188,7 +236,10 @@ async function handlePost(
     // recorded, so a bucket-code filter would leave the canary's errors in the failure
     // rate and take its successes out. The marker travels as the TOKEN instead and is
     // resolved from the booking's own bucket, after the response.
-    recordApiOutcome("rescheduled", "", null, { by: "manageToken", token });
+    //
+    // #4391: a program lead's move onto the placeholder is counted under its own name,
+    // outside the share, for the reason a new one is (`PROGRAM_PLACEHOLDER_OUTCOME`).
+    recordApiOutcome(program?.onPlaceholder ? PROGRAM_PLACEHOLDER_OUTCOME.move : "rescheduled", "", null, { by: "manageToken", token });
     return NextResponse.json({
       id: booking.id,
       // #2750: the lead ids the moved call is STORED under, which stay the ones it
@@ -215,8 +266,9 @@ async function handlePost(
       calendarLinks: bookingDetailExtras(booking).calendarLinks,
       // #2165: who the moved call is now with, for the Booker's confirmation
       // after a move. A move can change the advisor, so it is read off the
-      // booking the move returned rather than the panel's earlier copy.
-      advisorName: booking.agent_name ?? null,
+      // booking the move returned rather than the panel's earlier copy. #4391: never the
+      // placeholder advisor's name, who is nobody the lead will speak to.
+      advisorName: namesAdvisorToLead(booking) ? (booking.agent_name ?? null) : null,
       // #2659: the partner join keys, off the booking that moved (its prefill
       // came from the page it was first booked on), so the host's success
       // message for a moved call carries what a fresh booking's does.
@@ -229,6 +281,18 @@ async function handlePost(
     // budget, which a timeout has already spent; its outcome and report would
     // otherwise fail at once and the failure would go unrecorded.
     return timeStage(facts.profile, "failure-path", () => withinBookingCleanupBudget(async () => {
+      // #4391: a program lead moved onto an extra time on a day whose extra times are
+      // all gone. The call did not move and nothing was invited (the claim comes first).
+      // Its own reason, code and sentence, never the taken time one (L11); not one of the
+      // reasons that offers alternatives, since the reloaded picker shows the day's real
+      // times. Counted per day by #4392; logged under its own tag where it was refused.
+      if (err instanceof PlaceholderDayFullError) {
+        // refusal: reschedule_placeholder_day_full
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.placeholderDayFull, reason: "reschedule_placeholder_day_full", code: PLACEHOLDER_DAY_FULL_CODE },
+          { status: 409 },
+        );
+      }
       // #2164: the details they typed were refused, and nothing moved. A 400 with
       // the sentence about the value itself, because that is what the reader has to
       // act on; the time they picked is still there and still theirs to take.
