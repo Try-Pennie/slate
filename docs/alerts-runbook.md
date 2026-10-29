@@ -646,7 +646,7 @@ Keys: `agent_sync_failures`, `agents_without_routing`, `agents_without_schedule`
 `salesforce_manager_ambiguous`,
 `misroute:*`, `rr_ordering_degraded`, `reassign-unknown-reason-code`,
 `booker_empty_reason`, `schedule_parity_drift`, `agents_on_unset_hours`,
-`booking_offsite_origin:*`, `ladder_advisor_unreadable`.
+`booking_offsite_origin:*`, `ladder_advisor_unreadable`, `top_tier_forbidden_placement:*`.
 
 **What fired it.** Slate's picture of who works here, who they report to, or what they
 are eligible for disagrees with Salesforce, or with itself.
@@ -705,6 +705,18 @@ Postgres itself rejects is the one case this cannot name: once that advisor has 
 in the days the read counts, the count inside the read fails for everybody, which
 pages as confirms failing rather than as this. The schedule writer refuses such a zone
 (`IANAZone.isValidZone`), so only a row written around it can do that.
+
+**`top_tier_forbidden_placement:*`** (#2842) names one Ultra High or Very High lead
+whose call landed where sales ops' cascade rule (2026-09-28) never allows: on the Low
+team, or below the lead's own tier with an advisor who also carries Low. A cascade
+inside the rule (down to Very High, High or Medium, with an advisor not on Low) sends
+nothing. Move the call from the link in the page. Then treat it as a routing fault:
+the booking cascade (`tierLadder`, `rungExcludesLow` in `src/lib/routing/tiers.ts`)
+should have made it impossible, so read the routing decision for that booking. If the
+advisor was put on Low in Salesforce after the booking was made, the page is about
+their teams today, not the routing; the advisor's attributes on `/admin/agents/<id>`
+say which. The check reads the last 24 hours of booked top tier cascades every five
+minutes (`src/lib/monitor/top-tier-placement.ts`) and posts once per booking.
 
 **Fix or escalate.** Data problems go to whoever owns the Salesforce record.
 `misroute` and `rr_ordering_degraded` are Slate's own routing reporting something it

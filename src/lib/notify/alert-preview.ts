@@ -294,11 +294,11 @@ import {
 } from "@/lib/monitor/availability-truth";
 import { tierFallbackAlert } from "@/lib/routing/tier-alert";
 import {
-  topTierCascadeNoticeText,
-  topTierCascadeVerdict,
-  TOP_TIER_CASCADE_WINDOW_HOURS,
-  type TopTierCascadeWindow,
-} from "@/lib/monitor/top-tier-cascade";
+  formatForbiddenPlacementAlert,
+  judgeTopTierPlacements,
+  type PlacementAdvisor,
+  type PlacementRow,
+} from "@/lib/monitor/top-tier-placement";
 import {
   raceBoundHitPageText,
   raceContentionNoticeText,
@@ -1011,17 +1011,19 @@ const REGAL_PREVIEW_DAY = {
 };
 
 /**
- * One rendered top tier cascade report (#2843). It goes through the real verdict
- * rather than calling the copy builder straight, so a preview can only ever show a
- * message the lane could really send: a window the lane would refuse to report on
- * throws here rather than rendering a sentence nobody will see.
+ * One rendered forbidden top tier placement (#2842). It goes through the real
+ * judgement rather than calling the copy builder straight, so a preview can only ever
+ * show a placement the check would really page: an allowed cascade throws here rather
+ * than rendering a page nobody will see.
  */
-function topTierCascadeReportPreview(w: Omit<TopTierCascadeWindow, "windowHours">): string {
-  const verdict = topTierCascadeVerdict({ ...w, windowHours: TOP_TIER_CASCADE_WINDOW_HOURS });
-  if (verdict.kind !== "report") {
-    throw new Error(`top tier cascade preview fixture is not a reportable window (${verdict.kind})`);
-  }
-  return topTierCascadeNoticeText(verdict, TOP_TIER_CASCADE_WINDOW_HOURS);
+function topTierPlacementPreview(row: Omit<PlacementRow, "booking_id">, advisor: PlacementAdvisor | null): string {
+  const bookingId = "7c1e2a90-3b4d-4f6a-9e21-5d8c0b7a4f13";
+  const { forbidden } = judgeTopTierPlacements(
+    [{ ...row, booking_id: bookingId }],
+    new Map(advisor ? [[advisor.id, advisor]] : []),
+  );
+  if (forbidden.length !== 1) throw new Error("top tier placement preview fixture is not a forbidden placement");
+  return formatForbiddenPlacementAlert(forbidden[0]!, `https://slate.trypennie.app/admin/bookings/${bookingId}`);
 }
 
 /**
@@ -6345,25 +6347,6 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       settingsUrl: "https://slate.trypennie.app/admin/alerts",
     }),
   },
-  {
-    key: "top_tier_cascade_rate",
-    state: "both top tiers cascaded",
-    channel: "info",
-    text: topTierCascadeReportPreview({ ultraBooked: 8, ultraCascaded: 3, veryHighBooked: 1, veryHighCascaded: 1 }),
-  },
-  {
-    // The numbers the notice posted on 2026-10-28, the night its wording was redone.
-    key: "top_tier_cascade_rate",
-    state: "one tier cascaded, the other booked and held",
-    channel: "info",
-    text: topTierCascadeReportPreview({ ultraBooked: 31, ultraCascaded: 0, veryHighBooked: 28, veryHighCascaded: 1 }),
-  },
-  {
-    key: "top_tier_cascade_rate",
-    state: "only Very High was booked",
-    channel: "info",
-    text: topTierCascadeReportPreview({ ultraBooked: 0, ultraCascaded: 0, veryHighBooked: 5, veryHighCascaded: 2 }),
-  },
   // #2838. Three states, because the second sentence reads differently in each: a
   // day where every loser was booked with somebody else, one where some were
   // refused below the bound, and a saturated thin day where some hit the bound.
@@ -6412,14 +6395,33 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "alert",
     text: raceBoundHitPageText({ requestedCode: "411", bucketCode: "311", startIso: "2026-07-28T18:00:00.000Z", lostRaces: 4 }),
   },
-  // A High lead and below: an Ultra High or Very High cascade is counted daily
-  // above instead (#2843), and a single tier drop is counted on /admin/routing
-  // (2026-10-02), so a drop of two or more tiers is the only one that pages.
+  // A High lead and below: an Ultra High or Very High cascade inside the rule sends
+  // nothing, and one outside it pages as top_tier_forbidden_placement below (#2842);
+  // a single tier drop is counted on /admin/routing (2026-10-02), so a drop of two or
+  // more tiers is the only one that pages here.
   {
     key: "tier_fallback_deep:*",
     state: "a booking fell back several debt tiers",
     channel: "alert",
     text: tierFallbackAlert({ requestedCode: "311", effectiveCode: "111" })?.text ?? "",
+  },
+  {
+    key: "top_tier_forbidden_placement:*",
+    state: "an Ultra High lead booked on the Low team",
+    channel: "alert",
+    text: topTierPlacementPreview(
+      { requested_code: "511", bucket_code: "111", chosen_user_id: "u-low" },
+      { id: "u-low", name: "Dana Ruiz", email: "dana.ruiz@example.com", attributes: { debt_team: ["low"] } },
+    ),
+  },
+  {
+    key: "top_tier_forbidden_placement:*",
+    state: "a Very High lead booked with a Medium advisor who is also on Low",
+    channel: "alert",
+    text: topTierPlacementPreview(
+      { requested_code: "411", bucket_code: "211", chosen_user_id: "u-medlow" },
+      { id: "u-medlow", name: "Dana Ruiz", email: "dana.ruiz@example.com", attributes: { debt_team: ["medium", "low"] } },
+    ),
   },
   { key: "booking_window_extended:*", state: "a customer was offered a day past the window", channel: "alert",
     text: bookingWindowExtendedAlert("511", 3) },

@@ -190,14 +190,8 @@ import {
 import { readCatchallWindow, CATCHALL_WINDOW_HOURS } from "@/lib/monitor/catchall-rate-store";
 import { runSloBudgetCheck } from "@/lib/monitor/slo-budget";
 import { readMonthToDate } from "@/lib/monitor/slo-budget-store";
-import {
-  topTierCascadeVerdict,
-  topTierCascadeNoticeText,
-  TOP_TIER_CASCADE_NOTICE_KEY,
-  TOP_TIER_CASCADE_COOLDOWN_MS,
-  TOP_TIER_CASCADE_WINDOW_HOURS,
-} from "@/lib/monitor/top-tier-cascade";
-import { readTopTierCascadeWindow } from "@/lib/monitor/top-tier-cascade-store";
+import { checkTopTierPlacements, TOP_TIER_PLACEMENT_LOOKBACK_HOURS } from "@/lib/monitor/top-tier-placement";
+import { loadPlacementAdvisors, loadTopTierCascades } from "@/lib/monitor/top-tier-placement-store";
 import {
   raceContentionNoticeText,
   judgeRaceContention,
@@ -1944,35 +1938,36 @@ export async function GET(req: NextRequest) {
       await resolveAlert(CATCHALL_RATE_ALERT_KEY, catchallClearText(verdict.share, CATCHALL_WINDOW_HOURS));
     });
 
-    // --- How often a top tier lead is cascaded (#2843) ---
+    // --- A top tier lead booked where the routing rule forbids (#2842) ---
     //
-    // Replaces the per booking tier_fallback pages for Ultra High and Very High
-    // leads, whose cascade sales ops made ordinary routing on 2026-09-28. Same shape
-    // as the Beyond count above: info only, once a day, never resolves, and a tick
-    // that cannot count sends nothing, because an unreadable count is not a day
-    // with no cascades. Its own failure boundary (L73).
-    await steps.run("top_tier_cascade_rate", null, async () => {
-      const window = await readTopTierCascadeWindow(now);
-      const verdict = topTierCascadeVerdict(window);
-      log.info("monitor", {
-        msg: "top tier cascade rate",
-        ultra_booked: window.ultraBooked,
-        ultra_cascaded: window.ultraCascaded,
-        very_high_booked: window.veryHighBooked,
-        very_high_cascaded: window.veryHighCascaded,
-        window_h: TOP_TIER_CASCADE_WINDOW_HOURS,
-        verdict: verdict.kind,
-      });
-      if (verdict.kind !== "report") return;
-      // alert-key: top_tier_cascade_rate
-      // alert-text-ok: our own copy from top-tier-cascade.ts, built from four
-      // measured counts; no error text can reach it.
-      await sendThrottledInfo(
-        TOP_TIER_CASCADE_NOTICE_KEY,
-        TOP_TIER_CASCADE_COOLDOWN_MS,
-        topTierCascadeNoticeText(verdict, TOP_TIER_CASCADE_WINDOW_HOURS),
-      );
-    });
+    // Sales ops let Ultra High and Very High leads cascade, no lower than Medium and
+    // never to an advisor who also carries Low. A cascade inside that rule posts
+    // nothing (Dan, 2026-10-29, who removed the daily count of them,
+    // `top_tier_cascade_rate`); a booking outside it pages once, as an incident.
+    // Reads the day's booked top tier cascades every tick, and a failed read throws
+    // here, so the step is recorded as failing rather than as nothing wrong.
+    await steps.run("top_tier_forbidden_placement", null, () =>
+      checkTopTierPlacements({
+        loadPlacements: () => loadTopTierCascades(now),
+        loadAdvisors: loadPlacementAdvisors,
+        bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
+        // alert-key: top_tier_forbidden_placement:*
+        // alert-text-ok: our own copy from top-tier-placement.ts, built from the
+        // routing record's codes and the advisor's name; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat).catch(logAlertSendFailure(key)),
+      }).then((result) => {
+        log.info("monitor", {
+          msg: "top tier placements",
+          lookback_h: TOP_TIER_PLACEMENT_LOOKBACK_HOURS,
+          allowed: result.allowed,
+          forbidden: result.forbidden,
+          paged: result.paged,
+          unmeasured_no_booking_id: result.unmeasured["no-booking-id"],
+          unmeasured_code_unreadable: result.unmeasured["code-unreadable"],
+          unmeasured_advisor_unread: result.unmeasured["advisor-unread"],
+        });
+      }),
+    );
 
     // --- Are confirms losing the overlap race (#2838)? ---
     //
