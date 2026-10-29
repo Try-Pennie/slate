@@ -26,7 +26,7 @@ import { LAST_SIGN_IN_PAGE_COOKIE, signInPathForBrowser } from "@/lib/auth/sign-
  * real error we clear the `sb-*` auth cookies ourselves, guaranteeing the local
  * session is dead on this device regardless, and surface the failure to the logs.
  */
-// outcome-ok: it ends the session and lands on the login page, which is the confirmation
+// outcome-ok: it ends the session and lands on a sign in page, which is the confirmation
 export async function signOut(): Promise<void> {
   const supabase = await supabaseServer();
   const { error } = await supabase.auth.signOut();
