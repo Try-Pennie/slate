@@ -61,6 +61,15 @@ export async function claimPlaceholderDay(day: string, claimKey: string, booking
 }
 
 /**
+ * SEAM, pending migration 0215 (#4390): one limit refusal on a call day. Once 0215 is on
+ * main this calls `bump_program_lead_outcome('limit_refused')` after the response, as
+ * #4390's times fallback count does. Until then the refusal is logged under its own tag,
+ * `program-lead-day-full`, by `program-lead-booking.ts` where it is refused, and this
+ * records nothing more. Never throws.
+ */
+export function countLimitRefusalPending0215(_callDay: string): void {}
+
+/**
  * Errors the normal create or the ordinary move already paged for, so the wrapper below
  * does not page them twice. Everything the placeholder half throws pages here instead.
  */
@@ -96,6 +105,7 @@ export function bookProgramLeadLive(input: CreateBookingInput, lineFacts?: Confi
       horizonDays: readBookingHorizonDays,
       findPlaceholder: findPlaceholderAdvisor,
       claimPlaceholderDay,
+      countLimitRefusal: countLimitRefusalPending0215,
       createBooking: (i) => remember(() => createBooking(i, lineFacts)),
       findBookingByIdempotencyKey: (key) => deps.findBookingByIdempotencyKey(key),
       manageUrl: (token) => orchestration.manageUrlFor(deps.appBaseUrl(), token),
@@ -142,6 +152,7 @@ export function moveProgramLeadLive(input: {
         horizonDays: readBookingHorizonDays,
         findPlaceholder: findPlaceholderAdvisor,
         claimPlaceholderDay,
+        countLimitRefusal: countLimitRefusalPending0215,
         reschedule: ({ ontoPlaceholder }) =>
           remember(() =>
             ontoPlaceholder

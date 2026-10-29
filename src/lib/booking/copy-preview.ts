@@ -518,10 +518,9 @@ export function bookerCopyScreens(): CopyScreen[] {
         // #2165: who will call, and the same sentence without a name, because the
         // confirmation renders before anything guarantees the booking holds one.
         { state: "who will call", text: confirmedAdvisor("Dana Lee") },
-        { state: "who will call, when we hold no advisor name", text: confirmedAdvisor(null) },
-        // #4391: a call on the placeholder advisor is answered with no name
+        // #4391: a call on the placeholder advisor is answered with no name too
         // (`namesAdvisorToLead`), so the lead never reads "Your loan advisor, Marcia".
-        { state: "who will call, on the placeholder advisor", text: confirmedAdvisor(null) },
+        { state: "who will call, when we hold no advisor name or the call is on the placeholder advisor", text: confirmedAdvisor(null) },
         { state: "the invite", text: inviteOnItsWay(EMAIL) },
         {
           state: "the invite, with no address to name",

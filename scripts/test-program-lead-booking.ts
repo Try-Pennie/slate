@@ -98,6 +98,7 @@ function makeBookDeps(o: Opts = {}) {
     create: [] as CreateBookingInput[],
     claims: [] as { day: string; key: string; bookingId: string | null }[],
     placed: [] as PlaceholderBookingInput[],
+    limitRefused: [] as string[],
   };
   const deps: ProgramLeadBookingDeps = {
     now: () => NOW,
@@ -136,6 +137,9 @@ function makeBookDeps(o: Opts = {}) {
       calls.claims.push({ day, key, bookingId });
       if (o.claim === "throws") throw new Error("rpc down");
       return o.claim === undefined ? true : o.claim;
+    },
+    countLimitRefusal: (day) => {
+      calls.limitRefused.push(day);
     },
     createPlaceholderBooking: async (i) => {
       steps.push("placeholder-create");
@@ -231,6 +235,12 @@ async function run() {
     assert(err instanceof PlaceholderDayFullError && err.callDay === "2026-06-09", `a full day refuses with its own error (${served ? "after a lost race" : "straight"})`);
     assert(!(err instanceof SlotUnavailableError), "never the time just taken refusal");
     assert(calls.placed.length === 0, "and no reservation or invite is made");
+    assert(calls.limitRefused.length === 1 && calls.limitRefused[0] === "2026-06-09", `and the refusal is counted once, by the call's day (got ${JSON.stringify(calls.limitRefused)})`);
+  }
+  {
+    const { deps, calls } = makeBookDeps({ served: false });
+    await bookProgramLead(input, deps);
+    assert(calls.limitRefused.length === 0, "control: a granted claim counts no refusal");
   }
   // The claim itself failing is the retryable outage, never a booking or a full day.
   {
@@ -304,6 +314,7 @@ async function run() {
       horizonDays: book.deps.horizonDays,
       findPlaceholder: book.deps.findPlaceholder,
       claimPlaceholderDay: book.deps.claimPlaceholderDay,
+      countLimitRefusal: book.deps.countLimitRefusal,
       reschedule: async (args) => {
         book.steps.push(args.ontoPlaceholder ? "move-onto-placeholder" : "move");
         reschedules.push(args);
