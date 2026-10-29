@@ -774,8 +774,17 @@ export function capCountWindow(fromIso: string, toIso: string): { from: string; 
   };
 }
 
+/**
+ * The earliest start the event type's minimum notice allows: a start at or after it may
+ * be offered. The one cutoff, read by `filterSlotsFromNow` for the real slots and by the
+ * placeholder's start predicate (`bookable-hours.ts`, #4390), so the two cannot disagree.
+ */
+export function noticeCutoffMs(nowMs: number, minNoticeMin: number): number {
+  return nowMs + minNoticeMin * 60_000;
+}
+
 /** Drops slot instants earlier than now + min-notice (applied after a cache read). */
 export function filterSlotsFromNow(slots: string[], nowMs: number, minNoticeMin: number): string[] {
-  const cutoff = nowMs + minNoticeMin * 60_000;
+  const cutoff = noticeCutoffMs(nowMs, minNoticeMin);
   return slots.filter((s) => Date.parse(s) >= cutoff);
 }

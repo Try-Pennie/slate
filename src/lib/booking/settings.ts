@@ -343,6 +343,45 @@ export async function readPlaceholderBookingEnabled(): Promise<boolean | null> {
   }
 }
 
+/** The placeholder day limit's column bounds and default (migration 0213). */
+const PLACEHOLDER_DAY_LIMIT_MAX = 500;
+const PLACEHOLDER_DAY_LIMIT_DEFAULT = 50;
+
+/**
+ * The placeholder switch and the placeholder day limit, in one read, for a program lead's
+ * times (#4390): `{ enabled, dayLimit }`, or **null** when the read failed.
+ *
+ * Read on every availability request that carries a good program lead token. An absent
+ * settings row is a real answer: nobody has turned the placeholder on, so it is off. A
+ * read ERROR, or a limit outside the column's check, answers null, never a throw and never
+ * "on": the times then show real slots only and the caller counts the fallback (L654).
+ * The coordinator's switch read is `readPlaceholderBookingEnabled`; this one asks the same
+ * column and treats it the same way.
+ */
+export async function readProgramLeadTimesSettings(): Promise<{ enabled: boolean; dayLimit: number } | null> {
+  try {
+    const db = supabaseAdmin();
+    const row = unwrap(
+      await db
+        .from("booking_settings")
+        .select("placeholder_booking_enabled, placeholder_day_limit")
+        .eq("id", 1)
+        .maybeSingle(),
+      "booking_settings.placeholder_day_limit",
+    ) as Pick<BookingSettings, "placeholder_booking_enabled" | "placeholder_day_limit"> | null;
+    if (!row) return { enabled: false, dayLimit: PLACEHOLDER_DAY_LIMIT_DEFAULT };
+    const limit = row.placeholder_day_limit;
+    if (!Number.isInteger(limit) || limit < 0 || limit > PLACEHOLDER_DAY_LIMIT_MAX) {
+      log.error("booking-settings", { msg: "placeholder day limit out of shape, treating as unreadable" });
+      return null;
+    }
+    return { enabled: row.placeholder_booking_enabled === true, dayLimit: limit };
+  } catch (err) {
+    log.error("booking-settings", { msg: "placeholder switch and day limit read failed, treating as unreadable" }, err);
+    return null;
+  }
+}
+
 /**
  * When the coordinator page offers a live transfer, and to which line (#4380, migration
  * 0214): `{ threshold, line }`, or **null** when the read failed.

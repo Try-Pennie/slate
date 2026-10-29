@@ -122,3 +122,24 @@ export function readProgramLeadToken(
     facts: { leadKey, purpose: bookingId === null ? "new" : "move", bookingId, expiresAtMs },
   };
 }
+
+/**
+ * Read a token for the lead and scope it CARRIES (#4390): for the times read, which names
+ * no lead and no booking, so there is nothing of the request's own to hold it against. The
+ * signature, the secret and the expiry are judged exactly as `readProgramLeadToken` judges
+ * them, so a relabelled token is still `forged`. A good token here unlocks only the extra
+ * times on screen; the booking and the move (#4391) read it with `readProgramLeadToken`
+ * against the lead and booking they act on. Never throws.
+ */
+export function readProgramLeadTokenAsIssued(
+  token: string | null | undefined,
+  ask: { secret: string; nowMs: number },
+): { ok: true; facts: ProgramLeadFacts } | { ok: false; reason: ProgramLeadTokenRefusal } {
+  const [leadKey = "", scope = ""] = (token ?? "").split(".");
+  return readProgramLeadToken(token, {
+    salesforceId: leadKey,
+    bookingId: scope === NEW_SCOPE ? null : scope,
+    secret: ask.secret,
+    nowMs: ask.nowMs,
+  });
+}

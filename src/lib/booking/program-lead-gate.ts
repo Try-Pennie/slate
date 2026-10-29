@@ -7,7 +7,12 @@ import { isLeadId } from "@/lib/salesforce/lead-id";
 import { leadIdKey } from "@/lib/salesforce/lead-xbc";
 import type { Booking } from "@/lib/db/types";
 import { isProgramLead } from "./program-lead";
-import { mintProgramLeadToken, readProgramLeadToken, type ProgramLeadFacts } from "./program-lead-token";
+import {
+  mintProgramLeadToken,
+  readProgramLeadToken,
+  readProgramLeadTokenAsIssued,
+  type ProgramLeadFacts,
+} from "./program-lead-token";
 
 /**
  * The server half of the program lead token (#4389): the one place that reads the secret,
@@ -104,4 +109,18 @@ export function verifyProgramLeadToken(
   if (reading.ok) return reading.facts;
   log.warn("program-lead", { msg: "refused a program lead token", reason: reading.reason });
   return null;
+}
+
+/**
+ * The check the times read runs (#4390): the token judged as issued
+ * (`readProgramLeadTokenAsIssued`), because a times request names no lead and no booking
+ * of its own. A good token unlocks only the extra times on screen; the booking and the
+ * move check theirs against the lead and booking they act on (`verifyProgramLeadToken`).
+ * The refusal comes back by its reason so the caller can COUNT `secret-unset`, which is a
+ * failed read rather than a stranger's token. Logged by reason, never the token. Never throws.
+ */
+export function readProgramLeadTimesToken(token: string): ReturnType<typeof readProgramLeadTokenAsIssued> {
+  const reading = readProgramLeadTokenAsIssued(token, { secret: programLeadTokenSecret(), nowMs: Date.now() });
+  if (!reading.ok) log.warn("program-lead", { msg: "refused a program lead token on the times read", reason: reading.reason });
+  return reading;
 }

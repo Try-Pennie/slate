@@ -194,6 +194,7 @@ export default function ManageBooking({
   theme = "light",
   isTest = false,
   calendarLinks: initialCalendarLinks = null,
+  programLeadMoveToken = null,
 }: ManageBookingProps) {
   const detectedZone = useMemo(() => deviceTimeZone(), []);
   // #1849: a fixed US list. A lead whose browser reports a non US zone is shown
@@ -229,6 +230,9 @@ export default function ManageBooking({
     zone: timeZone,
     leadZone: timeZone,
     testPass,
+    // #4390: a program lead's booking reads the pool's times plus the placeholder's. An
+    // advisor's own times have no placeholder to add, so their read carries no token.
+    programLeadToken: rescheduleTimesFrom === "pool" ? programLeadMoveToken : null,
   });
   const [busy, setBusy] = useState(false);
   // Still-alive cue if a cancel/reschedule POST hasn't returned by ~10s; the

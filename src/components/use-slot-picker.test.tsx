@@ -239,4 +239,36 @@ describe("useSlotPicker", () => {
       expect(screen.getByTestId("kind").textContent).toBe("outside-calling-hours");
     });
   });
+
+  // #4390: a program lead's token rides on the read as a header, never in the address,
+  // and the lead's zone joins the address so a change of zone is a fresh read.
+  describe("a program lead's read", () => {
+    function ProgramHarness({ token, zone = ZONE }: { token: string | null; zone?: string }) {
+      const picker = useSlotPicker({ url: "/api/availability?bucket=411", zone, leadZone: zone, programLeadToken: token });
+      return <p data-testid="kind">{picker.view.kind}</p>;
+    }
+
+    it("sends an ordinary lead's read exactly as before", async () => {
+      global.fetch = vi.fn(async () => okResponse(SLOTS)) as unknown as typeof fetch;
+      render(<ProgramHarness token={null} />);
+      await act(async () => {});
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0]!;
+      expect(url).toBe("/api/availability?bucket=411");
+      expect((init as RequestInit).headers).toBeUndefined();
+    });
+
+    it("carries the token in a header and the zone in the address, and reads again when the zone changes", async () => {
+      global.fetch = vi.fn(async () => okResponse(SLOTS)) as unknown as typeof fetch;
+      const { rerender } = render(<ProgramHarness token="tok" />);
+      await act(async () => {});
+      const [url, init] = vi.mocked(global.fetch).mock.calls[0]!;
+      expect(url).toBe("/api/availability?bucket=411&leadZone=America%2FNew_York");
+      expect((init as RequestInit).headers).toEqual({ "x-slate-program-lead": "tok" });
+
+      rerender(<ProgramHarness token="tok" zone="America/Chicago" />);
+      expect(screen.getByTestId("kind").textContent).toBe("loading");
+      await act(async () => {});
+      expect(vi.mocked(global.fetch).mock.calls[1]![0]).toBe("/api/availability?bucket=411&leadZone=America%2FChicago");
+    });
+  });
 });
