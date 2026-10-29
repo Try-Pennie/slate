@@ -1,7 +1,7 @@
 // #3082: the before_user_created hook that refuses an account outside the
 // Workspace domain, held together across the three places it lives.
 //
-// The hook is a Postgres function (migration 0159), it is REGISTERED somewhere
+// The hook is a Postgres function (0159, replaced by 0212 for #4379), it is REGISTERED somewhere
 // else (supabase/config.toml for the local stack, the dashboard for the hosted
 // project), and the domain it refuses against is the same fixed value the app's
 // own gate reads (GOOGLE_HOSTED_DOMAIN in wrangler.jsonc). Each piece reads as
