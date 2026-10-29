@@ -52,13 +52,23 @@ const countOpaqueScriptError = vi.hoisted(() =>
     throw new Error("route.test.ts sent an opaque report; that path is tested in route.opaque.test.ts");
   }),
 );
+// The unattributed rejection count is driven for real in route.foreign.test.ts, for
+// the same reason; this stand in refuses if a report here ever reaches it.
+const countUnattributedRejection = vi.hoisted(() =>
+  vi.fn(async () => {
+    throw new Error("route.test.ts sent an unattributed rejection; that path is tested in route.foreign.test.ts");
+  }),
+);
 vi.mock("@/lib/api/boundary-count", () => ({
   countBoundaryCatch,
   countUnrecognisedPageReport,
   countOpaqueScriptError,
+  countUnattributedRejection,
   BOUNDARY_WINDOW_MS: 30 * 60_000,
   OPAQUE_BURST_THRESHOLD: 5,
   OPAQUE_BURST_WINDOW_MS: 15 * 60_000,
+  UNATTRIBUTED_REJECTION_BURST_THRESHOLD: 5,
+  UNATTRIBUTED_REJECTION_WINDOW_MS: 15 * 60_000,
 }));
 vi.mock("@/lib/rate-limit", () => ({
   allowRequest,

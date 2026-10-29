@@ -278,6 +278,73 @@ export function isOpaqueScriptError(report: ClientErrorReport): boolean {
 }
 
 /**
+ * The schemes a browser extension's own scripts and resources load from.
+ *
+ * The one definition, read by the CSP report triage (`src/lib/csp.ts`) and by
+ * `whereClientErrorCameFrom` below, so the two cannot disagree about what an
+ * extension is. Matches the bare scheme word as well as the full `scheme://id/...`
+ * URL, because Chrome strips the extension id out of CSP reports for privacy and
+ * sends the source as the bare word `chrome-extension`, no `://id` and no colon
+ * (#3634, measured in production 2026-10-12 on /book: a `script-src-attr` inline
+ * refusal that paged although it was an extension's own injected handler). Safari
+ * sends the full `safari-web-extension://<uuid>/...`. The `(?:$|[:/])` matches the
+ * word only as a whole scheme segment, so a value that merely begins with it
+ * (`chrome-extension.example.com/x.js`, `chrome-extensions`) is not one; the `^`
+ * keeps an ordinary URL whose host contains the word
+ * (`https://chrome-extension.example.com/...`) from matching.
+ */
+export const EXTENSION_SCHEME = /^(chrome|moz|safari|safari-web|ms-browser)-extension(?:$|[:/])/i;
+
+/**
+ * Where a report says its error came from, read from its LOCATIONS: the `source`
+ * file and every stack frame. Never from the message, which is free text and could
+ * name anything.
+ *
+ *  - `extension`: every location it names is a browser extension's script. The
+ *    extension's code threw inside Slate's page, and nothing Slate ships is on the
+ *    stack (L477; measured 2026-10-29, MetaMask's injected provider on /book).
+ *  - `other_location`: it names at least one location that is NOT an extension's,
+ *    which is Slate's own bundle or anything else on the page. Slate's code may be
+ *    at fault, so it is never excused, even beside extension frames.
+ *  - `no_location`: it names nowhere at all (no file, and no frame with a position).
+ *    Not excused as an extension's, because nothing says it was; the route decides
+ *    what that costs.
+ *
+ * Judged by location rather than a list of messages so the next extension, wallet
+ * or translator needs no new string. A frame is anything carrying `:line` or
+ * `:line:col`, in Chrome's `at fn (url:1:2)` / `at url:1:2` or Firefox and Safari's
+ * `fn@url:1:2`; an engine's own frames (`<anonymous>`, `native`) carry no position
+ * and name no script, so they neither excuse nor accuse.
+ */
+export type ClientErrorOrigin =
+  | { from: "extension"; scheme: string }
+  | { from: "other_location" }
+  | { from: "no_location" };
+
+/** One stack line's location, the text before `:line` or `:line:col` at its end,
+ *  with any wrapping `(`, `at ` or `fn@` dropped. */
+const FRAME_LOCATION = /(?:^|[\s(@])([^\s()@]+?):\d+(?::\d+)?\)?\s*$/;
+
+/** Every location a report names: its `source`, then each stack frame's. */
+function reportLocations(report: Pick<ClientErrorReport, "source" | "stack">): string[] {
+  const found: string[] = [];
+  if (report.source) found.push(report.source);
+  for (const line of (report.stack ?? "").split("\n")) {
+    const at = FRAME_LOCATION.exec(line.trim());
+    if (at?.[1]) found.push(at[1]);
+  }
+  return found;
+}
+
+export function whereClientErrorCameFrom(report: Pick<ClientErrorReport, "source" | "stack">): ClientErrorOrigin {
+  const locations = reportLocations(report);
+  if (locations.length === 0) return { from: "no_location" };
+  if (!locations.every((l) => EXTENSION_SCHEME.test(l))) return { from: "other_location" };
+  const scheme = /^[a-z-]+/i.exec(locations[0]!)?.[0] ?? "extension";
+  return { from: "extension", scheme: scheme.toLowerCase() };
+}
+
+/**
  * The top level segments Slate serves a PAGE under, plus `root` for `/` (#2755).
  *
  * A fixed vocabulary, because the alert key is built from it and the page path it

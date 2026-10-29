@@ -341,6 +341,33 @@ export function opaqueScriptErrorBurstAlert(c: {
 }
 
 /**
+ * A burst of unhandled rejections that name no file and no stack frame, on one page.
+ *
+ * A single one never pages: nothing in it says whose code rejected, and a browser
+ * extension rejecting with a plain value (an injected wallet provider) sends exactly
+ * this. This is sent only once `threshold` different addresses have reported one
+ * inside the window, which is what a fault in the page's own code looks like.
+ *
+ * It says what was counted and no more (L11), and carries no error text: the log
+ * lines hold each message, and free text from a public endpoint never reaches Slack.
+ */
+export function unattributedRejectionBurstAlert(c: {
+  surface: string;
+  addresses: number | null;
+  threshold: number;
+  windowMinutes: number;
+}): string {
+  const many = c.addresses === null ? `${c.threshold} or more` : `${c.addresses}`;
+  return (
+    `Browsers at ${many} different addresses reported a failure on ${surfacePlace(c.surface)} in the last ` +
+    `${c.windowMinutes} minutes that named no file and no line of code. A browser extension, such as a crypto ` +
+    `wallet, can send one of these, but this many at once can mean the page's own code is failing for a whole ` +
+    `group of leads. The log lines under tag=client-errors carry each message and the browser it came ` +
+    `from: open the page in that browser and try to book.`
+  );
+}
+
+/**
  * A browser refused something on a Slate page under the ENFORCED content security
  * policy (#2575, Dan 2026-10-02: a throttled page).
  *

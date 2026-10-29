@@ -1069,7 +1069,8 @@ observe says the holder stopped: it simply goes quiet once nobody presents the k
 
 ## An unexpected fault was reported
 
-Keys: `internal_error:*`, `boundary_error:*`, `csp_violation:*`, `opaque_script_errors:*`.
+Keys: `internal_error:*`, `boundary_error:*`, `csp_violation:*`, `opaque_script_errors:*`,
+`unattributed_rejections:*`.
 
 **What fired it.** A route threw something nobody predicted. The alert carries a short
 human reason; the full text, with the stack, is in the log (never in the alert, #1133).
@@ -1118,6 +1119,30 @@ one is logged and never pages; the key is the surface.
   host). Check the deploy and the `csp_violation:*` lines in the same window.
 - A burst that never recurs needs nothing. There is no all clear, because a quiet
   window is also what nobody opening the page looks like.
+
+**Browser errors that never page, judged by where they came from (L477).** A browser
+error or unhandled rejection whose every file and stack frame is a browser extension's
+(`chrome-extension://`, `moz-extension://`, `safari-web-extension://` and the other
+schemes in `EXTENSION_SCHEME`, `src/lib/api/client-error-scrub.ts`) is logged at warn as
+`msg="browser extension error"` with its `scheme`, `message` and `user_agent`, and
+never pages: nothing Slate ships is on its stack. The first one measured was MetaMask's
+injected provider rejecting with "Failed to connect to MetaMask" on /book (2026-10-29).
+One frame anywhere else, Slate's own bundle included, and it pages as before. The
+message is never read for this, so the next extension needs no new entry.
+
+**`unattributed_rejections:*`.** Browsers at several different addresses (five or more
+in fifteen minutes, `UNATTRIBUTED_REJECTION_BURST_THRESHOLD` in
+`src/lib/api/boundary-count.ts`) reported an unhandled rejection that named no file and
+no stack frame on the named page. One alone is usually an extension rejecting with a
+plain value and is logged as `msg="unattributed unhandled rejection"` without paging;
+many at once is what Slate's own page failing for a group of leads looks like. The key
+is the surface.
+- Read those lines for the window: each carries the `message` and `user_agent`. One
+  browser or one message in common points at an extension or that browser; follow the
+  `opaque_script_errors:*` steps above.
+- Spread across many browsers, starting with a deploy: Slate's own code is the likely
+  cause. Open the page and try to book, and check the deploy.
+- There is no all clear, for the same reason as the opaque burst.
 
 ---
 

@@ -373,11 +373,12 @@ import {
   unknownReasonCodeNotice,
   unrecognisedPageReports,
   opaqueScriptErrorBurstAlert,
+  unattributedRejectionBurstAlert,
   watchLapseRecovery,
   googleBreakerClosedAlert,
   googleBreakerOpenAlert,
 } from "@/lib/notify/misc-alert-copy";
-import { OPAQUE_BURST_THRESHOLD } from "@/lib/api/boundary-count";
+import { OPAQUE_BURST_THRESHOLD, UNATTRIBUTED_REJECTION_BURST_THRESHOLD } from "@/lib/api/boundary-count";
 import {
   friendlyRateArea,
   limiterBlockedAlert,
@@ -6951,6 +6952,12 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: opaqueScriptErrorBurstAlert({ surface: "book", addresses: 5, threshold: OPAQUE_BURST_THRESHOLD, windowMinutes: 15 }) },
   { key: "opaque_script_errors:*", state: "a burst of detail free script errors on the booker, the figure unreadable", channel: "alert",
     text: opaqueScriptErrorBurstAlert({ surface: "book", addresses: null, threshold: OPAQUE_BURST_THRESHOLD, windowMinutes: 15 }) },
+  // A single unhandled rejection naming no file and no frame never pages (an
+  // extension rejecting with a plain value sends one); a burst across addresses does.
+  { key: "unattributed_rejections:*", state: "a burst of failures naming no code on the booker, counted", channel: "alert",
+    text: unattributedRejectionBurstAlert({ surface: "book", addresses: 5, threshold: UNATTRIBUTED_REJECTION_BURST_THRESHOLD, windowMinutes: 15 }) },
+  { key: "unattributed_rejections:*", state: "a burst of failures naming no code on the booker, the figure unreadable", channel: "alert",
+    text: unattributedRejectionBurstAlert({ surface: "book", addresses: null, threshold: UNATTRIBUTED_REJECTION_BURST_THRESHOLD, windowMinutes: 15 }) },
   // #1974: a page that failed to RENDER, which is a different event from a 500
   // and reads differently: nobody got a status code, somebody got a screen.
   // Three states, because the SCOPE sentence is what decides whether the reader

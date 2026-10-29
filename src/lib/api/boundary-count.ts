@@ -6,7 +6,11 @@ import {
   OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER,
   OPAQUE_SCRIPT_ERROR_BURST_COUNTER,
   OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS,
+  UNATTRIBUTED_REJECTION_ADDRESS_COUNTER,
+  UNATTRIBUTED_REJECTION_BURST_COUNTER,
+  UNATTRIBUTED_REJECTION_WINDOW_SECONDS,
   UNRECOGNISED_PAGE_COUNTER,
+  type WindowCounter,
 } from "@/lib/rate-limit-core";
 
 /**
@@ -236,15 +240,72 @@ export interface OpaqueBurstCount {
  * Never throws.
  */
 export async function countOpaqueScriptError(signature: string, address: string): Promise<OpaqueBurstCount> {
+  return countDistinctAddresses(
+    { address: OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER, burst: OPAQUE_SCRIPT_ERROR_BURST_COUNTER },
+    OPAQUE_BURST_THRESHOLD,
+    signature,
+    address,
+    "opaque script error",
+  );
+}
+
+/**
+ * How many DISTINCT addresses on one surface must send an unhandled rejection that
+ * names no location (no file, no stack frame) inside the window before anybody is
+ * paged.
+ *
+ * Such a rejection cannot be attributed: a browser extension rejecting with a plain
+ * value (an injected wallet provider, L477) sends exactly this, and so would a Slate
+ * fault that rejects without a stack. One of them is nobody's to act on, so it is
+ * logged and counted and never pages; a burst across several browsers is what a
+ * fault in Slate's own page looks like, since that fails for every lead who opens it.
+ *
+ * Sized as `OPAQUE_BURST_THRESHOLD` is and for the same reasons (counted per
+ * address, so one reloading browser cannot trip it). The background measured before
+ * this shipped: none in the seven days of Worker logs to 2026-10-29, when the only
+ * browser error that paged was MetaMask's, which carried an extension frame.
+ */
+export const UNATTRIBUTED_REJECTION_BURST_THRESHOLD = OPAQUE_BURST_THRESHOLD;
+
+/** The window the burst is counted over, and the page's own cooldown. */
+export const UNATTRIBUTED_REJECTION_WINDOW_MS = UNATTRIBUTED_REJECTION_WINDOW_SECONDS * 1000;
+
+/**
+ * Record one unhandled rejection naming no location from `address` on the surface
+ * `signature`, and say whether distinct addresses have reached the burst. Counted in
+ * rows of its own, so opaque script errors and these never fill each other's burst.
+ * Fails CLOSED like `countOpaqueScriptError`, for the same reason. Never throws.
+ */
+export async function countUnattributedRejection(signature: string, address: string): Promise<OpaqueBurstCount> {
+  return countDistinctAddresses(
+    { address: UNATTRIBUTED_REJECTION_ADDRESS_COUNTER, burst: UNATTRIBUTED_REJECTION_BURST_COUNTER },
+    UNATTRIBUTED_REJECTION_BURST_THRESHOLD,
+    signature,
+    address,
+    "unattributed rejection",
+  );
+}
+
+/**
+ * The one distinct address burst count, shared by the opaque script errors and the
+ * unattributed rejections so the two cannot drift into two readings of it (L370).
+ */
+async function countDistinctAddresses(
+  counters: { address: WindowCounter; burst: WindowCounter },
+  threshold: number,
+  signature: string,
+  address: string,
+  what: string,
+): Promise<OpaqueBurstCount> {
   const unmeasured: OpaqueBurstCount = { newAddress: false, addresses: null, burst: false, measured: false };
-  const windowSeconds = OPAQUE_SCRIPT_ERROR_WINDOW_SECONDS;
-  const countKey = `${OPAQUE_SCRIPT_ERROR_BURST_COUNTER.prefix}:${signature}`;
+  const windowSeconds = counters.burst.windowSeconds;
+  const countKey = `${counters.burst.prefix}:${signature}`;
 
   const seen = await hitCounter(
-    `${OPAQUE_SCRIPT_ERROR_ADDRESS_COUNTER.prefix}:${signature}:${address}`,
-    windowSeconds,
+    `${counters.address.prefix}:${signature}:${address}`,
+    counters.address.windowSeconds,
     1,
-    "opaque script error address count",
+    `${what} address count`,
   );
   if (!seen.ok) return unmeasured;
   if (!seen.within) {
@@ -253,7 +314,7 @@ export async function countOpaqueScriptError(signature: string, address: string)
     return { newAddress: false, addresses: await readCount(countKey), burst: false, measured: true };
   }
 
-  const counted = await hitCounter(countKey, windowSeconds, OPAQUE_BURST_THRESHOLD - 1, "opaque script error count");
+  const counted = await hitCounter(countKey, windowSeconds, threshold - 1, `${what} count`);
   if (!counted.ok) return unmeasured;
   return {
     newAddress: true,
