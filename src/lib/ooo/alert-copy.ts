@@ -168,9 +168,10 @@ export function oooCoverageStopAlert(requestId: string, reason: string): string 
 }
 
 /**
- * One approved time off whose calendar event no longer covers it (#3360), as the
- * page names it. `coverage` is the judge's own verdict (`event-coverage.ts`), so the
- * words can never describe a different disagreement than the one measured.
+ * One approved time off whose calendar event no longer covers it (#3360). `coverage`
+ * is the judge's own verdict (`event-coverage.ts`), so the DMs that describe the
+ * disagreement (`mismatch-notice-copy.ts`) can never name a different one than the
+ * one measured. The alerts channel page names only the approved window.
  */
 export interface OooEventMismatch {
   requestId: string;
@@ -188,32 +189,21 @@ export interface OooEventMismatch {
     | { kind: "not-blocking"; unmeasured: { startMs: number; endMs: number } | null };
 }
 
-const NOT_BLOCKING_WHY = "(it was deleted, cancelled, marked free or moved)";
-
-function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
-  const label = f.displayTzLabel ?? undefined;
-  const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, label);
-  const calendar =
-    f.coverage.kind === "not-blocking"
-      ? f.coverage.unmeasured === null
-        ? `The calendar shows no busy time off event inside that window ${NOT_BLOCKING_WHY}.`
-        : `The calendar shows no busy time off event for ${formatWhenLine(
-            f.startsAt,
-            new Date(f.coverage.unmeasured.startMs).toISOString(),
-            f.displayTzId,
-            label,
-          )} ${NOT_BLOCKING_WHY}; the rest of the window is too far ahead to check yet.`
-      : `The calendar event leaves ${f.coverage.spans
-          .map((s) =>
-            formatWhenLine(
-              new Date(s.startMs).toISOString(),
-              new Date(s.endMs).toISOString(),
-              f.displayTzId,
-              label,
-            ),
-          )
-          .join(" and ")} open.`;
-  return `Approved: ${approved}. ${calendar} ${appBaseUrl}/admin/ooo?request=${f.requestId}`;
+/**
+ * One request's block on the page: the approved window, then the link alone on the
+ * last line, in Dan's layout (2026-10-29). It no longer says how the calendar
+ * differs (missing, shortened, or only partly checked): Dan cut that sentence, and
+ * the action is the same in every case. The agent's and manager's DMs
+ * (`mismatch-notice-copy.ts`) still name the open hours. `reason` is the request's
+ * own escalation sentence when the requests on one page reached it differently.
+ */
+function mismatchBlock(f: OooEventMismatch, appBaseUrl: string, reason: string | null): string {
+  const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, f.displayTzLabel ?? undefined);
+  return [
+    `Approved: ${approved}`,
+    ...(reason === null ? [] : [reason]),
+    `${appBaseUrl}/admin/ooo?request=${f.requestId}`,
+  ].join("\n");
 }
 
 /**
@@ -296,19 +286,20 @@ export function oooEventMismatchAlert(
   const why = shared
     ? escalationSentence(agentName, shared)
     : `Each request reached this channel for its own reason, given on its line.`;
-  return (
+  // Dan's wording (2026-10-29), word for word: pinned by
+  // scripts/test-ooo-mismatch-notice-copy.ts.
+  return [
     `${agentName}'s Google Calendar no longer matches ` +
-    `${one ? "an approved time off" : `${found.length} approved time off requests`}, ` +
-    `and only a person can say which is right. ${why} ` +
-    `Slate is still blocking the whole approved ` +
-    `window, so no lead can be booked into it meanwhile. Make the two agree: if those ` +
-    `hours are being worked, change the request in My time off (it goes back to the ` +
-    `manager to approve); if they are not, put the calendar event back to the approved ` +
-    `times.\n` +
-    found
-      .map((f, i) => mismatchLine(f, appBaseUrl) + (shared ? "" : ` ${escalationSentence(agentName, reasons[i]!)}`))
-      .join("\n")
-  );
+      `${one ? "an approved time off" : `${found.length} approved time off requests`}. ` +
+      `${why} Slate is still blocking the originally approved window, so no lead can be ` +
+      `booked into it.`,
+    `Action required: Make the two agree: if those hours are being worked, change the ` +
+      `request in My time off (it goes back to the manager to approve); if they are not, ` +
+      `put the calendar event back to the approved times.`,
+    ...found.map((f, i) =>
+      mismatchBlock(f, appBaseUrl, shared ? null : escalationSentence(agentName, reasons[i]!)),
+    ),
+  ].join("\n\n");
 }
 
 /**
