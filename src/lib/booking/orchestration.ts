@@ -7202,7 +7202,8 @@ async function afterFreshCommit(
   //
   // Everything smaller SENDS NOTHING HERE: a sideways overflow (#2228), a top
   // tier cascade (#2843), and a single tier drop (2026-10-02), each the ladder
-  // working as designed. The reasons are in tier-alert.ts.
+  // working as designed. The reasons are in tier-alert.ts. A top tier booking
+  // OUTSIDE the cascade rule pages from the monitor lane (top-tier-placement.ts).
   //
   // #3266: after the lead's answer on their own request, outside the confirm's
   // budget, since the booking is made and nothing in the answer reads the page.

@@ -158,7 +158,7 @@ export function cascadeFloorTier(tier: number): number {
 }
 
 /** Whether a code is an Ultra High or Very High one, whose cascade is restricted
- *  (#2842) and counted rather than paged (#2843). */
+ *  (#2842) and never paged inside the rule (#2843). */
 export function isTopTierCode(code: string): boolean {
   return XBC.test(code) && Number(code[0]) >= TOP_TIER_FROM;
 }

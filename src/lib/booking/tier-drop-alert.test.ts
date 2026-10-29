@@ -97,8 +97,8 @@ const tierDropInput: CreateBookingInput = {
 
 const bucketFor = (code: string) => ({ ...bucket511, id: `bkt${code}`, code }) as unknown as Bucket;
 
-// #2843: an Ultra High or Very High cascade is counted daily rather than alerted per
-// booking, so the dispatch test cascades a HIGH lead (311 to 211), which still alerts.
+// #2843: an Ultra High or Very High cascade inside the rule is not alerted per booking,
+// so the dispatch test cascades a HIGH lead (311 to 211), which still alerts.
 function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps & CommitFreshParts {
   const noop = async (..._args: unknown[]): Promise<void> => {};
   return {
@@ -381,9 +381,9 @@ describe("tier-drop alert dispatch", () => {
     expect(tierDropCalls).toHaveLength(0);
   });
 
-  // #2843: the same cascade one tier up is the routing rule working, counted once a
-  // day on the info channel. The deep drop test above is the positive control in
-  // the same fixture shape (L159).
+  // #2843: the same cascade one tier up is the routing rule working and sends
+  // nothing. The deep drop test above is the positive control in the same fixture
+  // shape (L159).
   it("does NOT dispatch a tier_fallback alert when an Ultra High lead cascades", async () => {
     const deps = makeTierDropDeps();
 
