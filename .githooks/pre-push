@@ -47,6 +47,14 @@ branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo '')"
 root_dir="$(git rev-parse --show-toplevel)"
 
 # --- 1. Merge-gap guard -----------------------------------------------------
+#
+# Asked TWICE (#4355, L1034): first, so a push onto a branch already merged does not
+# cost the whole gate, and again as the LAST step before every exit that lets the push
+# through. A check guarding an action must be the last step before it, and the gate
+# below runs for 40 seconds or more, long enough for a pull request that was open at
+# the first asking to merge, since PRs here merge within seconds of going green. The
+# late asking passes `late`, so its refusal says which of the two happened (L11).
+# scripts/test-prepush-merge-gap-last.ts pins the order.
 merge_gap_guard() {
   [ -z "$branch" ] && return 0
   [ "$branch" = "main" ] && return 0
@@ -61,10 +69,15 @@ merge_gap_guard() {
   # backstop no longer shares this failure mode: an unreadable PR list there is a red
   # run, not a green one. Do not "fix" this to fail closed without checking that,
   # since blocking every push made without gh auth would be worse than the gap.
-  state="$(gh pr view "$branch" --json state --jq .state 2>/dev/null || echo '')"
+  # From the repository root, because the late asking runs after the hook has moved
+  # into the isolated tree it built in.
+  state="$(cd "$root_dir" && gh pr view "$branch" --json state --jq .state 2>/dev/null || echo '')"
   if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then
     echo "" >&2
     echo "✋ pre-push blocked: the PR for '$branch' is already $state." >&2
+    if [ "${1:-}" = "late" ]; then
+      echo "   It was open when this push started, and became $state while the checks ran." >&2
+    fi
     echo "   Pushing here strands the commit — it won't reach main." >&2
     echo "   Branch fresh off main instead, e.g.:" >&2
     echo "     git checkout -b <new-branch> origin/main && git cherry-pick <sha>" >&2
@@ -136,6 +149,7 @@ changed_paths="$("$root_dir/.githooks/lib/push-changed-paths.sh")"
 
 # --- 2. CI parity checks ----------------------------------------------------
 if [ "${SKIP_PREPUSH_CHECKS:-}" = "1" ]; then
+  merge_gap_guard late
   exit 0
 fi
 
@@ -334,4 +348,7 @@ bundle_budget_check() {
 }
 bundle_budget_check
 
+# The last step before the push (#4355): the pull request may have merged while the
+# gate above ran.
+merge_gap_guard late
 exit 0
