@@ -60,7 +60,7 @@ import type { Booking, Bucket, EventType, User } from "../db/types.ts";
 import { log } from "@/lib/log";
 
 /** The code the over limit refusal carries, so the booker tells it from a taken time (L35). */
-export const PLACEHOLDER_DAY_FULL_CODE = "PLACEHOLDER_DAY_FULL";
+export { PLACEHOLDER_DAY_FULL_CODE } from "./placeholder-day-full.ts";
 
 /**
  * The day's placeholder places are all taken (#4391). Its own refusal with its own

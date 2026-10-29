@@ -27,13 +27,13 @@ export function namesAdvisorToLead(booking: { kind?: string | null }): boolean {
 /** The narrow slice of the Supabase client this needs. */
 export interface AdvisorNameReader {
   from(table: "users"): {
-    select(cols: "name"): {
+    select(cols: "name, is_placeholder"): {
       eq(
         col: "id",
         value: string,
       ): {
         maybeSingle(): Promise<{
-          data: { name: string | null } | null;
+          data: { name: string | null; is_placeholder?: boolean | null } | null;
           error: unknown;
         }>;
       };
@@ -43,7 +43,9 @@ export interface AdvisorNameReader {
 
 /**
  * The agent's display name, or null when there is nothing usable to show:
- * no id, no row, a blank name, or a read that failed.
+ * no id, no row, a blank name, a read that failed, or (#4391) the placeholder
+ * advisor, whom a lead is never told their call is with (`namesAdvisorToLead`, by
+ * the assignee here, since a caller of this holds only the assignee's id).
  */
 export async function resolveAdvisorName(
   db: AdvisorNameReader,
@@ -55,8 +57,9 @@ export async function resolveAdvisorName(
     // the name rather than substitute one. The `error` branch below is the whole
     // reason this is not an `unwrap`: an empty result here is SAFE (the surface
     // shows no name), it is never mistaken for an answer.
-    const { data, error } = await db.from("users").select("name").eq("id", userId).maybeSingle();
+    const { data, error } = await db.from("users").select("name, is_placeholder").eq("id", userId).maybeSingle();
     if (error) return null;
+    if (data?.is_placeholder === true) return null;
     const name = data?.name?.trim();
     return name && name.length > 0 ? name : null;
   } catch {
