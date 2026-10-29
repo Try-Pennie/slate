@@ -24,6 +24,7 @@ import {
   BACKSTOP_CHECK_WINDOW_MS,
   MINUTE_LANE_OVERDUE_MS,
   MINUTE_LANE_PATHS,
+  MINUTE_TRIGGER_HEARTBEAT_LANES,
   minuteTriggerReading,
   overdueMinuteLanes,
   parseBackstopAnswer,
@@ -47,6 +48,7 @@ eq(MINUTE_CRON, "* * * * *", "the every minute trigger is the one expression it 
 eq(BACKSTOP_CRON, "*/5 * * * *", "the backstop rides the five minute trigger");
 eq([...MINUTE_LANE_PATHS], routesForCron(MINUTE_CRON), "its lanes are DERIVED from the schedule, never listed beside it");
 eq(MINUTE_LANE_OVERDUE_MS, 3 * MIN, "a lane is overdue once its last claim is more than three minutes old");
+eq([...MINUTE_TRIGGER_HEARTBEAT_LANES].sort(), ["outbox", "recompute", "reroute-hold-sweep", "selfheal", "sync"], "the heartbeat lanes that stop with the trigger, the hold sweep inside selfheal included");
 assert(BACKSTOP_CHECK_WINDOW_MS > MINUTE_LANE_OVERDUE_MS, "the check reads further back than the overdue line, so absent means overdue");
 
 const now = at("2026-10-29T09:05:53Z");

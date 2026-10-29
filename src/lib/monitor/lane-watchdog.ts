@@ -59,21 +59,13 @@ import { CALCOM_HEARTBEAT_LANES, loadCalcomRetiredCached, withoutRetiredCalcomLa
 import { parseStampMs } from "@/lib/date/stamp";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
 import {
-  MINUTE_LANE_PATHS,
+  MINUTE_TRIGGER_HEARTBEAT_LANES,
   TRIGGER_READING_WINDOW_MS,
   minuteTriggerReading,
   readRecentLaneClaims,
   type LaneClaimQuery,
   type MinuteTriggerReading,
 } from "@/lib/monitor/minute-lane-claims";
-import { laneFieldName } from "@/lib/monitor/lane-timing";
-
-/** The heartbeat lanes that run on the every minute trigger: its routes, plus the reroute
- *  hold sweep, which runs inside selfheal and stamps its own heartbeat. */
-const MINUTE_TRIGGER_LANES: ReadonlySet<string> = new Set([
-  ...MINUTE_LANE_PATHS.map((p) => laneFieldName(p)),
-  "reroute-hold-sweep",
-]);
 
 /**
  * Whether Cloudflare is delivering the every minute trigger, for the lanes page
@@ -82,7 +74,7 @@ const MINUTE_TRIGGER_LANES: ReadonlySet<string> = new Set([
  * the page then says what it said before this existed.
  */
 async function readMinuteTrigger(stale: StaleLane[], now: number): Promise<MinuteTriggerReading> {
-  if (!stale.some((l) => MINUTE_TRIGGER_LANES.has(l.lane))) return { kind: "unknown" };
+  if (!stale.some((l) => MINUTE_TRIGGER_HEARTBEAT_LANES.has(l.lane))) return { kind: "unknown" };
   try {
     const { rows, truncated } = await readRecentLaneClaims(
       supabaseAdmin().from("lane_runs") as unknown as LaneClaimQuery,

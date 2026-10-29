@@ -13,8 +13,11 @@
 import { describeGap, laneQuietClause, stoppedTogether, type StaleLane } from "@/lib/monitor/health";
 import type { CloudflareCronStatus } from "@/lib/monitor/cloudflare-status";
 import { formatSlotTime } from "@/lib/booking/slot-label";
-import { MINUTE_LANE_PATHS, TRIGGER_READING_WINDOW_MS, type MinuteTriggerReading } from "@/lib/monitor/minute-lane-claims";
-import { laneFieldName } from "@/lib/monitor/lane-timing";
+import {
+  MINUTE_TRIGGER_HEARTBEAT_LANES,
+  TRIGGER_READING_WINDOW_MS,
+  type MinuteTriggerReading,
+} from "@/lib/monitor/minute-lane-claims";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
@@ -88,8 +91,6 @@ function timeEt(ms: number): string {
   return `${formatSlotTime(new Date(ms).toISOString(), COPY_ZONE)} ET`;
 }
 
-const MINUTE_LANE_NAMES = new Set(MINUTE_LANE_PATHS.map(laneFieldName));
-
 /**
  * The sentence saying Cloudflare stopped delivering the every minute trigger, or null
  * when this tick measured no such thing. Said only when a quiet lane is on that trigger
@@ -99,7 +100,7 @@ const MINUTE_LANE_NAMES = new Set(MINUTE_LANE_PATHS.map(laneFieldName));
 function minuteTriggerSentence(page: CoreLanesPage): string | null {
   const reading = page.minuteTrigger;
   if (!reading || reading.kind !== "silent") return null;
-  const onTrigger = page.stale.some((l) => MINUTE_LANE_NAMES.has(l.lane) || l.lane === "reroute-hold-sweep");
+  const onTrigger = page.stale.some((l) => MINUTE_TRIGGER_HEARTBEAT_LANES.has(l.lane));
   if (!onTrigger) return null;
   if (reading.sinceMs === null) {
     return `Cloudflare has delivered no every-minute tick in the last ${Math.round(TRIGGER_READING_WINDOW_MS / 3_600_000)} hours.`;

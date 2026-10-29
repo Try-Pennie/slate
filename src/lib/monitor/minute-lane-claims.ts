@@ -40,6 +40,13 @@ export const MINUTE_LANE_PATHS: readonly string[] = (() => {
 const MINUTE_LANE_NAMES: ReadonlySet<string> = new Set(MINUTE_LANE_PATHS.map(laneFieldName));
 
 /**
+ * The HEARTBEAT lanes that stop when the every minute trigger does: its routes, plus the
+ * reroute hold sweep, which runs inside selfheal and stamps its own heartbeat. The one
+ * list the lanes page and the watchdog both ask "is a quiet lane on this trigger" of.
+ */
+export const MINUTE_TRIGGER_HEARTBEAT_LANES: ReadonlySet<string> = new Set([...MINUTE_LANE_NAMES, "reroute-hold-sweep"]);
+
+/**
  * A lane with no claim this recent is overdue. Three minutes is three missed ticks: one
  * late tick (Cloudflare delivered 4:51's at 4:51:57) never starts a second run, and the
  * five minute backstop still reaches a lane well inside its 10 minute stale bound.
