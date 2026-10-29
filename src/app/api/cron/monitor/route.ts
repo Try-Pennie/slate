@@ -3263,61 +3263,6 @@ export async function GET(req: NextRequest) {
       }),
     );
 
-    // --- Sync-staleness gauge (#241): after #238 the backstop sync rotates
-    // least-recently-synced first, so nothing surfaced an agent silently dropping
-    // out of the rotation (roster too large for a tick, or a stuck agent). Load the
-    // bookable agents that ARE in the rotation (a calendar row exists; a bookable
-    // agent with none is the schedule/watch-onboarding lane's concern) and alert if
-    // any is stale. markAgentsSynced stamps even errored agents, so a stale
-    // last_synced_at means "not picked up", the residual gap the health probe /
-    // heartbeat / anomaly checks don't cover. Both reads page past the 1,000 cap. ---
-    const loadStaleCandidates = async (): Promise<SyncAgentStaleness[]> => {
-      const [agents, cals] = await Promise.all([
-        selectAllPages<{ id: string; name: string | null; email: string | null; last_synced_at: string | null }>(
-          "monitor sync-staleness agents",
-          "id",
-          () =>
-            realAdvisorsOnly(
-              db.from("users").select("id, name, email, last_synced_at").eq("bookable", true).is("deactivated_at", null),
-            ),
-        ),
-        // #2299: created_at and the sync failure columns come back with the row,
-        // because the first-run grace is judged on when the calendar joined the
-        // rotation and cancelled by a failure the rotation has already recorded.
-        selectAllPages<{
-          user_id: string;
-          created_at: string | null;
-          consecutive_failures: number | null;
-          last_sync_error: string | null;
-        }>(
-          "monitor sync-staleness calendars",
-          "id",
-          () =>
-            db
-              .from("agent_calendars")
-              .select("id, user_id, created_at, consecutive_failures, last_sync_error"),
-        ),
-      ]);
-      return syncRotationCandidates(agents, cals);
-    };
-    const syncStaleness = await steps.run("sync_staleness", null, () =>
-      runSyncStalenessCheck({
-        loadAgents: loadStaleCandidates,
-        nowMs: now,
-        // alert-key: sync_staleness
-        notify: sendThrottledAlert,
-        // alert-key: sync_staleness
-        // #1400: the gauge pages that agents' calendars have gone stale and could
-        // never say it ended, so a reader had no way to tell a recovered fleet from
-        // a cooldown still running. Hung off a MEASURED healthy reading.
-        // all-clear-proof: scripts/test-sync-staleness.ts - a roster read
-        // that failed reports unverified and clears nothing.
-        resolve: resolveAlert,
-        cooldownMs: cooldownMs.sync_staleness,
-        log: (m) => log.info("sync-staleness", { msg: m }),
-      }),
-    );
-
     // --- Appointments held by an agent who has left the pool (#1215): a customer
     // booked with a departed advisor. Deactivating and reassigning are independent
     // actions, and the Salesforce roster sync deactivates with no admin present at
@@ -4828,6 +4773,66 @@ export async function GET(req: NextRequest) {
     // detector that has stopped concluding (#1394).
     const laneWatchdog = await steps.run("lane_watchdog", LANE_WATCHDOG_UNJUDGED, () =>
       alertOnStaleLanes(),
+    );
+
+    // AFTER the lane watchdog, deliberately (2026-10-29): a stopped sync lane makes every
+    // advisor stale by construction, so this page waits while the lanes' page is firing
+    // and names sync (ALERT_FOLDS). Both cross on the same tick when the lanes stop
+    // together, and judged first this posted three seconds before the page that explains
+    // it. `scripts/test-alert-folds.ts` holds the order.
+    // --- Sync-staleness gauge (#241): after #238 the backstop sync rotates
+    // least-recently-synced first, so nothing surfaced an agent silently dropping
+    // out of the rotation (roster too large for a tick, or a stuck agent). Load the
+    // bookable agents that ARE in the rotation (a calendar row exists; a bookable
+    // agent with none is the schedule/watch-onboarding lane's concern) and alert if
+    // any is stale. markAgentsSynced stamps even errored agents, so a stale
+    // last_synced_at means "not picked up", the residual gap the health probe /
+    // heartbeat / anomaly checks don't cover. Both reads page past the 1,000 cap. ---
+    const loadStaleCandidates = async (): Promise<SyncAgentStaleness[]> => {
+      const [agents, cals] = await Promise.all([
+        selectAllPages<{ id: string; name: string | null; email: string | null; last_synced_at: string | null }>(
+          "monitor sync-staleness agents",
+          "id",
+          () =>
+            realAdvisorsOnly(
+              db.from("users").select("id, name, email, last_synced_at").eq("bookable", true).is("deactivated_at", null),
+            ),
+        ),
+        // #2299: created_at and the sync failure columns come back with the row,
+        // because the first-run grace is judged on when the calendar joined the
+        // rotation and cancelled by a failure the rotation has already recorded.
+        selectAllPages<{
+          user_id: string;
+          created_at: string | null;
+          consecutive_failures: number | null;
+          last_sync_error: string | null;
+        }>(
+          "monitor sync-staleness calendars",
+          "id",
+          () =>
+            db
+              .from("agent_calendars")
+              .select("id, user_id, created_at, consecutive_failures, last_sync_error"),
+        ),
+      ]);
+      return syncRotationCandidates(agents, cals);
+    };
+    const syncStaleness = await steps.run("sync_staleness", null, () =>
+      runSyncStalenessCheck({
+        loadAgents: loadStaleCandidates,
+        nowMs: now,
+        // alert-key: sync_staleness
+        notify: sendThrottledAlert,
+        // alert-key: sync_staleness
+        // #1400: the gauge pages that agents' calendars have gone stale and could
+        // never say it ended, so a reader had no way to tell a recovered fleet from
+        // a cooldown still running. Hung off a MEASURED healthy reading.
+        // all-clear-proof: scripts/test-sync-staleness.ts - a roster read
+        // that failed reports unverified and clears nothing.
+        resolve: resolveAlert,
+        cooldownMs: cooldownMs.sync_staleness,
+        log: (m) => log.info("sync-staleness", { msg: m }),
+      }),
     );
 
     // Reliable trigger for the booking smoke canary (#525 follow-up). GitHub

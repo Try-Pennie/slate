@@ -74,6 +74,19 @@ is not ours to fix: the lanes resume on their own when it ends, and the page cle
 once every core lane has stamped inside its bound. The pool grouping page waits while
 this one fires (`ALERT_FOLDS`), because only the recompute lane publishes it.
 
+When `sync` is among the stopped lanes, the page says advisors' calendars are not being
+refreshed, and the stale calendar sync page (`sync_staleness`) waits while it fires
+(`ALERT_FOLDS`): a stopped sync lane makes every advisor stale by construction, and on
+2026-10-29 one stop posted both pages three seconds apart. It waits only while the sync
+lane itself is past its bound, read live, so a `sync_staleness` page arriving while this
+one fires means sync IS running and the rotation is skipping advisors on its own: treat
+it as its own problem. Once sync runs again it waits one staleness threshold (15 minutes)
+for the rotation to catch up, then posts if advisors are still stale; that includes
+advisors who first pass the threshold during the catch up (on 2026-10-29 the lanes cleared
+at 05:07 ET and the last advisor was current at 05:11), because the lanes page's all-clear
+starts that wait for every page it explains (`marksOnClear`). The monitor tick judges it
+after the lane watchdog for this reason (`scripts/test-alert-folds.ts`).
+
 The usual causes of a single quiet lane, which the page no longer lists: a deploy
 cancelled a run part way, a run went to a server far from the database and ran slowly,
 or a run took longer than its schedule (and, for a lane that takes a lock, the next run

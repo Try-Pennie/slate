@@ -23,7 +23,16 @@ import {
   type AlertRepeat,
   type RepeatChange,
 } from "@/lib/notify/repeat-policy";
-import { foldFor, foldMarkKey, judgeFold, type FoldRead } from "@/lib/notify/alert-folds";
+import {
+  clearNeedsSubjects,
+  foldFor,
+  foldMarkKey,
+  judgeFold,
+  marksOnClear,
+  type FoldRead,
+} from "@/lib/notify/alert-folds";
+import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
+import { findStaleLanes, LANE_STALE_BOUNDS_MS, type LaneName } from "@/lib/monitor/health";
 import { isChangeOnly } from "@/lib/notify/alert-catalog";
 import { withSeverityLead, type AlertVoice } from "@/lib/notify/severity-lead";
 
@@ -483,9 +492,26 @@ async function readStampsOf(keys: string[]): Promise<Map<string, number | null> 
 }
 
 /**
+ * Whether `lane` is past its bound now, by the lane watchdog's own read and predicate,
+ * so a fold and the page explaining it can never disagree about it. null when the read
+ * fails or throws, which holds nothing.
+ */
+async function laneIsStopped(lane: LaneName, nowMs: number): Promise<boolean | null> {
+  try {
+    const heartbeats = await readAllHeartbeatMs();
+    return findStaleLanes(heartbeats, nowMs, { [lane]: LANE_STALE_BOUNDS_MS[lane] }).length > 0;
+  } catch (err) {
+    log.warn("slack-alert", { msg: "lane heartbeat unreadable for a fold, so it posts as usual", lane }, err);
+    return null;
+  }
+}
+
+/**
  * Whether `key` waits because the alert that explains it is firing (#3802). The rule
- * is `judgeFold` (`src/lib/notify/alert-folds.ts`); this is its one read and its two
- * writes. Every key the fold table does not name answers false without a read.
+ * is `judgeFold` (`src/lib/notify/alert-folds.ts`); this is its reads and its two
+ * writes. Every key the fold table does not name answers false without a read. A lane
+ * bound fold (`onlyWhileLaneStopped`) also reads the lane heartbeats, and only while its
+ * explainer is firing (`laneIsStopped`).
  *
  * The three rows it needs (the explainer's firing marker, this key's own, and the
  * record of this key's hold) come back from one read, because a stale canary lane
@@ -502,6 +528,11 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
   const ownMark = firingKey(key);
   const holdMark = foldMarkKey(key);
   const stamps = await readStampsOf([explainerMark, ownMark, holdMark]);
+  // A lane bound fold reads the lane only while its explainer is firing: otherwise it
+  // can hold nothing, and the heartbeat read is spent only during an incident.
+  const lane = fold.folded.onlyWhileLaneStopped;
+  const laneStopped =
+    lane !== undefined && stamps?.has(explainerMark) ? await laneIsStopped(lane, nowMs) : undefined;
   const read: FoldRead | null =
     stamps === null
       ? null
@@ -509,8 +540,9 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
           explainerFiringMs: stamps.get(explainerMark) ?? null,
           ownFiring: stamps.has(ownMark),
           markMs: stamps.get(holdMark) ?? null,
+          ...(laneStopped === undefined ? {} : { laneStopped }),
         };
-  const decision = judgeFold(read, nowMs, fold.folded.graceMs);
+  const decision = judgeFold(read, nowMs, fold.folded.graceMs, lane !== undefined);
   const db = supabaseAdmin();
   if (decision.act === "hold") {
     log.info("slack-alert", {
@@ -542,10 +574,52 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
   // the lane was stale at the record's moment, so it can only be stale again a full
   // bound after a LATER stamp, by when at most FOLD_MARK_REFRESH_MS of the record's
   // grace can remain. So a refused delete is only logged.
+  //
+  // One stamped at an explainer's all-clear (`markExplainedOnClear`) may be for a key that
+  // was never true at all, and that one is NOT inert: anything coming true within its grace
+  // of the clear waits out the rest of it. That is the point (the catch up after a cause
+  // ends), and it lasts at most one grace from the clear, after which the record is spent.
   if (stamps?.has(holdMark)) {
     reportWriteFailure(await db.from("alert_state").delete().eq("key", holdMark), "alert fold mark clear");
   }
   return false;
+}
+
+/**
+ * Once an explainer's all-clear is delivered, stamp each key it explains as held now
+ * (`marksOnClear`), so one coming true in the catch up waits its own grace rather than
+ * posting fresh. Read before the clear deletes the explainer's row, for its subjects.
+ * Every key outside the fold table pays nothing. A failed read marks no lane bound key
+ * and a refused write is reported: both only let a key post sooner, the loud side.
+ *
+ * Never throws: it runs between the delivered all-clear and the firing marker's delete,
+ * so a throw would leave the marker and post the same all-clear again next tick.
+ */
+async function markExplainedOnClear(explainer: string): Promise<void> {
+  try {
+    let subjects: string[] | null = null;
+    if (clearNeedsSubjects(explainer)) {
+      const seen = await readStamp(explainer);
+      subjects = seen.kind === "present" ? seen.subjects : null;
+      if (seen.kind === "unreadable") {
+        log.warn("slack-alert", { msg: "explainer subjects unreadable at its clear; lane bound keys get no grace", key: explainer });
+      }
+    }
+    const keys = marksOnClear(explainer, subjects);
+    if (keys.length === 0) return;
+    const at = new Date().toISOString();
+    reportWriteFailure(
+      await supabaseAdmin()
+        .from("alert_state")
+        .upsert(
+          keys.map((k) => ({ key: foldMarkKey(k), last_sent_at: at })),
+          { onConflict: "key" },
+        ),
+      "alert fold mark on clear",
+    );
+  } catch (err) {
+    log.warn("slack-alert", { msg: "fold marks at a clear failed; the keys it explains get no grace", key: explainer }, err);
+  }
 }
 
 async function sendThrottledAlertUnrecorded(
@@ -937,6 +1011,7 @@ export async function resolveAlert(
     });
     return false;
   }
+  await markExplainedOnClear(key);
   // Cleared only while it still carries THIS claim: a page delivered while the notice
   // was in flight re-stamped it, and that page is still open, so its marker and its
   // cooldown both stay. An unclaimed notice clears unconditionally, as every notice

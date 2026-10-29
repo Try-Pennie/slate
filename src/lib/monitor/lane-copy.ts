@@ -123,6 +123,11 @@ export function coreLanesAlertText(page: CoreLanesPage): string {
   } else if (page.cloudflare.kind === "clear") {
     sentences.push(`Cloudflare's status page shows no open Workers incident.`);
   }
+  if (stale.some((l) => l.lane === "sync")) {
+    // The stale calendar sync page waits on this one (ALERT_FOLDS), so this says its
+    // consequence once, here, in place of a second page.
+    sentences.push(`With sync stopped, advisors' calendars are not being refreshed, so the times offered can drift from them.`);
+  }
   if (page.poolGroupingStopped) {
     sentences.push(
       stale.some((l) => l.lane === "recompute")

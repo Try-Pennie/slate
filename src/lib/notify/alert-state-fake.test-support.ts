@@ -23,6 +23,12 @@ export const alertStateRows = new Map<string, AlertStateRow>();
 export const refusedAlertStateReads = new Set<string>();
 
 /**
+ * Keys an upsert may not write: "refuse" answers an error, as a refused statement does;
+ * "throw" rejects, as a dropped connection does. An upsert naming one writes nothing.
+ */
+export const refusedAlertStateWrites = new Map<string, "refuse" | "throw">();
+
+/**
  * Stand in for a database 0184 has not reached: a read naming its columns answers
  * Postgres's undefined column (42703), and a write carrying them is refused.
  */
@@ -111,10 +117,16 @@ export function fakeSupabaseAdminModule() {
             alertStateRows.set(key, { ...(alertStateRows.get(key) as AlertStateRow), ...values });
             return { data: [{ key }], error: null };
           }),
-        upsert: async (row: AlertStateRow & { key: string }) => {
-          if (alertStateSchema.withoutRepeatColumns && namesRepeatColumn(row)) return { error: NO_COLUMN };
-          const { key, ...rest } = row;
-          alertStateRows.set(key, { ...(alertStateRows.get(key) ?? { last_sent_at: rest.last_sent_at }), ...rest });
+        // One row or several, as PostgREST takes either; all or nothing, as one statement.
+        upsert: async (rows: (AlertStateRow & { key: string }) | (AlertStateRow & { key: string })[]) => {
+          const list = Array.isArray(rows) ? rows : [rows];
+          if (alertStateSchema.withoutRepeatColumns && list.some(namesRepeatColumn)) return { error: NO_COLUMN };
+          const refusals = list.map((r) => refusedAlertStateWrites.get(r.key)).filter((v) => v !== undefined);
+          if (refusals.includes("throw")) throw new Error("fetch failed: connection reset");
+          if (refusals.length > 0) return { error: { message: "permission denied for table alert_state" } };
+          for (const { key, ...rest } of list) {
+            alertStateRows.set(key, { ...(alertStateRows.get(key) ?? { last_sent_at: rest.last_sent_at }), ...rest });
+          }
           return { error: null };
         },
         delete: () => ({
