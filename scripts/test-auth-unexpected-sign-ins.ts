@@ -31,6 +31,8 @@ import {
   judgeOutsideAccounts,
   runAuthUnexpectedSignInCheck,
 } from "../src/lib/monitor/auth-unexpected-sign-ins.ts";
+import { authUnexpectedSignInReachedVerdict } from "../src/lib/monitor/verdict-freshness.ts";
+import { VERDICT_STALE_BOUNDS_MS } from "../src/lib/monitor/health.ts";
 
 const reading = (methods: { method: string; sessions: number; actors: string[] }[], oauthControl = 189) => ({
   oauth_control: oauthControl,
@@ -99,6 +101,25 @@ const DASHES = new RegExp("[\\u2014\\u2013]");
   eq(due, 1, "exactly one five minute tick an hour");
   eq(AUTH_LOGIN_WINDOW_MS, 24 * 60 * 60_000, "findings come from the last day, so June's old one time code sessions never page");
   eq(AUTH_LOGIN_CONTROL_WINDOW_MS, 7 * 24 * 60 * 60_000, "and the positive control from the last week");
+}
+
+// --- the verdict: only a measured half stamps, and silence is bounded -------------------
+{
+  const half = (status: "measured" | "unmeasured") =>
+    status === "measured"
+      ? { logins: { status, oauthControl: 3, offending: [] }, accounts: { status: "unmeasured", why: "x" } }
+      : { logins: { status, why: "x" }, accounts: { status, why: "x" } };
+  assert(!authUnexpectedSignInReachedVerdict(null), "a failed step stamps nothing");
+  assert(!authUnexpectedSignInReachedVerdict({ status: "not-due" }), "a tick it was not due on stamps nothing");
+  assert(!authUnexpectedSignInReachedVerdict({ status: "unmeasured", ...half("unmeasured") } as never), "neither half read stamps nothing");
+  assert(authUnexpectedSignInReachedVerdict({ status: "unmeasured", ...half("measured") } as never), "one half measured stamps");
+  // Its only silence is a blind detector, so the bound is six failed hourly runs, the
+  // settings check's, never days.
+  eq(VERDICT_STALE_BOUNDS_MS["verdict:auth-unexpected-sign-in"], 6 * 60 * 60_000, "the stale bound is six hours");
+  assert(
+    (VERDICT_STALE_BOUNDS_MS["verdict:auth-unexpected-sign-in"] ?? 0) >= 2 * AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS,
+    "and holds more than one missed hourly run, so one blip is not a page",
+  );
 }
 
 // --- copy -------------------------------------------------------------------------------
