@@ -126,17 +126,15 @@ as $$
         -- claim with no booking (a new call in flight) counts (null is not distinct
         -- from null, so a bare comparison would drop every such claim).
         and (p_exclude_booking is null or c.booking_id is distinct from p_exclude_booking)
-        -- A claim stops being in flight once its write landed, wherever the booking is
-        -- now (counted above if it is still on this day's placeholder): a new call's once
-        -- any booking carries its key, a move's once its booking was written after the
-        -- claim (bookings_updated_at stamps every write).
-        and not exists (
-          select 1 from bookings b
-           where (c.booking_id is null and b.idempotency_key = c.claim_key)
-              or (c.booking_id is not null and b.id = c.booking_id and b.updated_at > c.claimed_at)
-        )
-        -- A move within the day of a booking already holding a place there is that one
-        -- place, not a second.
+        -- A new call's claim stops being in flight once any booking carries its key,
+        -- wherever that booking is now (counted above if it is on this day's placeholder).
+        and not (c.booking_id is null and exists (
+          select 1 from bookings b where b.idempotency_key = c.claim_key))
+        -- A move's claim is one place with its booking once the booking sits on this
+        -- day's placeholder, and otherwise holds the place until it lapses. Nothing on the
+        -- row says a move failed rather than is still under way (any write moves
+        -- updated_at), so a failed move keeps a place for at most 15 minutes: the
+        -- harmless side, where guessing it finished could put the day over the limit.
         and not exists (select 1 from counted x where x.id = c.booking_id))
   )::integer;
 $$;

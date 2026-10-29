@@ -2556,7 +2556,7 @@ mark; only an active program booking on the real world placeholder holds a place
 coordinator's call, a real advisor and the test world do not), counted on the call's
 Eastern day rather than its UTC day; at the limit a new claim is refused while a move
 within the day is allowed; a cancel, a move to another day and a move off the
-placeholder each free the place; a fresh claim holds a place, a retry of it takes no
+placeholder each free the place (a move claim whose booking left the placeholder holds it until it lapses, the safe side); a fresh claim holds a place, a retry of it takes no
 second one, a claim whose booking committed is counted once, a claim that never
 committed lapses after 15 minutes and a retry of a lapsed one is judged afresh; two
 concurrent claims for the last place grant exactly one; the per day counts agree with

@@ -172,7 +172,9 @@ try {
   eq(`${held(DAY)}|${held(NEXT)}`, "1|1", "a move to another day moves its place with it");
   eq(held(DAY), "1", "control: the program booking still on the placeholder holds the day's one place, its move claim folded into it");
   sql(`update bookings set assigned_user_id = '${REAL}', allow_double_book = false where id = '${a}';`);
-  eq(held(DAY), "0", "a move off the placeholder frees its place, and its move claim, written before the move, no longer holds one");
+  eq(held(DAY), "1", "a move claim whose booking left the placeholder holds the place until it lapses (nothing says the move finished)");
+  sql(`update placeholder_day_claims set claimed_at = now() - interval '16 minutes' where claim_key = 'move-a';`);
+  eq(held(DAY), "0", "and once it lapses the move off the placeholder has freed the place");
 
   // The range read agrees with the per day figure.
   eq(
