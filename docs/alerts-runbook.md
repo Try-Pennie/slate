@@ -1261,7 +1261,7 @@ enforced only in strict overcommit mode, which Supabase does not use, and on the
 instance it sits below physical RAM, so on 2026-10-29 at the 50% pilot it whispered at 80%
 committed with 78% of RAM free and no swap. Do not go back to it.
 
-**First checks.** The alert itself carries the two figures (committed percent and swap
+**First checks.** The alert itself carries the two figures (the percent of memory in use and swap
 percent); that is the first read, not any Slate log. Confirm it against the Supabase
 dashboard's database health view. Sustained swap use is abnormal for this database, so
 the whisper's swap line is low (10%), and it is worth acting on even below the page.
