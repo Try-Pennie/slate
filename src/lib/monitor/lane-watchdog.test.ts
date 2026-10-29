@@ -33,6 +33,24 @@ const cloudflare = vi.hoisted(() => ({
   })),
 }));
 vi.mock("@/lib/monitor/cloudflare-status", () => ({ readCloudflareCronStatus: cloudflare.read }));
+// 2026-10-29: the every minute trigger's delivery, read off lane_runs only when a lane on
+// it is quiet. By default a minute tick claimed 30 seconds ago (the trigger is arriving), so
+// tests about other causes see the page they always did. The reading itself is pinned in
+// scripts/test-minute-lane-backstop.ts.
+const claims = vi.hoisted(() => ({
+  read: vi.fn(async (_table: unknown, _sinceIso: string) => ({
+    rows: ["sync", "recompute", "outbox", "selfheal"].map((lane) => ({
+      tick_id: "d0d0d0d0d0d0d0d0",
+      lane,
+      claimed_at: new Date(Date.now() - 30_000).toISOString(),
+    })),
+    truncated: false,
+  })),
+}));
+vi.mock("@/lib/monitor/minute-lane-claims", async (orig) => ({
+  ...(await orig<typeof import("@/lib/monitor/minute-lane-claims")>()),
+  readRecentLaneClaims: claims.read,
+}));
 // #2875: the "cal.com retired" switch, read through its per isolate cache. Only the
 // read is replaced; which lanes belong to cal.com stays the real module's answer.
 const retirement = vi.hoisted(() => ({
@@ -625,6 +643,57 @@ describe("alertOnStaleLanes (#803)", () => {
     expect(text).toMatch(/^5 cron lanes have not run for 16 minutes/);
     expect(text).toContain("They stopped together while other lanes kept running");
     expect(text).toContain(`"Delayed, missed, and duplicated Workers Cron Triggers"`);
+  });
+
+  // 2026-10-29, 4:52 to 5:06 AM ET: Cloudflare delivered no every minute tick while every
+  // other schedule fired. lane_runs proves it, so the page says it rather than guessing.
+  it("says Cloudflare delivered no every-minute tick since the last one lane_runs holds", async () => {
+    const stoppedAt = ago(16 * MIN);
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({
+      ...healthy(),
+      sync: stoppedAt,
+      recompute: stoppedAt,
+      outbox: stoppedAt,
+      selfheal: stoppedAt,
+      "reroute-hold-sweep": stoppedAt,
+    });
+    const lastTick = Date.parse("2026-10-29T08:51:57Z");
+    claims.read.mockResolvedValueOnce({
+      rows: [
+        ...["sync", "recompute", "outbox", "selfheal"].map((lane) => ({ tick_id: "a1a1a1a1a1a1a1a1", lane, claimed_at: new Date(lastTick).toISOString() })),
+        // A five minute tick's own lane: never a delivery of the minute trigger.
+        { tick_id: "b2b2b2b2b2b2b2b2", lane: "monitor", claimed_at: new Date(ago(MIN)).toISOString() },
+      ],
+      truncated: false,
+    });
+
+    await alertOnStaleLanes();
+
+    const text = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lanes_stale")?.[2];
+    expect(text).toContain("Cloudflare has delivered no every-minute tick since 4:51am ET.");
+    expect(text).not.toContain("a schedule or deploy problem");
+    expect(text).toContain("Advisors' calendars aren't syncing, so offered times may be out of date.");
+  });
+
+  it("keeps the schedule or deploy sentence, and still pages, when lane_runs cannot be read", async () => {
+    const stoppedAt = ago(16 * MIN);
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), sync: stoppedAt, recompute: stoppedAt, outbox: stoppedAt, selfheal: stoppedAt });
+    claims.read.mockRejectedValueOnce(new Error("lane_runs read failed: timeout"));
+
+    await alertOnStaleLanes();
+
+    const text = dispatch.sendThrottledAlert.mock.calls.find((c) => c[0] === "cron_lanes_stale")?.[2];
+    expect(text).toContain("They stopped together while other lanes kept running: a schedule or deploy problem");
+    expect(text).not.toContain("every-minute tick");
+  });
+
+  it("reads lane_runs only when a lane on the every minute trigger is quiet", async () => {
+    heartbeat.readAllHeartbeatMs.mockResolvedValue({ ...healthy(), "bulk-reassign": ago(25 * MIN) });
+    await alertOnStaleLanes();
+    expect(claims.read).not.toHaveBeenCalled();
+    heartbeat.readAllHeartbeatMs.mockResolvedValue(healthy());
+    await alertOnStaleLanes();
+    expect(claims.read).not.toHaveBeenCalled();
   });
 
   it("reads Cloudflare's status page only when a core lane is quiet", async () => {

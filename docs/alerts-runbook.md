@@ -39,7 +39,7 @@ run hours behind (#1533). Filter on `tag=` (see `docs/cloudflare-platform-notes.
 
 Keys: `cron_lanes_stale`, `cron_lane_stale:*`, `monitor_step_failing:*`, `completion_sweep_failing`,
 `webhook_retry_sweep_failing`, `demo_auto_cancel_failing`, `sync_staleness`, `detector_parked`, `detector_unpark:*`,
-`migration_version_lag`, `volume_count_unreadable`, `audit_write_failed`.
+`migration_version_lag`, `volume_count_unreadable`, `audit_write_failed`, `minute_backstop_unreadable`.
 
 **What fired it.** A lane stamps a heartbeat on every run and one has not stamped
 inside its bound (about 3x its cadence). Or a detector has not reached a measured
@@ -74,8 +74,8 @@ is not ours to fix: the lanes resume on their own when it ends, and the page cle
 once every core lane has stamped inside its bound. The pool grouping page waits while
 this one fires (`ALERT_FOLDS`), because only the recompute lane publishes it.
 
-When `sync` is among the stopped lanes, the page says advisors' calendars are not being
-refreshed, and the stale calendar sync page (`sync_staleness`) waits while it fires
+When `sync` is among the stopped lanes, the page says "Advisors' calendars aren't syncing,
+so offered times may be out of date.", and the stale calendar sync page (`sync_staleness`) waits while it fires
 (`ALERT_FOLDS`): a stopped sync lane makes every advisor stale by construction, and on
 2026-10-29 one stop posted both pages three seconds apart. It waits only while the sync
 lane itself is past its bound, read live, so a `sync_staleness` page arriving while this
@@ -86,6 +86,43 @@ advisors who first pass the threshold during the catch up (on 2026-10-29 the lan
 at 05:07 ET and the last advisor was current at 05:11), because the lanes page's all-clear
 starts that wait for every page it explains (`marksOnClear`). The monitor tick judges it
 after the lane watchdog for this reason (`scripts/test-alert-folds.ts`).
+
+**Cloudflare did not deliver the trigger: check this first.** Cloudflare has stopped
+delivering the every minute trigger (`* * * * *`, which drives sync, recompute, outbox and
+selfheal, with the reroute hold sweep inside selfheal) while every other schedule on the
+Worker kept firing, and nothing of ours fails when it happens: the Worker is simply never
+invoked. It can happen with NO incident on Cloudflare's status page (2026-10-29, 4:52 to
+5:06 AM ET; twelve gaps of 3 to 9 minutes on 2026-10-27) as well as during one (2026-10-26,
+"Delayed, missed, and duplicated Workers Cron Triggers"), and it clears on its own. Since
+2026-10-29 the page measures it: every lane claims its tick in `lane_runs` before any work,
+and when no tick that claimed only every minute lanes arrived in the last three minutes the
+page says "Cloudflare has delivered no every-minute tick since <time> ET" in place of "a
+schedule or deploy problem". That sentence is kept for ticks that arrived and runs that
+failed, and for a `lane_runs` read that failed. To check by hand:
+- Cloudflare's own record: the Workers observability API (or the dashboard's query
+  builder) for `slate`, filtered on `$workers.eventType` = `scheduled` and
+  `$workers.event.cron` = `* * * * *`, read one hour at a time across the gap. An
+  invocation each minute with `$workers.outcome` `ok` means the trigger arrived; no
+  invocation at all for minutes while `*/5 * * * *` and the others have theirs means
+  Cloudflare did not deliver it.
+- Slate's own record, independent of Cloudflare's: `lane_runs` (`tick_id`, `lane`,
+  `claimed_at`, kept two days). A minute with no `sync` claim is a tick that never reached
+  the lane. A five minute tick's claims share one `tick_id` with `complete`, `watch` and
+  `monitor`, so an every minute lane claimed under that id was started by the backstop
+  below, not delivered.
+
+**The backstop.** Every five minute tick also starts any every minute lane whose last
+`lane_runs` claim is more than three minutes old (`worker/lane-backstop.ts`, asking
+`/api/cron/minute-backstop`), each through its own route, claim and lock, so a lane that is
+running or just ran is never started twice. A skipped minute trigger now costs those lanes
+about five minutes, inside their 10 minute bound, so this page should not fire for it at
+all; the five minute tick's `lane timings` line says `backstop=started:sync+recompute` (or
+`none`) when it acts. If the backstop's own read of `lane_runs` fails it starts nothing,
+the line says `backstop=unreadable`, and `minute_backstop_unreadable` pages: nothing is
+down, but the safety net is off. Check that `lane_runs` exists and answers (the
+`lane_claim_unreadable` page usually fires beside it), and read the route's error line under
+`tag=cron`, msg "the every minute backstop could not read lane_runs". It clears on the next
+read that works.
 
 The usual causes of a single quiet lane, which the page no longer lists: a deploy
 cancelled a run part way, a run went to a server far from the database and ran slowly,

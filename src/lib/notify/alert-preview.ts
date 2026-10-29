@@ -439,6 +439,8 @@ import {
   backupAlertText,
   backupRecoveryText,
   coreLanesAlertText,
+  minuteBackstopRecoveryText,
+  minuteBackstopUnreadableText,
   coreLanesRecoveryText,
   canaryAlertText,
   canaryRecoveryText,
@@ -4990,6 +4992,38 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       poolGroupingStopped: true,
       cloudflare: { kind: "incident", names: ["Delayed, missed, and duplicated Workers Cron Triggers"] },
     }),
+  },
+  // 2026-10-29, 5:06 AM ET: Cloudflare delivered no every minute tick from 4:51:57 AM ET,
+  // no incident open, and lane_runs proves it, so the page says so instead of guessing.
+  {
+    key: "cron_lanes_stale",
+    state: "five lanes stopped because Cloudflare stopped delivering the every-minute trigger",
+    channel: "alert",
+    text: coreLanesAlertText({
+      stale: [
+        { lane: "outbox", ageMs: 14 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.outbox, unreadable: false },
+        { lane: "reroute-hold-sweep", ageMs: 14 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS["reroute-hold-sweep"], unreadable: false },
+        { lane: "selfheal", ageMs: 14 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.selfheal, unreadable: false },
+        { lane: "recompute", ageMs: 14 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.recompute, unreadable: false },
+        { lane: "sync", ageMs: 14 * 60_000, maxStaleMs: LANE_STALE_BOUNDS_MS.sync, unreadable: false },
+      ],
+      othersRunning: true,
+      poolGroupingStopped: true,
+      cloudflare: { kind: "clear" },
+      minuteTrigger: { kind: "silent", sinceMs: 1793263917000 /* 2026-10-29T08:51:57Z, 4:51:57 AM ET */ },
+    }),
+  },
+  {
+    key: "minute_backstop_unreadable",
+    state: "the backstop for the every-minute lanes cannot read lane_runs",
+    channel: "alert",
+    text: minuteBackstopUnreadableText(),
+  },
+  {
+    key: "minute_backstop_unreadable",
+    state: "the backstop can read lane_runs again",
+    channel: "recovery",
+    text: minuteBackstopRecoveryText(),
   },
   {
     key: "cron_lanes_stale",

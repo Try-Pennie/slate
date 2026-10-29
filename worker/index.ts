@@ -53,7 +53,8 @@ import handler from "../.open-next/worker.js";
 // @ts-expect-error - generated at build time by opennextjs-cloudflare build
 import * as bakedEnv from "../.open-next/cloudflare/next-env.mjs";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { routesForCron } from "./cron-routes";
+import { BACKSTOP_CRON, routesForCron } from "./cron-routes";
+import { runMinuteBackstop, type BackstopSummary } from "./lane-backstop";
 import { cronStandby } from "./cron-standby";
 import { forwardReceipt } from "./log-shipping-receipt";
 import { forwardBookingCall, type GatewayAnswer } from "./mcp-booking-gateway";
@@ -295,12 +296,30 @@ const worker = {
       now: () => performance.now(),
       log,
     };
+    // 2026-10-29: the five minute tick also starts any every minute lane that has not
+    // claimed a tick in three minutes, because Cloudflare has stopped delivering the minute
+    // trigger on its own (worker/lane-backstop.ts). Beside this tick's own lanes, never in
+    // front of them, and through the same SLATE_LANES_DISABLED decision. Its check and lanes
+    // count in this tick's lane time on the timings line.
+    const backstop: { summary: BackstopSummary | null } = { summary: null };
+    const runBackstop = async () => {
+      if (controller.cron === BACKSTOP_CRON) {
+        const out = await runMinuteBackstop(tick, deps, (paths) => laneDecision(paths, env.SLATE_LANES_DISABLED).run);
+        backstop.summary = out.summary;
+        return out.outcomes;
+      }
+      return [];
+    };
     // #4189: one public request to the Worker's own custom domain beside the lanes, so the
     // timings line shows where a public request from this tick was placed next to where the
-    // SELF lanes ran. Started only after every lane is dispatched, never thrown, and outside
+    // SELF lanes ran. Started only after every lane of this tick is dispatched (a lane the backstop starts
+    // goes out after its check answers, so possibly after the probe), never thrown, and outside
     // the lane time the budget line reads (worker/public-probe.ts).
     const dispatched = dispatchWithProbe(
-      () => Promise.all(paths.map((path) => runLane(path, tick, deps))),
+      () =>
+        Promise.all([Promise.all(paths.map((path) => runLane(path, tick, deps))), runBackstop()]).then(
+          ([own, extra]) => [...own, ...extra],
+        ),
       () =>
         startPublicProbe(
           { loadtest: env.SLATE_LOADTEST === "true", tickId: tick.tickId },
@@ -318,6 +337,7 @@ const worker = {
       tick: tick.tickId,
       ...laneTimingFields(runs, totalMs),
       ...publicProbeFields(probe),
+      ...(backstop.summary ? { backstop: backstop.summary } : {}),
     });
     const failures = outcomes.flatMap((o) => (o.failure ? [o.failure] : []));
     if (failures.length > 0) await reportLaneFailures(failures, tick, deps);

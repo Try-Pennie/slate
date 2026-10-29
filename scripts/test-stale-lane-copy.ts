@@ -105,6 +105,30 @@ assert(page(tonight, { poolGroupingStopped: true }).includes("The pool grouping,
 assert(page([lane("sync", 12 * MIN)], { poolGroupingStopped: true }).includes("The pool grouping publish has stopped too."), "without recompute it is only named");
 assert(!/pool grouping/.test(five), "no pool grouping line while it is publishing");
 
+// --- the sync sentence and the every minute trigger (2026-10-29) ---------------------
+// Dan's exact words for the consequence of a stopped sync lane.
+const SYNC_SENTENCE = "Advisors' calendars aren't syncing, so offered times may be out of date.";
+assert(five.includes(SYNC_SENTENCE), `sync among the stopped lanes says advisors' calendars aren't syncing (saw: ${five})`);
+assert(!page([lane("monitor", 25 * MIN)]).includes(SYNC_SENTENCE), "no calendar sentence when sync is running");
+assert(!/not being refreshed|can drift from them/.test(five), "the old calendar sentence is gone");
+
+// Today's page: Cloudflare delivered no every minute tick from 4:51:57 AM ET (08:51:57 UTC).
+const silentSince = Date.parse("2026-10-29T08:51:57Z");
+const silent = page(tonight, { minuteTrigger: { kind: "silent", sinceMs: silentSince } });
+assert(silent.includes("Cloudflare has delivered no every-minute tick since 4:51am ET."), `names the last delivery in ET (saw: ${silent})`);
+assert(!together.test(silent), "the measured cause replaces the schedule or deploy guess");
+clean(silent, "silent trigger page");
+const neverInWindow = page(tonight, { minuteTrigger: { kind: "silent", sinceMs: null } });
+assert(neverInWindow.includes("Cloudflare has delivered no every-minute tick in the last 2 hours."), `no delivery in the whole window says so (saw: ${neverInWindow})`);
+const delivered = page(tonight, { minuteTrigger: { kind: "delivered", lastMs: silentSince } });
+assert(delivered.includes("a schedule or deploy problem") && !/every-minute tick/.test(delivered), "ticks arriving and runs failing keeps the schedule or deploy sentence");
+assert(!/every-minute tick/.test(page(tonight, { minuteTrigger: { kind: "unknown" } })), "an unreadable reading claims nothing about Cloudflare (L11)");
+assert(page(tonight, { minuteTrigger: { kind: "unknown" } }).includes("a schedule or deploy problem"), "and keeps the old sentence");
+const fiveMinuteOnly = page([lane("monitor", 25 * MIN), lane("complete", 25 * MIN)], { minuteTrigger: { kind: "silent", sinceMs: silentSince } });
+assert(!/every-minute tick/.test(fiveMinuteOnly), "no every minute sentence when no quiet lane is on that trigger");
+const holdSweepOnly = page([lane("reroute-hold-sweep", 14 * MIN)], { minuteTrigger: { kind: "silent", sinceMs: silentSince } });
+assert(holdSweepOnly.includes("every-minute tick since"), "the reroute hold sweep runs inside selfheal, so it is on the trigger");
+
 // --- The all-clear names nothing it cannot know and asks for nothing.
 const recovery = coreLanesRecoveryText();
 assert(/running again/.test(recovery) && /No action is needed\./.test(recovery), "the all-clear says the lanes are running and nothing is needed");
