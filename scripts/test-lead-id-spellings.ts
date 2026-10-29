@@ -8,6 +8,7 @@
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-lead-id-spellings.ts
 import { leadIdKey, leadIdSpellings } from "../src/lib/salesforce/lead-xbc.ts";
+import { idCaseChecksumMatches } from "../src/lib/salesforce/lead-id.ts";
 import { eq, finish } from "./lib/harness.ts";
 
 // Salesforce's own documented example (an Account id; the checksum is the same for every object).
@@ -19,5 +20,18 @@ eq(leadIdSpellings("00Q000000000000AAA").long, "00Q000000000000AAA", "an 18 char
 eq(leadIdSpellings("00QAbCdEfGhIjKl").long, "00QAbCdEfGhIjKlMVK", "each block's capitals set its own letter");
 eq(leadIdSpellings("00Q5f00000AbCdE").long, "00Q5f00000AbCdEEAV", "the pair the Marcia suite books across");
 eq(leadIdKey(leadIdSpellings("00Q5f00000AbCdE").long), "00Q5f00000AbCdE", "the long form keys to the short one");
+
+// #4388: the same checksum, read the other way, so an 18 character id whose case was
+// changed on the way (a spreadsheet, a lowercasing form) is refused rather than keyed
+// to a lead that is not the one meant. One checksum, computed in one place: the long
+// spelling above must be exactly what this accepts.
+eq(idCaseChecksumMatches("001D000000IqhSLIAZ"), true, "Salesforce's documented example agrees with its suffix");
+eq(idCaseChecksumMatches("00Q5f00000AbCdEEAV"), true, "a Lead id agrees with its suffix");
+eq(idCaseChecksumMatches(leadIdSpellings("00QAbCdEfGhIjKl").long), true, "every long spelling computed above agrees with itself");
+eq(idCaseChecksumMatches("00Q5f00000AbCdEeav"), true, "the suffix itself is read without regard to case: its letters carry no case of their own");
+eq(idCaseChecksumMatches("00Q5f00000abcdeEAV"), false, "an id lowercased after its suffix was computed is refused");
+eq(idCaseChecksumMatches("00Q5F00000AbCdEEAV"), false, "one letter's case changed is refused");
+eq(idCaseChecksumMatches("00Q5f00000AbCdEEAW"), false, "a wrong suffix is refused");
+eq(idCaseChecksumMatches("00Q5f00000AbCdE"), true, "a 15 character id carries no checksum, so there is nothing to disagree with");
 
 finish();
