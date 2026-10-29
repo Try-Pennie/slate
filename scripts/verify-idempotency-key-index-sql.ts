@@ -89,7 +89,7 @@ try {
   // pair, a cancelled booking and the same lead's rebook of that time.
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Index org');
-    insert into users (id, org_id, email, role) values ('${AGENT}', '${ORG}', 'agent@example.com', 'agent');
+    insert into users (id, org_id, email, role) values ('${AGENT}', '${ORG}', 'agent@trypennie.com', 'agent');
     insert into event_types (id, org_id, name, duration_min) values ('${ET}', '${ORG}', 'Call', 20);
     insert into buckets (id, org_id, code, name, event_type_id, is_test) values ('${BUCKET}', '${ORG}', '100', 'Low', '${ET}', false);
     ${bookingSeriesInsertSql({

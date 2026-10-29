@@ -382,6 +382,14 @@ export interface Database {
         Args: Record<string, never>;
         Returns: string[] | null;
       };
+      /** #4379 (migration 0212): sign ins Supabase Auth recorded since `p_since`, by the
+       *  provider each named, with the addresses that signed in, and how many audit entries
+       *  of any kind were written in the window. Read by the monitor lane, which judges it in
+       *  `src/lib/monitor/auth-login-methods.ts`. One jsonb value, a row per provider. */
+      auth_logins_by_provider: {
+        Args: { p_since: string };
+        Returns: unknown;
+      };
       /** #2090 (migration 0138): events received at or after `p_since`, per reason.
        *  One row per reason at most, so eleven rows, far below PostgREST's cap. */
       regal_call_reason_counts: {

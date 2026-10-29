@@ -262,6 +262,9 @@ const EXPECTED_PINNED = [
   "audit_log_chain_append",
   "audit_log_chain_field",
   "audit_log_chain_link",
+  // #4379: sign ins by provider from auth.audit_log_entries, for the monitor lane.
+  // Definer, pinned to pg_catalog, the table schema qualified.
+  "auth_logins_by_provider",
   "before_user_created_domain_gate",
   "booking_api_outcome_mix",
   // #2366: keeps booking_settings.public_booking_paused_at in step with the flag.

@@ -27,9 +27,15 @@ import { checkAuthDomainHook, findAuthHookMigration } from "./lib/auth-domain-ho
 
 const ROOT = join(import.meta.dirname, "..");
 const MIGRATIONS = join(ROOT, "supabase", "migrations");
-// Found by name, never by number: the number moves whenever another migration merges
-// first, and the Docker proof (verify-auth-domain-hook.ts) finds it the same way.
-const found = findAuthHookMigration(readdirSync(MIGRATIONS));
+// Found by what it DEFINES, never by number or name: the number moves whenever another
+// migration merges first, and #4379 replaced 0159's function in a migration named for its
+// own change. The last migration defining the hook is the one production runs, and the
+// Docker proof (verify-auth-domain-hook.ts) finds it the same way.
+const found = findAuthHookMigration(
+  readdirSync(MIGRATIONS)
+    .filter((f) => f.endsWith(".sql"))
+    .map((name) => ({ name, sql: readFileSync(join(MIGRATIONS, name), "utf8") })),
+);
 const HOOK_FILE = "file" in found ? found.file : null;
 
 const config = readFileSync(join(ROOT, "supabase", "config.toml"), "utf8");
@@ -38,17 +44,41 @@ const migration = HOOK_FILE ? readFileSync(join(MIGRATIONS, HOOK_FILE), "utf8") 
 
 assert(Boolean(HOOK_FILE), `exactly one migration defines the auth domain gate hook (${"refusal" in found ? found.refusal : HOOK_FILE})`);
 
-// --- the finder refuses rather than guessing ---------------------------------
+// --- the finder: the LAST definition is the one that ships ---------------------
 {
-  const none = findAuthHookMigration(["0157_x.sql", "0158_y.sql"]);
-  assert("refusal" in none && /no migration/.test(none.refusal), "no hook migration is a named refusal");
-  const two = findAuthHookMigration(["0159_auth_domain_gate_hook.sql", "0160_auth_domain_gate_hook.sql"]);
-  assert(
-    "refusal" in two && /0159_auth_domain_gate_hook\.sql/.test(two.refusal) && /0160/.test(two.refusal),
-    "two hook migrations is a refusal naming both, never the first one silently",
-  );
-  const one = findAuthHookMigration(["0158_y.sql", "0159_auth_domain_gate_hook.sql", "applied-content.lock"]);
-  eq("file" in one ? one.file : null, "0159_auth_domain_gate_hook.sql", "one hook migration is found whatever its number");
+  const defines = "create or replace function public.before_user_created_domain_gate(event jsonb)\nreturns jsonb";
+  const none = findAuthHookMigration([
+    { name: "0157_x.sql", sql: "select 1;" },
+    { name: "0158_y.sql", sql: "-- names before_user_created_domain_gate in a comment only" },
+  ]);
+  assert("refusal" in none && /no migration/.test(none.refusal), "no migration defining the hook is a named refusal");
+  // #4379: 0212 replaced 0159's function under the same name, so two definitions is
+  // the ordinary shape now, and the later one is what production runs.
+  const two = findAuthHookMigration([
+    { name: "0212_coordinator_microsoft_sign_in.sql", sql: defines },
+    { name: "0159_auth_domain_gate_hook.sql", sql: defines },
+    { name: "0160_other.sql", sql: "select 1;" },
+  ]);
+  eq("file" in two ? two.file : null, "0212_coordinator_microsoft_sign_in.sql", "the latest definition is found, whatever the file order");
+  eq("file" in two ? two.earlier : null, ["0159_auth_domain_gate_hook.sql"], "and the earlier definitions are named, not lost");
+  const one = findAuthHookMigration([
+    { name: "0158_y.sql", sql: "select 1;" },
+    { name: "0159_auth_domain_gate_hook.sql", sql: defines },
+  ]);
+  eq("file" in one ? one.file : null, "0159_auth_domain_gate_hook.sql", "one defining migration is found whatever its number");
+}
+
+// --- #4379: the shipped hook is the Microsoft aware one ------------------------
+{
+  eq(HOOK_FILE, "0212_coordinator_microsoft_sign_in.sql", "the hook production runs is 0212's, which knows the azure provider");
+  assert(/security definer/i.test(migration) && /\bstable\b/i.test(migration), "it is SECURITY DEFINER and STABLE, since it reads public.users");
+  assert(/from public\.users u/.test(migration), "it reads the users table schema qualified, under the pinned search_path");
+  // The staff decision comes before the table is read, so a fault reading the table can
+  // never lock staff out (#4379, plan step 1).
+  const body = migration.slice(migration.indexOf("create or replace function public.before_user_created_domain_gate"));
+  const staffAt = body.indexOf("email_domain = 'trypennie.com'");
+  const tableAt = body.indexOf("from public.users");
+  assert(staffAt > 0 && tableAt > staffAt, "the trypennie.com decision is made before any table read");
 }
 
 // --- the real tree ---------------------------------------------------------
@@ -99,7 +129,8 @@ assert(Boolean(HOOK_FILE), `exactly one migration defines the auth domain gate h
     "control: a hook with no pinned search_path is reported",
   );
 
-  const drifted = migration.replace(/= 'trypennie\.com'/, "= 'pennie.com'");
+  // The hook's own comparison, not the CHECK beside it in the same file (#4379).
+  const drifted = migration.replace(/email_domain = 'trypennie\.com'/, "email_domain = 'pennie.com'");
   assert(drifted !== migration, "control: the domain literal was found to change");
   assert(
     checkAuthDomainHook({ config, migration: drifted, wrangler }).some((p) => /GOOGLE_HOSTED_DOMAIN/.test(p)),

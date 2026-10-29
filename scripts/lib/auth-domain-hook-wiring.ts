@@ -3,20 +3,28 @@
 // auth server and nobody else, refusing against the same domain the app's own gate
 // reads? Returns one sentence per disagreement, empty when the three agree.
 
+/** A migration's statement defining the hook function, whatever else the file holds. */
+const DEFINES_HOOK = /create or replace function public\.before_user_created_domain_gate\(event jsonb\)/i;
+
 /**
- * The migration that defines the hook, found by NAME among the files in
- * supabase/migrations, never by number: the number moves whenever another migration
- * merges first. Zero or several is a refusal naming what it saw, never a guess.
+ * The migration whose definition of the hook production runs: the LAST one, by its
+ * NNNN version, that defines it. Found by what a file DEFINES, never by its name or
+ * number: the number moves whenever another migration merges first, and #4379 replaced
+ * 0159's function in a migration named for its own change, which a name based finder
+ * would have read as no hook at all. Every earlier definition is named alongside, so a
+ * reader can see what it replaced. None at all is a refusal, never a guess.
  */
-export function findAuthHookMigration(files: string[]): { file: string } | { refusal: string } {
-  const matches = files.filter((f) => /^\d{4}_auth_domain_gate_hook\.sql$/.test(f)).sort();
-  if (matches.length === 1) return { file: matches[0] };
-  if (matches.length === 0) {
-    return { refusal: "no migration named NNNN_auth_domain_gate_hook.sql is in supabase/migrations" };
+export function findAuthHookMigration(
+  files: { name: string; sql: string }[],
+): { file: string; earlier: string[] } | { refusal: string } {
+  const defining = files
+    .filter((f) => /^\d{4}_[a-z0-9_]+\.sql$/.test(f.name) && DEFINES_HOOK.test(f.sql))
+    .map((f) => f.name)
+    .sort();
+  if (defining.length === 0) {
+    return { refusal: "no migration in supabase/migrations defines public.before_user_created_domain_gate(event jsonb)" };
   }
-  return {
-    refusal: `${matches.length} migrations are named for the auth domain gate hook (${matches.join(", ")}), so which one ships is ambiguous`,
-  };
+  return { file: defining[defining.length - 1]!, earlier: defining.slice(0, -1) };
 }
 
 /** The `pg-functions://postgres/<schema>/<name>` URI the config registers, or null. */
@@ -66,12 +74,19 @@ export function checkAuthDomainHook(input: { config: string; migration: string; 
   if (!new RegExp(`revoke execute on function ${sig} from public, anon, authenticated;`, "i").test(input.migration)) {
     problems.push(`${qualified} needs a revoke of EXECUTE from public, anon and authenticated, or PostgREST can call it`);
   }
-  if (!/^\s*set search_path = pg_catalog\s*$/im.test(input.migration)) {
+  // The pin and the domain are read from the hook's OWN definition, from its create to
+  // the end of its body, never from the whole file: since #4379 the file defining it
+  // also defines another pinned function and a CHECK naming the domain, either of which
+  // would otherwise answer for a hook that had lost its own.
+  const start = input.migration.search(fn);
+  const bodyEnd = input.migration.indexOf("$$;", input.migration.indexOf("$$", start) + 2);
+  const definition = input.migration.slice(start, bodyEnd < 0 ? undefined : bodyEnd);
+  if (!/^\s*set search_path = pg_catalog\s*$/im.test(definition)) {
     problems.push(`${qualified} does not pin its search_path (#1126)`);
   }
 
   const domain = hostedDomain(input.wrangler);
-  const literal = input.migration.match(/email_domain = '([^']+)'/);
+  const literal = definition.match(/email_domain = '([^']+)'/);
   if (!domain) {
     problems.push("wrangler.jsonc sets no GOOGLE_HOSTED_DOMAIN to compare the hook against");
   } else if (!literal || literal[1].toLowerCase() !== domain) {

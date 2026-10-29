@@ -140,10 +140,10 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Reroute org'), ('${ORG2}', 'Other org');
     insert into users (id, org_id, email, role) values
-      ('${ADMIN}', '${ORG}', 'admin@example.com', 'admin'),
-      ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
-      ('${C}', '${ORG}', 'c@example.com', 'agent'), ('${D}', '${ORG}', 'd@example.com', 'agent'),
-      ('${X}', '${ORG2}', 'x@example.com', 'agent');
+      ('${ADMIN}', '${ORG}', 'admin@trypennie.com', 'admin'),
+      ('${A}', '${ORG}', 'a@trypennie.com', 'agent'), ('${B}', '${ORG}', 'b@trypennie.com', 'agent'),
+      ('${C}', '${ORG}', 'c@trypennie.com', 'agent'), ('${D}', '${ORG}', 'd@trypennie.com', 'agent'),
+      ('${X}', '${ORG2}', 'x@trypennie.com', 'agent');
     ${eventTypesInsertSql([
       { id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 },
       { id: ET2, orgId: ORG, name: "Other call", durationMin: 20 },
