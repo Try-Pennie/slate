@@ -177,7 +177,7 @@ eq(seenAgent.size, cases.length, "every reason reads differently to the agent (L
 }
 {
   // Two requests that reached the channel for different reasons: neither reason is
-  // stated for both, each line carries its own.
+  // stated for both, each request's block carries its own.
   const other = { ...shortened, requestId: "req_a41" };
   const t = oooEventMismatchAlert("Heather McLellen", [shortened, other], APP, [
     { agent: "told", manager: "told" },

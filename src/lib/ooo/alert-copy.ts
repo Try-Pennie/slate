@@ -271,8 +271,9 @@ export function oooEventMismatchAlert(
   appBaseUrl: string,
   /**
    * Why each request reached the alerts channel: one reason for every request, or one
-   * per request in `found`'s order. When the requests differ, each line carries its
-   * own and the opening sentence states none of them, so no request is described by
+   * per request in `found`'s order. When the requests differ, each request's block
+   * carries its own on a line of its own, and the opening sentence states none of
+   * them, so no request is described by
    * another's history.
    */
   escalation: OooEventMismatchEscalation | OooEventMismatchEscalation[],
