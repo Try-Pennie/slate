@@ -91,7 +91,7 @@ wrangler secret put BOOKABLE_API_KEY        # optional; bearer for the bookable-
 wrangler secret put REGAL_INBOUND_KEY       # optional; bearer Regal's reporting webhook sends to POST /api/regal/calls (#2090). Its own secret, never the outbound Regal key. Empty = that endpoint returns 503 naming it.
 # wrangler secret put REGAL_INBOUND_KEY_2 # optional; the rotation slot (#3110), set only when rotating. See "Rotating a credential".
 wrangler secret put REGAL_WEBHOOK_KEY       # the OUTBOUND Regal API key, sent as the Authorization header on every Regal webhook delivery (#3091). Moved out of webhook_endpoints.auth_header so only the Worker can read it; the admin webhooks page shows whether it is set and cannot edit it, so changing it is this command. The column was nulled by migration 0163 and is never read. Empty = every Regal delivery is refused and recorded as failed (#600), and the dead letter alert pages. Never the same value as REGAL_INBOUND_KEY.
-wrangler secret put WEBHOOK_SIGNING_SECRET  # the HMAC secret a generic format endpoint's x-slate-signature is made with (#3091). Moved out of webhook_endpoints.secret like the key above, and nulled by 0163 and never read. NOT SET today, on purpose: the only endpoint is Regal format, which never signs. Empty = generic deliveries are refused rather than sent unsigned. Rotating it means telling the subscriber the new value in the same change.
+wrangler secret put WEBHOOK_SIGNING_SECRET  # the HMAC secret a generic format endpoint's x-slate-signature is made with (#3091). Moved out of webhook_endpoints.secret like the key above, and nulled by 0163 and never read. SET since 2026-10-29, for the one generic format endpoint: the dialer partner's lead sender, subscribed to booking created, rescheduled and cancelled (#4381); the Regal endpoint never signs. That subscriber holds the same value to check each signature, so rotating it means giving the subscriber the new value in the same change, or every delivery to it fails verification. Empty = generic deliveries are refused rather than sent unsigned.
 wrangler secret put BOOKING_API_KEY_REGAL   # optional; Regal's own booking API key (its journeys cancel through it, as the SLATE_BOOKING_API_KEY brand secret). Logs and the rate ceiling name the caller "regal". One key per caller (#2645): the shared BOOKING_API_KEY pair is retired and read by nothing (#2865). Every booking key empty = POST /api/bookings returns 503.
 # wrangler secret put BOOKING_API_KEY_REGAL_2   # optional; Regal's rotation slot, set only when rotating.
 wrangler secret put BOOKING_API_KEY_TRYPENNIE # optional; trypennie's own booking API key (the booking confirmed page's lookup, #2643).
@@ -702,7 +702,8 @@ callback links the coordinator's row (`linkCoordinator`) and records the Microso
 account id; `realCurrentUser` refuses any session whose `amr` is not OAuth alone, and a
 coordinator's session without exactly that Microsoft account or with a Google one.
 Removing a coordinator deletes their auth user. The monitor's hourly
-`auth_unexpected_sign_in` pages on a login by anything else in the audit log and on an
+`auth_unexpected_sign_in` pages on a session made by anything but OAuth (read from
+`auth.mfa_amr_claims`, since production writes no auth audit log to the database) and on an
 outside account no active coordinator holds.
 
 **Rollout order, which must not change:** apply 0212 with `supabase db push` before the

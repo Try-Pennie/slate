@@ -36,6 +36,21 @@ const real = readdirSync(MIGRATIONS).filter((f) => /^\d{4}_.+\.sql$/.test(f));
 const highest = real.map((f) => f.slice(0, 4)).sort().at(-1) ?? "";
 assert(Boolean(version) && version! > highest, `the hook file's version (${version}) sorts after every real migration (${highest})`);
 
+// The local stack restates users_outside_email_is_coordinator for its own staff domain.
+// Everything but the domain comparison must be the real migration's, or the browser
+// checks run against a rule production does not have.
+{
+  const checkOf = (sql: string): string | null => {
+    const m = sql.match(/add constraint users_outside_email_is_coordinator\s+check \(([\s\S]*?)\);/);
+    if (!m) return null;
+    return m[1]!.replace(/\s+/g, " ").replace(/(= 'trypennie\.com'|in \('trypennie\.com', 'slate-e2e\.test'\))/, "<company domain>").trim();
+  };
+  const migration = real.map((f) => readFileSync(join(MIGRATIONS, f), "utf8")).find((t) => checkOf(t) !== null) ?? "";
+  const shipped = checkOf(migration);
+  assert(shipped !== null && /deactivated_at is not null/.test(shipped), "the real CHECK binds only rows that can sign in");
+  eq(checkOf(hookSql), shipped, "the e2e restatement is the real CHECK with only the company domain changed");
+}
+
 const leaks = real.filter((f) => readFileSync(join(MIGRATIONS, f), "utf8").includes("e2e_oauth_session_claims"));
 eq(leaks, [], "no real migration defines the e2e hook, so production never has it");
 assert(!/custom_access_token\]\s*\n\s*enabled\s*=\s*true/.test(readFileSync(join(ROOT, "supabase", "config.toml"), "utf8")), "the developer stack's config registers no such hook either");

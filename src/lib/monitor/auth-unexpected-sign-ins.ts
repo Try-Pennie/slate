@@ -8,12 +8,16 @@
  * callback, the session gate), and this check watches what got past them from Auth's
  * OWN record, never from anything Slate wrote about itself (L58). Two halves:
  *
- *   LOGINS. `auth_logins_by_provider` (migration 0212) reads auth.audit_log_entries:
- *   every login GoTrue recorded in the last day, by the provider it named. Anything but
- *   Google or Microsoft (email, a magic link, phone, anonymous) is a way in that should
- *   not exist, and expected zero. Independent of the session gate, which refuses such a
- *   session on its next request but cannot say it was ever made, and of the settings
- *   check (`auth-sign-in-surface.ts`), which sees a provider switched on, not used.
+ *   LOGINS. `auth_sign_in_methods` (migration 0212) reads auth.mfa_amr_claims, one row per
+ *   session per method, the record a session's `amr` claim is built from: how every
+ *   session made in the last day was signed in. Every Slate sign in is OAuth (Google or
+ *   Microsoft), so any other method (password, otp, magic link, anonymous) is a way in
+ *   that should not exist, and expected zero. NOT auth.audit_log_entries: production
+ *   holds 0 rows there (measured 2026-10-29, the hosted project does not write auth
+ *   audit logs to the database), which would have made this half blind for ever.
+ *   Independent of the session gate, which refuses such a session on its next request but
+ *   cannot say it was ever made, and of the settings check (`auth-sign-in-surface.ts`),
+ *   which sees a provider switched on, not used.
  *
  *   ACCOUNTS. The admin listing of auth users against the roster. An address outside
  *   trypennie.com belongs to a coordinator, so an outside auth user no ACTIVE coordinator
@@ -21,17 +25,17 @@
  *   (`removeCoordinator`), or a Microsoft sign in the hook let through and the callback
  *   then refused before linking. An auth user with no address at all counts as outside.
  *
- * THREE OUTCOMES PER HALF (L98). An audit read that found no entry of ANY kind in a day
- * is unmeasured, not clean: GoTrue writes an entry on every token refresh, so a silent
- * day means the log is not being written (hosted projects can switch it off), which
- * would otherwise read forever as nobody signing in another way. An incomplete account
- * listing, an unreadable roster or an unknown company domain is unmeasured too. Either
- * half's finding pages; the all clear hangs only off BOTH measured clean.
+ * THREE OUTCOMES PER HALF (L98). The logins half carries a POSITIVE CONTROL (L557): a
+ * week with no OAuth sign in at all is unmeasured, not clean, since staff sign in every
+ * day, and an empty table would otherwise read for ever as nobody signing in another
+ * way. Findings come from the last day only, so production's old one time code sessions
+ * (June 2026) never page. An incomplete account listing, an unreadable roster or an
+ * unknown company domain is unmeasured too. Either half's finding pages; the all clear
+ * hangs only off BOTH measured clean.
  *
- * ONCE AN HOUR, over a day. auth.audit_log_entries carries no index on its time
- * (measured on the platform image 2026-10-29: only the primary key and instance_id),
- * so each read scans the table. The first five minute tick of each hour reads; the
- * other eleven are not due and read nothing.
+ * ONCE AN HOUR. The claims table is small (198 rows on 2026-10-29) but has no index on
+ * its time, and the account listing is an admin API call, so the first five minute tick
+ * of each hour reads and the other eleven are not due and read nothing.
  */
 
 import type { AlertResolve, ThrottledNotify } from "./alert-deps";
@@ -41,14 +45,17 @@ import { isAllowedEmail } from "../auth/domain.ts";
 /** alert_state key for the condition. */
 export const AUTH_UNEXPECTED_SIGN_IN_KEY = "auth_unexpected_sign_in";
 
-/** The providers a Slate login may name: Google for staff, Microsoft for coordinators. */
-export const ALLOWED_LOGIN_PROVIDERS: readonly string[] = ["google", "azure"];
-
 /** How often the check does its work (see the header). */
 export const AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS = 60 * 60_000;
 
-/** How far back each read looks: a day, so a quiet night still proves the log is written. */
+/** How far back a finding is looked for: a day, so old sessions never page. */
 export const AUTH_LOGIN_WINDOW_MS = 24 * 60 * 60_000;
+
+/** How far back the positive control looks for an OAuth sign in: a week, past any quiet weekend. */
+export const AUTH_LOGIN_CONTROL_WINDOW_MS = 7 * 24 * 60 * 60_000;
+
+/** The one sign in method Slate issues sessions for (`judgeSessionIdentity`). */
+const ALLOWED_METHOD = "oauth";
 
 /** The window inside each hour whose monitor tick reads. One tick, since the lane ticks every five minutes. */
 const DUE_WINDOW_MINUTES = 5;
@@ -62,40 +69,39 @@ export function authUnexpectedSignInDue(nowMs: number): boolean {
 }
 
 export interface OffendingLogins {
-  provider: string;
-  logins: number;
+  /** The amr method the sessions were made by, as GoTrue records it. */
+  method: string;
+  sessions: number;
   actors: string[];
 }
 
 export type LoginsVerdict =
   | { status: "unmeasured"; why: string }
-  | { status: "measured"; entries: number; offending: OffendingLogins[] };
+  | { status: "measured"; oauthControl: number; offending: OffendingLogins[] };
 
-/** Judge `auth_logins_by_provider`'s answer. Any shape it cannot read is unmeasured (L50). */
+/** Judge `auth_sign_in_methods`'s answer. Any shape it cannot read is unmeasured (L50). */
 export function judgeLogins(body: unknown): LoginsVerdict {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return { status: "unmeasured", why: "the audit log read answered nothing readable" };
+    return { status: "unmeasured", why: "the sign in method read answered nothing readable" };
   }
-  const b = body as { entries?: unknown; logins?: unknown };
-  if (typeof b.entries !== "number" || !Number.isFinite(b.entries) || !Array.isArray(b.logins)) {
-    return { status: "unmeasured", why: "the audit log read answered a shape this cannot judge" };
+  const b = body as { oauth_control?: unknown; methods?: unknown };
+  if (typeof b.oauth_control !== "number" || !Number.isFinite(b.oauth_control) || !Array.isArray(b.methods)) {
+    return { status: "unmeasured", why: "the sign in method read answered a shape this cannot judge" };
   }
   const rows: OffendingLogins[] = [];
-  for (const raw of b.logins as unknown[]) {
-    const r = raw as { provider?: unknown; logins?: unknown; actors?: unknown } | null;
-    if (!r || typeof r.provider !== "string" || typeof r.logins !== "number" || !Array.isArray(r.actors)) {
-      return { status: "unmeasured", why: "the audit log read answered a login row this cannot judge" };
+  for (const raw of b.methods as unknown[]) {
+    const r = raw as { method?: unknown; sessions?: unknown; actors?: unknown } | null;
+    if (!r || typeof r.method !== "string" || typeof r.sessions !== "number" || !Array.isArray(r.actors)) {
+      return { status: "unmeasured", why: "the sign in method read answered a row this cannot judge" };
     }
-    rows.push({ provider: r.provider, logins: r.logins, actors: r.actors.filter((a): a is string => typeof a === "string") });
+    rows.push({ method: r.method, sessions: r.sessions, actors: r.actors.filter((a): a is string => typeof a === "string") });
   }
-  if (b.entries === 0) {
-    return { status: "unmeasured", why: "the audit log recorded nothing at all in the last day, so it cannot say how anybody signed in" };
+  const offending = rows.filter((r) => r.method !== ALLOWED_METHOD && r.sessions > 0);
+  // A finding stands on its own; only a CLEAN answer needs the control behind it.
+  if (b.oauth_control === 0 && offending.length === 0) {
+    return { status: "unmeasured", why: "no OAuth sign in was recorded in the last week, so the claims cannot say how anybody signed in" };
   }
-  return {
-    status: "measured",
-    entries: b.entries,
-    offending: rows.filter((r) => !ALLOWED_LOGIN_PROVIDERS.includes(r.provider) && r.logins > 0),
-  };
+  return { status: "measured", oauthControl: b.oauth_control, offending };
 }
 
 export interface OrphanAccount {
@@ -139,9 +145,9 @@ export function formatAuthUnexpectedSignInAlert(found: {
 }): string {
   const lines: string[] = [];
   for (const o of found.offending) {
-    const by = o.provider ? `by ${o.provider}` : "naming no provider";
+    const by = o.method ? `by ${o.method}` : "naming no method";
     lines.push(
-      `- ${o.logins} sign in${o.logins === 1 ? "" : "s"} in the last day ${by} (${named(o.actors)}). ` +
+      `- ${o.sessions} sign in${o.sessions === 1 ? "" : "s"} in the last day ${by} (${named(o.actors)}). ` +
         "Check Authentication, Sign In / Providers in the Supabase dashboard, then who these are.",
     );
   }
@@ -163,7 +169,7 @@ export function formatAuthUnexpectedSignInAlert(found: {
 export function formatAuthUnexpectedSignInCleared(): string {
   return (
     "Supabase Auth in production shows no sign in in the last day by anything but Google or Microsoft, and no account " +
-    "outside trypennie.com without an active coordinator, read from the audit log and the account list."
+    "outside trypennie.com without an active coordinator, read from the sessions' sign in methods and the account list."
   );
 }
 
@@ -178,7 +184,7 @@ export type AuthUnexpectedSignInResult =
 export async function runAuthUnexpectedSignInCheck(deps: {
   nowMs: number;
   hostedDomain: string;
-  readLogins: (sinceIso: string) => Promise<unknown>;
+  readLogins: (sinceIso: string, controlSinceIso: string) => Promise<unknown>;
   readAccounts: () => Promise<{ complete: boolean; users: readonly { id: string; email: string | null }[] }>;
   readActiveCoordinatorAuthIds: () => Promise<readonly string[]>;
   notify: ThrottledNotify;
@@ -190,9 +196,14 @@ export async function runAuthUnexpectedSignInCheck(deps: {
 
   let logins: LoginsVerdict;
   try {
-    logins = judgeLogins(await deps.readLogins(new Date(deps.nowMs - AUTH_LOGIN_WINDOW_MS).toISOString()));
+    logins = judgeLogins(
+      await deps.readLogins(
+        new Date(deps.nowMs - AUTH_LOGIN_WINDOW_MS).toISOString(),
+        new Date(deps.nowMs - AUTH_LOGIN_CONTROL_WINDOW_MS).toISOString(),
+      ),
+    );
   } catch (err) {
-    logins = { status: "unmeasured", why: `the audit log could not be read (${err instanceof Error ? err.name : "error"})` };
+    logins = { status: "unmeasured", why: `the sign in methods could not be read (${err instanceof Error ? err.name : "error"})` };
   }
 
   let accounts: AccountsVerdict;
@@ -207,7 +218,7 @@ export async function runAuthUnexpectedSignInCheck(deps: {
   const orphans = accounts.status === "measured" ? accounts.orphans : [];
   if (offending.length > 0 || orphans.length > 0) {
     const subjects = [
-      ...offending.flatMap((o) => (o.actors.length > 0 ? o.actors : [""]).map((a) => `login:${o.provider}:${a}`)),
+      ...offending.flatMap((o) => (o.actors.length > 0 ? o.actors : [""]).map((a) => `login:${o.method}:${a}`)),
       ...orphans.map((o) => `account:${o.authUserId}`),
     ];
     await deps

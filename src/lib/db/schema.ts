@@ -382,12 +382,12 @@ export interface Database {
         Args: Record<string, never>;
         Returns: string[] | null;
       };
-      /** #4379 (migration 0212): sign ins Supabase Auth recorded since `p_since`, by the
-       *  provider each named, with the addresses that signed in, and how many audit entries
-       *  of any kind were written in the window. Read by the monitor lane, which judges it in
-       *  `src/lib/monitor/auth-unexpected-sign-ins.ts`. One jsonb value, a row per provider. */
-      auth_logins_by_provider: {
-        Args: { p_since: string };
+      /** #4379 (migration 0212): how each session made since `p_since` was signed in, by
+       *  amr method with the addresses, read from auth.mfa_amr_claims, and how many oauth
+       *  sign ins were made since `p_control_since`, the positive control. Judged in
+       *  `src/lib/monitor/auth-unexpected-sign-ins.ts`. One jsonb value. */
+      auth_sign_in_methods: {
+        Args: { p_since: string; p_control_since: string };
         Returns: unknown;
       };
       /** #2090 (migration 0138): events received at or after `p_since`, per reason.

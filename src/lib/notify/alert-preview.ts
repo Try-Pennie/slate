@@ -4666,19 +4666,19 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   },
   {
     key: "auth_unexpected_sign_in",
-    state: "two sign ins by email in the last day",
+    state: "two sign ins by a one time code in the last day",
     channel: "alert",
     text: formatAuthUnexpectedSignInAlert({
-      offending: [{ provider: "email", logins: 2, actors: ["ada.admin@trypennie.com"] }],
+      offending: [{ method: "otp", sessions: 2, actors: ["ada.admin@trypennie.com"] }],
       orphans: [],
     }),
   },
   {
     key: "auth_unexpected_sign_in",
-    state: "a removed coordinator's account left behind, beside a magic link sign in",
+    state: "a removed coordinator's account left behind, beside a password sign in",
     channel: "alert",
     text: formatAuthUnexpectedSignInAlert({
-      offending: [{ provider: "magiclink", logins: 1, actors: ["dana.coordinator@partner.example"] }],
+      offending: [{ method: "password", sessions: 1, actors: ["dana.coordinator@partner.example"] }],
       orphans: [{ authUserId: "00000000-0000-4000-8000-000000000001", email: "left.already@partner.example" }],
     }),
   },

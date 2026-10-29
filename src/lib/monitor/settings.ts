@@ -337,7 +337,7 @@ export const ALERT_FIELDS: {
     key: "auth_unexpected_sign_in",
     urgency: "page",
     label: "Sign in by an unexpected way, or an account nobody holds",
-    help: "Supabase Auth recorded a sign in in the last day by something other than Google or Microsoft, or holds an account outside trypennie.com that no active coordinator is behind. Checked once an hour from Auth's own audit log and account list. Clears itself once a day passes with no such sign in and the account is deleted.",
+    help: "Supabase Auth recorded a sign in in the last day by something other than Google or Microsoft, or holds an account outside trypennie.com that no active coordinator is behind. Checked once an hour from how each session was signed in and from Auth's account list. Clears itself once a day passes with no such sign in and the account is deleted.",
   },
   {
     key: "audit_log_chain_broken",

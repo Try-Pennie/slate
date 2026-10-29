@@ -634,7 +634,7 @@ const VERDICT_SUBJECT: Record<DetectorVerdictLane, VerdictSubject> = {
   [AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE]: {
     what: "the check asking whether anybody signed in by a way other than Google or Microsoft, or holds an account no coordinator is behind",
     cost: "a sign in by email, or a removed coordinator's account left behind, would go unnoticed",
-    look: 'the Worker logs for tag=auth-unexpected-sign-in, and whether the audit log is still being written in the Supabase dashboard',
+    look: 'the Worker logs for tag=auth-unexpected-sign-in, and whether auth.mfa_amr_claims still gains a row when somebody signs in',
   },
   [AWAITING_ACTIVATION_VERDICT_LANE]: {
     what: "the check asking whether anybody the roster counts as working has been stuck waiting to become bookable",

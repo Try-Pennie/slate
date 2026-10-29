@@ -26,11 +26,13 @@
 //     trypennie.com address and an outsider each sign up through email and are refused
 //     with 403 and no auth.users row. The CONTROL: the same outsider signs up with the
 //     hook off, so the refusals were the hook's (L1, L159).
-//   - users_outside_email_is_coordinator refuses an outside address on any other role.
-//   - auth_logins_by_provider reads the sign in GoTrue really writes: a password sign in
-//     made here comes back as provider `email` with its address, through service_role.
+//   - users_outside_email_is_coordinator refuses an outside address on any other ACTIVE
+//     row, allows a departed one, and refuses returning it as anything but a coordinator.
+//   - auth_sign_in_methods reads the claim GoTrue really writes: a password session made
+//     here comes back as method `password` with its address, through service_role, and the
+//     OAuth positive control counts an OAuth claim and nothing else.
 //   - Who may execute: anon and authenticated may run neither function;
-//     supabase_auth_admin runs the hook and service_role the audit read.
+//     supabase_auth_admin runs the hook and service_role the sign in method read.
 //
 // It writes nothing outside its own containers, which it removes on the way out. Not
 // named test-*.ts: that glob is the offline unit suite, and this needs Docker. No Docker,
@@ -234,15 +236,33 @@ try {
     null,
     "control: an outside address as a coordinator is accepted",
   );
+  // The CHECK binds only rows that can sign in. Production holds one departed agent on an
+  // outside address who never signed in (measured 2026-10-29), so a departed row keeps
+  // its address; returning it clears deactivated_at, and the CHECK then speaks.
+  eq(
+    sqlError(`insert into users (org_id, email, role, bookable, deactivated_at) values ('${ORG}', 'departed.agent@halo-lab.example', 'agent', false, now());`),
+    null,
+    "a departed agent on an outside address is allowed, the shape production holds",
+  );
+  assert(
+    /users_outside_email_is_coordinator/.test(
+      sqlError(`update users set deactivated_at = null where email = 'departed.agent@halo-lab.example';`) ?? "",
+    ),
+    "returning that departed outside row as an agent is refused",
+  );
+  eq(
+    sqlError(`update users set role = 'coordinator', deactivated_at = null where email = 'departed.agent@halo-lab.example';`),
+    null,
+    "returning it as a coordinator is allowed",
+  );
 
   // --- who can execute -----------------------------------------------------------------
   const probe = `select public.before_user_created_domain_gate('{"user":{"email":"a@trypennie.com","app_metadata":{"provider":"google"}}}'::jsonb);`;
-  const audit = `select public.auth_logins_by_provider(now() - interval '1 hour');`;
+  const methods = `select public.auth_sign_in_methods(now() - interval '1 day', now() - interval '7 days');`;
   for (const role of ["anon", "authenticated"]) {
     assert(/permission denied for function before_user_created_domain_gate/.test(sqlError(probe, role) ?? ""), `${role} cannot execute the hook`);
-    assert(/permission denied for function auth_logins_by_provider/.test(sqlError(audit, role) ?? ""), `${role} cannot execute the audit read`);
+    assert(/permission denied for function auth_sign_in_methods/.test(sqlError(methods, role) ?? ""), `${role} cannot execute the sign in method read`);
   }
-  eq(sqlError(audit, "service_role"), null, "service_role can execute the audit read, as the Worker's secret key client");
 
   // --- the event GoTrue really sends -------------------------------------------------
   sql(`
@@ -261,6 +281,8 @@ try {
   } | null;
   eq(captured?.user?.app_metadata?.provider, "email", "GoTrue sends the provider at user.app_metadata.provider, where the gate reads it");
   eq(captured?.user?.email, "capture.probe@trypennie.com", "and the address at user.email");
+  // Asked here, once GoTrue has run its own migrations and auth.mfa_amr_claims exists.
+  eq(sqlError(methods, "service_role"), null, "service_role can execute the sign in method read, as the Worker's secret key client");
   const as = (email: string, provider: string) => ({
     ...captured,
     user: { ...captured?.user, email, app_metadata: { ...captured?.user?.app_metadata, provider, providers: [provider] } },
@@ -290,19 +312,25 @@ try {
     eq(usersWith(email), "0", `${email} leaves no auth.users row`);
   }
 
-  // --- the control: the same outsider with no gate, and the audit read ----------------
+  // --- the control: the same outsider with no gate, and the sign in method read -------
   await startAuth(null);
   const control = await signup("outsider@example.com");
   eq(control.status, 200, "control: with no hook the same outside address signs up, so the refusals were the hook's");
-  eq(await passwordSignIn("outsider@example.com"), 200, "and signs in with a password, which the audit log records");
-  const reading = JSON.parse(sql(audit, "service_role")) as {
-    entries: number;
-    logins: { provider: string; logins: number; actors: string[] }[];
-  };
-  assert(reading.entries > 0, `the audit read counts the entries GoTrue wrote in the window (${reading.entries})`);
-  const byEmail = reading.logins.find((l) => l.provider === "email");
-  assert(Boolean(byEmail && byEmail.logins >= 1), "a password sign in comes back as a login through provider email");
-  assert(Boolean(byEmail?.actors.includes("outsider@example.com")), "naming the address that signed in");
+  eq(await passwordSignIn("outsider@example.com"), 200, "and signs in with a password, which its session's amr claim records");
+  type MethodsReading = { oauth_control: number; methods: { method: string; sessions: number; actors: string[] }[] };
+  const reading = JSON.parse(sql(methods, "service_role")) as MethodsReading;
+  const byPassword = reading.methods.find((m) => m.method === "password");
+  assert(Boolean(byPassword && byPassword.sessions >= 1), "a real password session comes back as a sign in by password");
+  assert(Boolean(byPassword?.actors.includes("outsider@example.com")), "naming the address that signed in");
+  eq(reading.oauth_control, 0, "and with no OAuth sign in in the week the control is zero, which the monitor reads as unmeasured");
+  // The control counts what it says: one OAuth claim on that real session, written the
+  // way GoTrue writes one, moves it to one. (No OAuth sign in can be driven offline.)
+  sql(`insert into auth.mfa_amr_claims (id, session_id, created_at, updated_at, authentication_method)
+       select gen_random_uuid(), s.id, now(), now(), 'oauth' from auth.sessions s
+       join auth.users u on u.id = s.user_id where u.email = 'outsider@example.com' limit 1;`);
+  eq((JSON.parse(sql(methods, "service_role")) as MethodsReading).oauth_control, 1, "an OAuth claim in the week is counted by the control");
+  const old = `select public.auth_sign_in_methods(now() + interval '1 minute', now() - interval '7 days');`;
+  eq((JSON.parse(sql(old, "service_role")) as MethodsReading).methods, [], "a session made before the window is not a finding");
 } catch (err) {
   assert(false, `the run threw: ${err instanceof Error ? err.message : String(err)}`);
 } finally {

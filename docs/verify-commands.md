@@ -1959,9 +1959,13 @@ already linked, the invited address through email or google, trypennie.com throu
 or email, and lookalikes refused; trypennie.com through google allowed. Through the
 server, the invited address, a trypennie.com address and outsiders each sign up by email
 and are refused with no `auth.users` row, beside the hook off control. It checks
-`users_outside_email_is_coordinator`, and reads a real password sign in back through
-`auth_logins_by_provider` as `service_role`. Measured 2026-10-29: 44 checks pass; with
-0212 removed from a copy of the tree (`AUTH_HOOK_MIGRATIONS_DIR`), 14 fail.
+`users_outside_email_is_coordinator` (an active outside row must be a coordinator; a
+departed one keeps its address, and returning it as an agent is refused), and reads a
+real password session's amr claim back through `auth_sign_in_methods` as `service_role`,
+with the OAuth positive control counting an OAuth claim and nothing else. Measured
+2026-10-29: 49 checks pass. Against the earlier 0212 (a CHECK on every row, and an audit
+log read production cannot answer, since it writes no auth audit log to the database) 6
+fail; with 0212 removed from a copy of the tree (`AUTH_HOOK_MIGRATIONS_DIR`), 14 failed.
 
 # Proving the activation import's guard in a real database (`pnpm verify:replace-user-schedule-guard`)
 

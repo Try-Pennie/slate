@@ -15,13 +15,18 @@
 --    Microsoft counterpart of google_sub (#3526): the address finds the row, the subject
 --    says whose it is. Unique where set, so one Microsoft account can never hold two rows.
 --
--- 2. users_outside_email_is_coordinator: an address outside trypennie.com is a
---    coordinator's, and nobody else's. Staff sign in with Google, and the Google sign in
---    refuses every address outside the Workspace domain, so a staff row on an outside
---    address is one nobody can ever sign in to, and a coordinator row is the only kind
---    the Microsoft sign in may link. The violators are counted first, and the migration
---    fails loudly rather than skipping them (expected 0: every row the Salesforce sync,
---    the sign in and Team access have written is on trypennie.com).
+-- 2. users_outside_email_is_coordinator: an ACTIVE row on an address outside trypennie.com
+--    is a coordinator's, and nobody else's. Staff sign in with Google, and the Google sign
+--    in refuses every address outside the Workspace domain, so a staff row on an outside
+--    address is one nobody can ever sign in to, and a coordinator row is the only kind the
+--    Microsoft sign in may link. It binds only rows that CAN sign in: a departed row
+--    (deactivated_at set) keeps whatever address it left with, and returning it clears
+--    deactivated_at, so an outside agent coming back is refused while an outside
+--    coordinator coming back is not. Measured on production 2026-10-29 (read only):
+--    exactly one row was outside trypennie.com and not a coordinator, a departed agent on
+--    halo-lab.com who never signed in, which this shape allows and the first shape would
+--    have failed `db push` on. The violators are counted first by the same predicate, and
+--    the migration fails loudly rather than skipping them (expected 0).
 --
 -- 3. before_user_created_domain_gate, replaced under the SAME name so the hook the
 --    dashboard registers (Authentication, Hooks) keeps pointing at it:
@@ -37,13 +42,19 @@
 --    (#1126). EXECUTE stays with supabase_auth_admin alone and is taken back from public,
 --    anon and authenticated (#2391), so it is never callable over PostgREST.
 --
--- 4. auth_logins_by_provider: every sign in Supabase Auth recorded since a moment, by the
---    provider it named, read from auth.audit_log_entries for the monitor lane, which pages
---    on a sign in by any method other than Google or Microsoft (src/lib/monitor/
---    auth-unexpected-sign-ins.ts). It also returns how many entries of ANY kind were written in
---    the window, so "nobody signed in another way" can be told from "nothing is being
---    written to the audit log at all" (L98). SECURITY DEFINER for the same reason as the
---    hook, pinned, EXECUTE taken back from the web roles; service_role keeps it.
+-- 4. auth_sign_in_methods: how every session made since a moment was signed in, read from
+--    auth.mfa_amr_claims (one row per session per method, the source of a session's `amr`)
+--    for the monitor lane, which pages on any method but `oauth`
+--    (src/lib/monitor/auth-unexpected-sign-ins.ts). NOT auth.audit_log_entries: measured on
+--    production 2026-10-29, that table holds 0 rows, because the hosted project does not
+--    write auth audit logs to the database, so a check reading it would be blind for ever.
+--    mfa_amr_claims was live (oauth 189, latest that day; otp 9, latest 2026-06-12). It also
+--    returns how many oauth claims were made since a second, longer moment, the positive
+--    control: a week with no OAuth sign in at all means the table stopped being written,
+--    never that everybody signed in correctly (L557, L98). SECURITY DEFINER for the same
+--    reason as the hook, pinned, EXECUTE taken back from the web roles; service_role keeps
+--    it. PL/pgSQL, so its body names the auth tables only when called: the platform image
+--    a fresh replay starts from does not create mfa_amr_claims until GoTrue first runs.
 --
 -- Additive for the deployed code: a new nullable column, a CHECK every existing row
 -- satisfies (counted first), and a hook that answers exactly as before for every Google
@@ -66,21 +77,26 @@ begin
   select count(*) into violators
   from public.users
   where role <> 'coordinator'
+    and deactivated_at is null
     and coalesce(lower(substring(email from '@([^@]*)$')), '') <> 'trypennie.com';
-  raise notice 'users outside trypennie.com that are not coordinators: %', violators;
+  raise notice 'active users outside trypennie.com that are not coordinators: %', violators;
   if violators > 0 then
     raise exception
-      'refusing to add users_outside_email_is_coordinator: % users rows hold an address outside trypennie.com and are not coordinators. Correct those rows first; nothing was changed.',
+      'refusing to add users_outside_email_is_coordinator: % active users rows hold an address outside trypennie.com and are not coordinators. Correct those rows first; nothing was changed.',
       violators;
   end if;
 end;
 $$;
 
 alter table public.users add constraint users_outside_email_is_coordinator
-  check (role = 'coordinator' or coalesce(lower(substring(email from '@([^@]*)$')), '') = 'trypennie.com');
+  check (
+    role = 'coordinator'
+    or deactivated_at is not null
+    or coalesce(lower(substring(email from '@([^@]*)$')), '') = 'trypennie.com'
+  );
 
 comment on constraint users_outside_email_is_coordinator on public.users is
-  'An address outside trypennie.com belongs to a scheduling coordinator, who signs in with Microsoft, and to nobody else (#4379).';
+  'An active row on an address outside trypennie.com belongs to a scheduling coordinator, who signs in with Microsoft, and to nobody else; a departed row keeps the address it left with (#4379).';
 
 -- 3. -----------------------------------------------------------------------------------
 create or replace function public.before_user_created_domain_gate(event jsonb)
@@ -137,31 +153,37 @@ grant execute on function public.before_user_created_domain_gate(jsonb) to supab
 revoke execute on function public.before_user_created_domain_gate(jsonb) from public, anon, authenticated;
 
 -- 4. -----------------------------------------------------------------------------------
-create or replace function auth_logins_by_provider(p_since timestamptz)
+create or replace function auth_sign_in_methods(p_since timestamptz, p_control_since timestamptz)
 returns jsonb
-language sql
+language plpgsql
 stable
 security definer
 set search_path = pg_catalog
 as $$
-  select jsonb_build_object(
-    'entries', (select count(*) from auth.audit_log_entries e where e.created_at >= p_since),
-    'logins', coalesce((
-      select jsonb_agg(jsonb_build_object('provider', l.provider, 'logins', l.logins, 'actors', l.actors) order by l.provider)
+begin
+  return jsonb_build_object(
+    'oauth_control', (
+      select count(*) from auth.mfa_amr_claims c
+      where c.created_at >= p_control_since and c.authentication_method = 'oauth'
+    ),
+    'methods', coalesce((
+      select jsonb_agg(jsonb_build_object('method', m.method, 'sessions', m.sessions, 'actors', m.actors) order by m.method)
       from (
-        select coalesce(e.payload->'traits'->>'provider', '') as provider,
-               count(*) as logins,
-               jsonb_agg(distinct coalesce(e.payload->>'actor_username', '')) as actors
-        from auth.audit_log_entries e
-        where e.created_at >= p_since
-          and e.payload->>'action' = 'login'
+        select c.authentication_method as method,
+               count(*) as sessions,
+               jsonb_agg(distinct coalesce(u.email, '')) as actors
+        from auth.mfa_amr_claims c
+        left join auth.sessions s on s.id = c.session_id
+        left join auth.users u on u.id = s.user_id
+        where c.created_at >= p_since
         group by 1
-      ) l
+      ) m
     ), '[]'::jsonb)
   );
+end;
 $$;
 
-comment on function auth_logins_by_provider(timestamptz) is
-  'Sign ins Supabase Auth recorded since p_since, by provider, and how many audit entries of any kind were written in the window (#4379). Read by the monitor lane, which pages on a sign in by anything but Google or Microsoft.';
+comment on function auth_sign_in_methods(timestamptz, timestamptz) is
+  'How each session made since p_since was signed in, by amr method with the addresses, and how many oauth sign ins were made since p_control_since, the positive control (#4379). Read by the monitor lane, which pages on any method but oauth.';
 
-revoke execute on function auth_logins_by_provider(timestamptz) from public, anon, authenticated;
+revoke execute on function auth_sign_in_methods(timestamptz, timestamptz) from public, anon, authenticated;

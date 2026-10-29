@@ -1,18 +1,20 @@
 // #4379: does Supabase Auth hold a sign in, or an account, Slate does not allow?
 //
 // Two halves, each read from Auth's own record, never from Slate's (L58):
-//   - LOGINS: auth.audit_log_entries, through auth_logins_by_provider. Every Slate sign
-//     in is Google or Microsoft, so a login by any other provider (email, a magic link,
-//     phone, anonymous) is a way in that should not exist. Expected zero. Independent of
-//     the session gate, which would refuse such a session but cannot say it happened.
+//   - LOGINS: auth.mfa_amr_claims, through auth_sign_in_methods (not the audit log, which
+//     production does not write to the database: 0 rows, measured 2026-10-29). Every Slate
+//     sign in is OAuth (Google or Microsoft), so a session made by any other method
+//     (password, otp, magic link, anonymous) is a way in that should not exist. Expected
+//     zero. Independent of the session gate, which refuses such a session but cannot say
+//     it was made.
 //   - ACCOUNTS: the admin listing of auth users against the roster. An account outside
 //     trypennie.com belongs to a coordinator, so one that no active coordinator row is
 //     linked to is a sign in that outlived its row (a removal whose delete failed, a
 //     link that never completed).
 //
 // Three outcomes per half, because "nothing found" and "nothing read" look alike
-// (L98): an audit read that saw no entry of ANY kind in its window is unmeasured, never
-// clean, and so is an incomplete account listing. The page hangs off either half's
+// (L98): a read that found no OAuth sign in at all in a WEEK is unmeasured, never clean
+// (the positive control, L557), and so is an incomplete account listing. The page hangs off either half's
 // finding; the all clear only off both measured clean.
 //
 // Run: node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/test-auth-unexpected-sign-ins.ts
@@ -21,6 +23,7 @@ import {
   AUTH_UNEXPECTED_SIGN_IN_KEY,
   AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS,
   AUTH_LOGIN_WINDOW_MS,
+  AUTH_LOGIN_CONTROL_WINDOW_MS,
   authUnexpectedSignInDue,
   formatAuthUnexpectedSignInAlert,
   formatAuthUnexpectedSignInCleared,
@@ -29,28 +32,36 @@ import {
   runAuthUnexpectedSignInCheck,
 } from "../src/lib/monitor/auth-unexpected-sign-ins.ts";
 
-const reading = (logins: { provider: string; logins: number; actors: string[] }[], entries = 500) => ({ entries, logins });
+const reading = (methods: { method: string; sessions: number; actors: string[] }[], oauthControl = 189) => ({
+  oauth_control: oauthControl,
+  methods,
+});
 const DASHES = new RegExp("[\\u2014\\u2013]");
 
 // --- the logins half ----------------------------------------------------------------
 {
-  const clean = judgeLogins(reading([
-    { provider: "google", logins: 40, actors: ["a@trypennie.com"] },
-    { provider: "azure", logins: 3, actors: ["dana@partner.example"] },
-  ]));
-  assert(clean.status === "measured" && clean.offending.length === 0, "Google and Microsoft logins are the expected ones");
+  const clean = judgeLogins(reading([{ method: "oauth", sessions: 40, actors: ["a@trypennie.com", "dana@partner.example"] }]));
+  assert(clean.status === "measured" && clean.offending.length === 0, "OAuth sessions, Google and Microsoft alike, are the expected ones");
 
-  const email = judgeLogins(reading([
-    { provider: "google", logins: 40, actors: ["a@trypennie.com"] },
-    { provider: "email", logins: 2, actors: ["x@trypennie.com", "y@trypennie.com"] },
-    { provider: "", logins: 1, actors: [""] },
+  const otp = judgeLogins(reading([
+    { method: "oauth", sessions: 40, actors: ["a@trypennie.com"] },
+    { method: "otp", sessions: 2, actors: ["x@trypennie.com", "y@trypennie.com"] },
+    { method: "password", sessions: 1, actors: [""] },
   ]));
-  assert(email.status === "measured", "a reading with other logins is measured");
-  eq(email.status === "measured" ? email.offending.map((o) => o.provider) : [], ["email", ""], "email, and a login naming no provider, are both findings");
+  assert(otp.status === "measured", "a reading with other methods is measured");
+  eq(otp.status === "measured" ? otp.offending.map((o) => o.method) : [], ["otp", "password"], "a one time code and a password session are both findings");
 
+  // The positive control (L557): a week with no OAuth sign in at all means the claims
+  // stopped being written, which would otherwise read for ever as nobody signing in
+  // another way. Production has signed in by OAuth every day it has been read.
   const silent = judgeLogins(reading([], 0));
-  assert(silent.status === "unmeasured" && /nothing/.test(silent.why), "an audit log that recorded nothing at all is unmeasured, never clean");
-  for (const bad of [null, "x", {}, { entries: "5", logins: [] }, { entries: 5, logins: "no" }, { entries: 5, logins: [{ provider: "email" }] }]) {
+  assert(silent.status === "unmeasured" && /week/.test(silent.why), "no OAuth sign in in a week is unmeasured, never clean");
+  const silentWithFinding = judgeLogins(reading([{ method: "otp", sessions: 1, actors: ["x@trypennie.com"] }], 0));
+  assert(
+    silentWithFinding.status === "measured" && silentWithFinding.offending.length === 1,
+    "but a session by another method is still a finding when the control is empty",
+  );
+  for (const bad of [null, "x", {}, { oauth_control: "5", methods: [] }, { oauth_control: 5, methods: "no" }, { oauth_control: 5, methods: [{ method: "otp" }] }]) {
     eq(judgeLogins(bad).status, "unmeasured", `an unreadable body ${JSON.stringify(bad)} is unmeasured`);
   }
 }
@@ -86,21 +97,22 @@ const DASHES = new RegExp("[\\u2014\\u2013]");
   let due = 0;
   for (let m = 0; m < 60; m += 5) if (authUnexpectedSignInDue(Date.UTC(2026, 9, 29, 3, m, 10))) due++;
   eq(due, 1, "exactly one five minute tick an hour");
-  assert(AUTH_LOGIN_WINDOW_MS >= 24 * 60 * 60_000, "the window is a day, so a quiet night still has entries to prove the log is written");
+  eq(AUTH_LOGIN_WINDOW_MS, 24 * 60 * 60_000, "findings come from the last day, so June's old one time code sessions never page");
+  eq(AUTH_LOGIN_CONTROL_WINDOW_MS, 7 * 24 * 60 * 60_000, "and the positive control from the last week");
 }
 
 // --- copy -------------------------------------------------------------------------------
 {
   const text = formatAuthUnexpectedSignInAlert({
-    offending: [{ provider: "email", logins: 2, actors: ["x@trypennie.com", "y@trypennie.com"] }],
+    offending: [{ method: "otp", sessions: 2, actors: ["x@trypennie.com", "y@trypennie.com"] }],
     orphans: [{ authUserId: "c2", email: "left@partner.example" }],
   });
   assert(/^Supabase Auth/.test(text), "the page opens with what it read, never with the word Slate");
-  assert(/2 sign ins/.test(text) && /email/.test(text) && /x@trypennie\.com/.test(text), "it names how many, by what, and who");
+  assert(/2 sign ins/.test(text) && /otp/.test(text) && /x@trypennie\.com/.test(text), "it names how many, by what, and who");
   assert(/left@partner\.example/.test(text) && /Authentication, Users/.test(text), "and the orphan account, with where to delete it");
   assert(!DASHES.test(text), "and carries no dash");
   const many = formatAuthUnexpectedSignInAlert({
-    offending: [{ provider: "email", logins: 30, actors: Array.from({ length: 30 }, (_, i) => `p${i}@trypennie.com`) }],
+    offending: [{ method: "password", sessions: 30, actors: Array.from({ length: 30 }, (_, i) => `p${i}@trypennie.com`) }],
     orphans: [],
   });
   assert(/and 20 more/.test(many), "a long list of addresses is cut to ten with the rest counted");
@@ -122,9 +134,9 @@ const DASHES = new RegExp("[\\u2014\\u2013]");
     const result = await runAuthUnexpectedSignInCheck({
       nowMs: over.nowMs ?? DUE,
       hostedDomain: "trypennie.com",
-      readLogins: async (sinceIso) => {
-        asked.push(sinceIso);
-        return (over.logins ?? (async () => reading([{ provider: "google", logins: 9, actors: ["a@trypennie.com"] }])))();
+      readLogins: async (sinceIso, controlSinceIso) => {
+        asked.push(sinceIso, controlSinceIso);
+        return (over.logins ?? (async () => reading([{ method: "oauth", sessions: 9, actors: ["a@trypennie.com"] }])))();
       },
       readAccounts: over.accounts ?? (async () => ({ complete: true, users: [{ id: "a1", email: "a@trypennie.com", banned_until: null }] })),
       readActiveCoordinatorAuthIds: over.links ?? (async () => []),
@@ -137,17 +149,21 @@ const DASHES = new RegExp("[\\u2014\\u2013]");
 
   const quiet = await drive({ nowMs: Date.UTC(2026, 9, 29, 14, 20) });
   eq(quiet.result.status, "not-due", "off the hour it reads nothing");
-  eq(quiet.asked, [], "and asks the audit log nothing");
+  eq(quiet.asked, [], "and asks the claims nothing");
 
   const healthy = await drive({});
   eq(healthy.result.status, "healthy", "both halves clean is healthy");
   eq(healthy.resolved, [AUTH_UNEXPECTED_SIGN_IN_KEY], "and clears the key");
-  eq(healthy.asked, [new Date(DUE - AUTH_LOGIN_WINDOW_MS).toISOString()], "having asked for the day before the tick");
+  eq(
+    healthy.asked,
+    [new Date(DUE - AUTH_LOGIN_WINDOW_MS).toISOString(), new Date(DUE - AUTH_LOGIN_CONTROL_WINDOW_MS).toISOString()],
+    "having asked for the day before the tick, and the week for the control",
+  );
 
-  const login = await drive({ logins: async () => reading([{ provider: "email", logins: 1, actors: ["x@trypennie.com"] }]) });
-  eq(login.result.status, "found", "a login by email is a finding");
+  const login = await drive({ logins: async () => reading([{ method: "otp", sessions: 1, actors: ["x@trypennie.com"] }]) });
+  eq(login.result.status, "found", "a session by a one time code is a finding");
   eq(login.sent.map((s) => s.key), [AUTH_UNEXPECTED_SIGN_IN_KEY], "and pages its key");
-  eq(login.sent[0]?.subjects, ["login:email:x@trypennie.com"], "naming its subjects, so a new one posts at once");
+  eq(login.sent[0]?.subjects, ["login:otp:x@trypennie.com"], "naming its subjects, so a new one posts at once");
   eq(login.resolved, [], "and clears nothing");
 
   const orphan = await drive({
@@ -157,12 +173,12 @@ const DASHES = new RegExp("[\\u2014\\u2013]");
   eq(orphan.sent[0]?.subjects, ["account:c9"], "named by its auth user");
 
   const blindLogins = await drive({ logins: async () => reading([], 0) });
-  eq(blindLogins.result.status, "unmeasured", "a silent audit log with clean accounts is unmeasured");
+  eq(blindLogins.result.status, "unmeasured", "a week with no OAuth sign in, with clean accounts, is unmeasured");
   eq([blindLogins.sent.length, blindLogins.resolved.length], [0, 0], "and pages and clears nothing");
 
-  const threw = await drive({ logins: async () => { throw new Error("permission denied for table audit_log_entries"); } });
-  eq(threw.result.status, "unmeasured", "a refused audit read is unmeasured");
-  eq(threw.resolved.length, 0, "and a refused audit read clears nothing");
+  const threw = await drive({ logins: async () => { throw new Error("permission denied for table mfa_amr_claims"); } });
+  eq(threw.result.status, "unmeasured", "a refused claims read is unmeasured");
+  eq(threw.resolved.length, 0, "and a refused claims read clears nothing");
   const threwButFound = await drive({
     logins: async () => { throw new Error("boom"); },
     accounts: async () => ({ complete: true, users: [{ id: "c9", email: "gone@partner.example", banned_until: null }] }),

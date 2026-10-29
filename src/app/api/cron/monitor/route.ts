@@ -4684,12 +4684,13 @@ export async function GET(req: NextRequest) {
     );
     // Did anybody get in by a way other than Google or Microsoft, or does an account
     // outside trypennie.com outlive its coordinator (#4379)? Read from Auth's OWN record:
-    // the audit log through auth_logins_by_provider, and the admin account listing
+    // each recent session's sign in method through auth_sign_in_methods (auth.mfa_amr_claims;
+    // production writes no auth audit log to the database), and the admin account listing
     // against the active coordinators' links. Independent of the session gate and of the
     // settings check above, which see a session refused and a provider switched on.
     //
     // Cost on this lane: nothing on eleven ticks in twelve. On the first tick of each hour,
-    // one RPC that scans auth.audit_log_entries (no index on its time), one account
+    // one RPC over auth.mfa_amr_claims (a few hundred rows, no index on its time), one account
     // listing (one page at the roster's size) and one roster bounded users read. Not gated
     // on the shared setup reads: it reads its own. A half that cannot be read is
     // unmeasured and clears nothing; either half's finding still pages.
@@ -4704,10 +4705,10 @@ export async function GET(req: NextRequest) {
             return "";
           }
         })(),
-        readLogins: async (sinceIso) => {
-          const { data, error } = await db.rpc("auth_logins_by_provider", { p_since: sinceIso });
+        readLogins: async (sinceIso, controlSinceIso) => {
+          const { data, error } = await db.rpc("auth_sign_in_methods", { p_since: sinceIso, p_control_since: controlSinceIso });
           if (error) {
-            log.warn("auth-unexpected-sign-in", { msg: "audit log read failed" }, error);
+            log.warn("auth-unexpected-sign-in", { msg: "sign in method read failed" }, error);
             throw new Error(error.message);
           }
           return data;
@@ -4733,7 +4734,7 @@ export async function GET(req: NextRequest) {
         notify: sendThrottledAlert,
         // A condition: it stays true until the day clears or the account is deleted.
         // alert-key: auth_unexpected_sign_in
-        // all-clear-proof: scripts/test-auth-unexpected-sign-ins.ts - a silent audit log, a
+        // all-clear-proof: scripts/test-auth-unexpected-sign-ins.ts - a week with no OAuth sign in, a
         // refused read, an unreadable roster and an incomplete listing each clear nothing.
         resolve: resolveAlert,
         cooldownMs: cooldownMs.auth_unexpected_sign_in,

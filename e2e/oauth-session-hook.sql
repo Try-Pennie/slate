@@ -36,10 +36,11 @@ revoke execute on function public.e2e_oauth_session_claims(jsonb) from public, a
 -- e2e/env.ts, which the app's GOOGLE_HOSTED_DOMAIN is set to here), so the rule that an
 -- address outside the company domain is a coordinator's (migration 0212) is restated for
 -- THAT domain, beside the real one migration 0029's seeded rows are on. The rule itself
--- is unchanged: outside both, only a coordinator.
+-- is unchanged: an active row outside both is only a coordinator.
 alter table public.users drop constraint users_outside_email_is_coordinator;
 alter table public.users add constraint users_outside_email_is_coordinator
   check (
     role = 'coordinator'
+    or deactivated_at is not null
     or coalesce(lower(substring(email from '@([^@]*)$')), '') in ('trypennie.com', 'slate-e2e.test')
   );

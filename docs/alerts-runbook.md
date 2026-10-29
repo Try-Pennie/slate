@@ -883,7 +883,8 @@ It is not a statement that the limit is down across the deployment; that is
   next claim that is written.
 - `auth_unexpected_sign_in` (#4379) means a way in got past the sign in controls. The
   monitor reads Auth's own record once an hour: a login in the last day by anything but
-  Google or Microsoft (`auth_logins_by_provider` over `auth.audit_log_entries`), or an
+  OAuth (`auth_sign_in_methods` over `auth.mfa_amr_claims`, since production writes no
+  auth audit log to the database), or an
   account outside trypennie.com that no active coordinator is linked to (the admin
   account listing against `users`). A login line: open Authentication, Sign In /
   Providers in the Supabase dashboard and turn off whatever allowed it (the Email
@@ -892,8 +893,9 @@ It is not a statement that the limit is down across the deployment; that is
   coordinator removal whose sign in delete failed, or a Microsoft sign in the hook
   admitted and the callback then refused before linking. Delete the account under
   Authentication, Users unless the address should be granted on Team access. It clears
-  once a day passes with no such login and the accounts are gone. Its verdict goes stale
-  if the audit log stops being written at all, which hosted projects can switch off.
+  once a day passes with no such login and the accounts are gone. A week with no OAuth
+  sign in at all is read as the claims not being written, never as clean, so its verdict
+  goes stale and pages instead.
 
 **Fix or escalate.** A missing binding is a deploy fix. Treat an unmetered public path
 as time-sensitive rather than urgent: nothing is broken for a customer, and nothing is

@@ -85,7 +85,7 @@ export const MONITOR_STEP_ALERT_COOLDOWN_MS = 2 * 60 * 60_000;
  */
 export const MONITOR_STEP_CADENCE_MS: Readonly<Record<string, number>> = {
   cross_system_bookings: CROSS_SYSTEM_BOOKINGS_CADENCE_MS,
-  // #4379: the audit log has no index on its time, so it is read once an hour.
+  // #4379: the sign in method claims and the account listing are read once an hour.
   auth_unexpected_sign_in: AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS,
 };
 
