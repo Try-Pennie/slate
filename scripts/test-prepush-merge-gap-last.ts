@@ -81,18 +81,22 @@ function exitsNotGuarded(text: string): number[] {
     `#4355: every exit that lets a push through is preceded directly by the merge-gap guard (not at lines ${bad.join(", ")})`,
   );
 
-  const calls = commandLines(hook).filter(({ line }) => GUARD_CALL.test(line));
-  const installAt = hook.indexOf("pnpm install --frozen-lockfile");
-  const budgetAt = hook.lastIndexOf("\nbundle_budget_check");
-  assert(installAt > 0 && budgetAt > 0, "the hook still installs and still weighs the bundle");
-  const firstCallAt = calls[0] ? hook.indexOf(calls[0].line) : -1;
+  // Compared by LINE NUMBER, never by searching the text: a search for a call's text
+  // finds the function's definition first, which also sits above the gate.
+  const cmds = commandLines(hook);
+  const calls = cmds.filter(({ line }) => GUARD_CALL.test(line));
+  const installLine = cmds.find(({ line }) => line.trim().startsWith("pnpm install --frozen-lockfile"))?.n ?? -1;
+  const budgetLine = cmds.filter(({ line }) => line.trim() === "bundle_budget_check").pop()?.n ?? -1;
+  const definedLine = cmds.find(({ line }) => /^merge_gap_guard\(\) \{/.test(line))?.n ?? -1;
+  assert(installLine > 0 && budgetLine > 0 && definedLine > 0, "the hook still defines the guard, installs and weighs the bundle");
+  assert(calls.every(({ n }) => n > definedLine), "no call is mistaken for the definition");
+  const firstCall = calls[0]?.n ?? -1;
   assert(
-    firstCallAt >= 0 && firstCallAt < installAt,
-    "the guard still asks BEFORE the gate, so a push onto a branch already merged does not cost the whole gate",
+    firstCall > 0 && firstCall < installLine,
+    `the guard still asks BEFORE the gate, so a push onto a branch already merged does not cost the whole gate (first call at line ${firstCall}, install at ${installLine})`,
   );
-  const lastCall = calls[calls.length - 1];
-  const lastCallAt = lastCall ? hook.lastIndexOf(lastCall.line) : -1;
-  assert(lastCallAt > budgetAt, "and asks again AFTER the bundle weigh, the last step of the gate");
+  const lastCall = calls[calls.length - 1]?.n ?? -1;
+  assert(lastCall > budgetLine, `and asks again AFTER the bundle weigh, the last step of the gate (line ${lastCall}, weigh at ${budgetLine})`);
 }
 
 // --- the guard itself, run with a stub gh -----------------------------------------
