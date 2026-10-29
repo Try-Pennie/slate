@@ -128,6 +128,39 @@ const changesToday = (fake: ReturnType<typeof makeMarciaFake>) =>
   );
 }
 
+// --- find_times states today's date in the lead's zone (lesson L820, #4327) ------------
+// The model writes `from` itself, so "next Tuesday" becomes a date only from what is in
+// its context. Every answer carries today, as the lead's calendar reads it, and a from
+// date already past says so rather than being read as now in silence.
+{
+  const fake = makeMarciaFake({ nowMs: NOW, slots: SLOTS });
+  const plain = await runMarciaOperation("find_times", {}, claims(), fake.deps);
+  eq(okData(plain)?.today, "Monday, June 1, 2026", "the answer names today in the lead's zone");
+  eq(okData(plain)?.from_note, undefined, "no from date, no note");
+
+  // 22:00 CDT on 1 June is already 2 June in UTC: today is the lead's day, not the server's.
+  const late = makeMarciaFake({ nowMs: Date.parse("2026-06-02T03:00:00.000Z"), slots: SLOTS });
+  const lateAnswer = await runMarciaOperation("find_times", {}, claims(), late.deps);
+  eq(okData(lateAnswer)?.today, "Monday, June 1, 2026", "today is read in the lead's zone, never UTC");
+  const eastern = await runMarciaOperation("find_times", { time_zone: "America/New_York" }, claims(), late.deps);
+  eq(okData(eastern)?.today, "Monday, June 1, 2026", "23:00 in New York is still 1 June there");
+  const tokyo = await runMarciaOperation("find_times", { time_zone: "Asia/Tokyo" }, claims(), late.deps);
+  eq(okData(tokyo)?.today, "Tuesday, June 2, 2026", "a zone already past midnight reads the next day");
+
+  const past = await runMarciaOperation("find_times", { from: "2025-06-03" }, claims(), fake.deps);
+  assert(past.ok, "a past from date still answers");
+  eq(
+    okData(past)?.from_note,
+    "The from date 2025-06-03 is before today (Monday, June 1, 2026 for the lead), so these times start from now. Check the date the lead meant.",
+    "a from date already past is named as such, never read as now in silence",
+  );
+  const sameDay = await runMarciaOperation("find_times", { from: "2026-06-01" }, claims(), fake.deps);
+  eq(okData(sameDay)?.from_note, undefined, "today itself is not a past date");
+  const ahead = await runMarciaOperation("find_times", { from: "2026-06-02" }, claims(), fake.deps);
+  eq(okData(ahead)?.from_note, undefined, "a future from date carries no note");
+  eq(okData(ahead)?.today, "Monday, June 1, 2026", "today is stated whatever from asked for");
+}
+
 // --- find_times `near` a time of day (live 2026-10-21: "3pm tomorrow" was offered 8:00
 // to 9:30am and moved to 9:30am, because only the first five times from `from` came back).
 // NOW is 07:00 CDT on 1 June; every slot below is on the half hour, written in UTC.

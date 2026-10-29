@@ -92,6 +92,15 @@ export const ASSUMED_ZONE_NOTE =
   `Slate does not know this lead's time zone, so the times in this answer are in ${DEFAULT_LEAD_TIME_ZONE} (US Eastern). ` +
   "Confirm the lead's time zone, and if it is different, call again with time_zone set to it.";
 
+/**
+ * What a find_times answer carries, as `from_note`, when the model's from date was
+ * already past (lesson L820, #4327). The model writes `from` itself, so a date it
+ * guessed without knowing today is well formed and would otherwise be read as now
+ * in silence; naming today beside it lets the model see the guess.
+ */
+export const pastFromNote = (from: string, today: string): string =>
+  `The from date ${from} is before today (${today} for the lead), so these times start from now. Check the date the lead meant.`;
+
 /** A lead's name, first name, email and phone as another source holds them, null per fact it lacks. */
 export interface LeadContact {
   name: string | null;
@@ -648,9 +657,14 @@ async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<Marci
   // The day `near` is read on: the from date in the lead's zone, else today there. A
   // from date already past is read as now, for `near` as for the offer itself.
   let day = DateTime.fromMillis(ctx.deps.nowMs(), { zone });
+  // Today as the lead's calendar reads it, stated in every answer (lesson L820, #4327):
+  // the model turns "next Tuesday" into `from` with only its context to go on.
+  const today = formatLongDate(day, { year: true }) ?? day.toISODate() ?? "";
+  let fromNote: { from_note?: string } = {};
   if (args.from !== undefined) {
     const from = typeof args.from === "string" ? DateTime.fromISO(args.from, { zone }) : null;
     if (!from || !from.isValid) return badArgument(ctx, "from", "from must be a date, YYYY-MM-DD in the lead's zone.");
+    if (from.startOf("day") < day.startOf("day")) fromNote = { from_note: pastFromNote(String(args.from), today) };
     day = DateTime.max(from, day);
     fromIso = day.toUTC().toISO() ?? fromIso;
   }
@@ -667,7 +681,7 @@ async function findTimes(ctx: Ctx, args: Record<string, unknown>): Promise<Marci
       ok: true,
       operation: "find_times",
       status: 200,
-      data: { time_zone: zone, ...zoneNote(z), times: found.times, data_as_of: found.computedAt },
+      data: { time_zone: zone, ...zoneNote(z), today, ...fromNote, times: found.times, data_as_of: found.computedAt },
     };
   } catch (err) {
     return refuse(ctx, "internal", { cause: err });
