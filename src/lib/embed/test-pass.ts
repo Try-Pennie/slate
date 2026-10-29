@@ -1,5 +1,4 @@
-import { createHmac } from "node:crypto";
-import { timingSafeEqual } from "../bearer-auth.ts";
+import { fieldsSignature, fieldsSignatureMatches } from "../signed-fields.ts";
 import { TEST_ACCESS_COPY } from "../booking/booker-copy.ts";
 import { isPublicTestBucket, opensFromHostPage } from "./public-test-bucket.ts";
 import { TEST_PASS_REFUSAL_CODES, type TestPassRefusalCode } from "./test-pass-header.ts";
@@ -50,7 +49,7 @@ export const PASS_REFUSALS = [
 export type PassRefusal = (typeof PASS_REFUSALS)[number];
 
 function signature(secret: string, code: string, expiresAtMs: number): string {
-  return createHmac("sha256", secret).update(`${CONTEXT}.${code}.${expiresAtMs}`).digest("hex");
+  return fieldsSignature(secret, CONTEXT, [code, String(expiresAtMs)]);
 }
 
 /** Make a pass for `code`. The caller decides whether the code deserves one. */
@@ -89,7 +88,7 @@ export function verifyTestPass(input: {
     return { ok: false, reason: "malformed" };
   }
   const expiresAtMs = Number(expRaw);
-  if (!timingSafeEqual(sig, signature(input.secret, passCode, expiresAtMs))) {
+  if (!fieldsSignatureMatches(input.secret, CONTEXT, [passCode, String(expiresAtMs)], sig)) {
     return { ok: false, reason: "forged" };
   }
   if (passCode !== input.code) return { ok: false, reason: "wrong-code" };

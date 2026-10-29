@@ -244,3 +244,38 @@ describe("an old token for a booking the API moved (#3672)", () => {
     expect(props?.token).toBe("tok1");
   });
 });
+
+// #4389: a program lead's call may move onto the placeholder's extra times, so the page
+// hands ManageBooking a move token minted from the booking's own flag, and nothing for
+// any other call.
+describe("manage page program lead move token (#4389)", () => {
+  const programBooking = {
+    ...found.booking,
+    id: "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+    salesforce_id: "00Q5f00000AbCdEFGH",
+    program_lead: true,
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("PROGRAM_LEAD_TOKEN_SECRET", "s".repeat(64));
+  });
+
+  it("hands a program lead's booking a move token for that booking", async () => {
+    service.getBookingByToken.mockResolvedValue({ ...found, booking: programBooking });
+    const props = await renderPage();
+    const token = props?.programLeadMoveToken;
+    expect(typeof token).toBe("string");
+    const { verifyProgramLeadToken } = await import("@/lib/booking/program-lead-gate");
+    const facts = verifyProgramLeadToken(token as string, {
+      salesforceId: programBooking.salesforce_id,
+      bookingId: programBooking.id,
+    });
+    expect(facts?.purpose).toBe("move");
+  });
+
+  it("hands any other booking no token", async () => {
+    service.getBookingByToken.mockResolvedValue({ ...found, booking: { ...programBooking, program_lead: false } });
+    const props = await renderPage();
+    expect(props?.programLeadMoveToken).toBeNull();
+  });
+});

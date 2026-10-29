@@ -326,6 +326,13 @@ export const directoryAdminSubject = (): string | undefined => process.env.DIREC
 export const embedTestOrigins = (): string[] => csvEnv("EMBED_TEST_ORIGINS");
 export const embedTestPassSecret = (): string => process.env.EMBED_TEST_PASS_SECRET ?? "";
 
+// Signs the program lead token (#4389): the texted booking page and its manage page hand
+// it to a recognised program lead, and the times, booking and move routes trust only it.
+// Its OWN secret, not the test pass's: that one's docs give it the test bucket alone, and
+// emptying it switches the test path off, which must never also switch programs off.
+// Empty = no program lead is recognised anywhere and every lead gets the ordinary booker.
+export const programLeadTokenSecret = (): string => process.env.PROGRAM_LEAD_TOKEN_SECRET ?? "";
+
 // Cal.com dual-write during the cutover transition. Flag off = no-op.
 export const oooCalcomDualWrite = (): boolean =>
   process.env.OOO_CALCOM_DUAL_WRITE === "true";

@@ -108,6 +108,8 @@
 		// would approve every developer machine. Empty turns the test path off.
 		// The paired secret is EMBED_TEST_PASS_SECRET (wrangler secret put).
 		"EMBED_TEST_ORIGINS": "https://dev.trypennie.com,https://trypennie.com",
+		// The program lead token (#4389) is signed with the secret
+		// PROGRAM_LEAD_TOKEN_SECRET (wrangler secret put), and has no var here.
 		// Snowflake archival mirror (milestone #15). Non-secret connection config;
 		// the paired secret is SNOWFLAKE_PRIVATE_KEY (wrangler secret put). The
 		// export lane is a safe no-op until the private key is set, so an empty

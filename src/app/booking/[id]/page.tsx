@@ -8,6 +8,7 @@ import { existingCallForLanding, landingAttendee } from "@/lib/booking/service";
 import { readHostColours } from "@/lib/embed/host-colours";
 import { prefillFromQuery } from "@/lib/booking/book-link";
 import { landingLookupId } from "@/lib/booking/landing-identity-gate";
+import { programLeadTokenForLanding } from "@/lib/booking/program-lead-gate";
 import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
@@ -57,10 +58,14 @@ export default async function BookingPage({
   // #3508: started alongside the reads that do not depend on the routed code.
   // #1337: a lead who already has a call is offered the Move, which records a
   // mandatory reschedule reason chosen right there.
-  const [resolved, horizonDays, reasonOptions] = await Promise.all([
+  // #4389: whether this lead may book the placeholder's extra times, decided here
+  // through the same throttled id and handed to the client as a signed token, so no
+  // later request reads program_leads for an id a stranger supplies. Never throws.
+  const [resolved, horizonDays, reasonOptions, programLeadToken] = await Promise.all([
     resolveLandingCode(requestedCode, lookupId, null),
     loadBookingHorizonDays(),
     loadReasonOptions(),
+    programLeadTokenForLanding(lookupId),
   ]);
   const bucketCode = resolved.code;
 
@@ -115,6 +120,7 @@ export default async function BookingPage({
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}
         landingCall={landingCall}
+        programLeadToken={programLeadToken}
       />
     </StandaloneBookerShell>
   );

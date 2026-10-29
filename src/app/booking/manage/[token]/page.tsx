@@ -13,6 +13,7 @@ import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { rescheduleTimesFrom } from "@/lib/booking/reschedule-times-url";
 import { manageHref, rebookHref } from "@/lib/booking/book-link";
+import { programLeadMoveTokenFor } from "@/lib/booking/program-lead-gate";
 import { redirect } from "next/navigation";
 
 export const dynamic = "force-dynamic";
@@ -120,6 +121,8 @@ export default async function ManagePage({
         // #2165: the add to calendar links, from the one builder the confirm and
         // the booking lookup use (#2643). Null on a cancelled call.
         calendarLinks={bookingDetailExtras(found.booking).calendarLinks}
+        // #4389: a program lead's call may move onto the placeholder's extra times.
+        programLeadMoveToken={programLeadMoveTokenFor(found.booking)}
       />
       {/* #1041: this page is never embedded, so it never inherits a host page's
           policies. */}
