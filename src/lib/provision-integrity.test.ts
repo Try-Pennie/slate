@@ -60,10 +60,13 @@ class FakeTable {
   conflicts: string[] = [];
   private seq = 0;
 
-  constructor(
-    readonly name: string,
-    readonly keys: UniqueKey[],
-  ) {}
+  readonly name: string;
+  readonly keys: UniqueKey[];
+
+  constructor(name: string, keys: UniqueKey[]) {
+    this.name = name;
+    this.keys = keys;
+  }
 
   private violated(candidate: Row, ignoreId: unknown): string | null {
     for (const key of this.keys) {

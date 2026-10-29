@@ -17,7 +17,10 @@
  */
 import { hasOptOut as sharedHasOptOut } from "./opt-out.ts";
 
-export const BREAKING_CODES = ["TS2304", "TS2307"] as const;
+// TS1294 is syntax `erasableSyntaxOnly` refuses (an enum, a parameter property):
+// `node --experimental-strip-types`, which runs every script here, throws on it at
+// load (#4362, scripts/test-erasable-syntax-only.ts).
+export const BREAKING_CODES = ["TS2304", "TS2307", "TS1294"] as const;
 
 /** The opt-out, matching the repo's other one-line conventions. */
 export const OPT_OUT = "typecheck-ok:";
