@@ -86,6 +86,13 @@ export interface User {
   name: string | null;
   role: Role;
   google_sub: string | null;
+  /**
+   * The Microsoft account subject a coordinator signs in with (#4379, migration 0212),
+   * recorded when their first Microsoft sign in links their row (`linkCoordinator`) and
+   * compared on every request after. Null for everybody who signs in with Google.
+   * Optional in the type so a partial select or an older fixture reads as unset.
+   */
+  microsoft_sub?: string | null;
   /** Google profile picture URL from OAuth metadata; null until first login. */
   avatar_url: string | null;
   attributes: Attributes;

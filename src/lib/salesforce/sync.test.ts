@@ -15,6 +15,8 @@ vi.mock("@/lib/env", () => ({
   sfClientId: () => "cid",
   sfClientSecret: () => "sec",
   sfInstanceUrl: () => "https://sf.example",
+  // #4379: the fixtures here are on x.com, so it stands in for the company domain.
+  googleHostedDomain: () => "x.com",
 }));
 
 const sf = vi.hoisted(() => ({ fetchSfWithRetry: vi.fn() }));
@@ -334,6 +336,49 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
   it("throws when a batched agent-update write errors (fail loud, no fake success)", async () => {
     store.config.errorOn = "upsert";
     await expect(syncSalesforceAgents()).rejects.toThrow(/agent update batch failed/);
+  });
+
+  // #4379: an address outside the company domain may only be a coordinator's
+  // (users_outside_email_is_coordinator), so one such Salesforce user inserted as an
+  // agent or a manager would fail the WHOLE batch, and every hire in it with them.
+  // Left out before the write instead, and counted, so the run says so.
+  it("leaves a Salesforce user on an outside address out of the insert, and counts them", async () => {
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) {
+        return sfResponse([
+          { Email: "a@x.com", Name: "Agent A", Agent_Manager__c: "Outside Manager", HighDebt__c: true },
+          { Email: "b@x.com", Name: "Agent B", HighDebt__c: true },
+          { Email: "Contractor@Elsewhere.example", Name: "Contractor", HighDebt__c: true },
+        ]);
+      }
+      if (q.includes("Name IN (")) return sfResponse([{ Name: "Outside Manager", Email: "boss@elsewhere.example" }]);
+      return sfResponse([]);
+    });
+
+    const result = await syncSalesforceAgents();
+
+    const inserted = store.calls
+      .filter((c) => c.op === "insert" && c.table === "users")
+      .flatMap((c) => c.payload as { email: string }[]);
+    expect(inserted.map((r) => r.email)).toEqual(["b@x.com"]);
+    expect(result.outsideDomainSkipped).toBe(2);
+    // The ordinary hire beside them still arrives: one outsider no longer fails it.
+    expect(result.inserted).toBe(1);
+  });
+
+  it("refuses the run when the company domain is unknown, rather than inserting anybody", async () => {
+    await expect(
+      syncSalesforceAgents({
+        hostedDomain: () => {
+          throw new Error("GOOGLE_HOSTED_DOMAIN is not set");
+        },
+      }),
+    ).rejects.toThrow(/GOOGLE_HOSTED_DOMAIN/);
+    expect(store.calls.some((c) => c.op === "insert")).toBe(false);
   });
 
   it("throws when a grouped manager-link write errors", async () => {

@@ -136,8 +136,8 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Reminder org');
     insert into users (id, org_id, email, role, bookable) values
-      ('${AGENT}', '${ORG}', 'agent@example.com', 'agent', true),
-      ('${ADMIN}', '${ORG}', 'admin@example.com', 'admin', false);
+      ('${AGENT}', '${ORG}', 'agent@trypennie.com', 'agent', true),
+      ('${ADMIN}', '${ORG}', 'admin@trypennie.com', 'admin', false);
     ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20 }])}
     ${bucketsInsertSql([{ id: BKT, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }])}
   `);

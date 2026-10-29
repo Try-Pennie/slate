@@ -136,7 +136,7 @@ try {
   assert(applied > 170, `the schema for the person lookup: every migration applied to an empty database (${applied})`);
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Person org');
-    insert into users (id, org_id, email, role) values ('${A}', '${ORG}', 'a@example.com', 'agent');
+    insert into users (id, org_id, email, role) values ('${A}', '${ORG}', 'a@trypennie.com', 'agent');
     insert into event_types (id, org_id, name, duration_min) values ('${ET}', '${ORG}', 'Call', 20);
     insert into buckets (id, org_id, code, name, event_type_id, is_test) values
       ('${REAL}', '${ORG}', '100', 'Low', '${ET}', false),

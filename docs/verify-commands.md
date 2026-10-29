@@ -1932,12 +1932,12 @@ show that the auth server calls the function and honours its refusal, and a mock
 agree with whatever it was told (L52).
 
 `pnpm verify:auth-domain-hook` starts Supabase's own Postgres image and Supabase's own
-auth server (GoTrue) in Docker, applies the migration verbatim, registers the hook the way
-`config.toml` does, and signs up through the auth API: an outside address, a subdomain
-(`@evil.trypennie.com`) and a suffix lookalike (`@trypennie.com.evil.com`) are each
-refused with 403 and leave no `auth.users` row; a mixed case `trypennie.com` address is
-created; and, as the control, the same outside address signs up with the hook switched
-off, so the refusals are the hook's. It also checks that `anon` and `authenticated` cannot
+auth server (GoTrue) in Docker, registers the hook the way `config.toml` does, and signs
+up through the auth API. As first written (0159 alone, applied verbatim) an outside
+address and its lookalikes were refused and a mixed case `trypennie.com` address was
+created through email; since #4379 every address, `trypennie.com` included, is refused
+through email, and the cases below replace that one. As the control, the same outside
+address signs up with the hook switched off, so the refusals are the hook's. It also checks that `anon` and `authenticated` cannot
 execute the function and `supabase_auth_admin` can. It signs up by email because that is
 the route an API call can drive without a browser; the hook runs for every provider,
 Google included.
@@ -1945,9 +1945,27 @@ Google included.
 It writes nothing outside its own containers and removes them on the way out. No Docker,
 or a container that will not start, is exit 2, never a pass (L98); any failed check is
 exit 1. Measured 2026-10-03 with `supabase/postgres:17.6.1.175` and `gotrue:v2.196.0`:
-all checks passed. **Re-run it after any change to migration 0159's function.** It does
+all checks passed. **Re-run it after any change to the hook's function.** It does
 not touch production: the hosted hook is registered in the dashboard (DEPLOY.md, "Staff
 sign in: Google only").
+
+**Since #4379 (migration 0212)** the hook reads `public.users`, so the run replays EVERY
+migration into the platform image (refusing to judge an image without the default grants,
+L714) rather than applying one file. It records the event a real GoTrue signup sends
+through a capture hook, so the provider is read where GoTrue really puts it
+(`user.app_metadata.provider`), then asks the function, as `supabase_auth_admin`, the
+cases: an invited coordinator through azure allowed in any case; uninvited, deactivated,
+already linked, the invited address through email or google, trypennie.com through azure
+or email, and lookalikes refused; trypennie.com through google allowed. Through the
+server, the invited address, a trypennie.com address and outsiders each sign up by email
+and are refused with no `auth.users` row, beside the hook off control. It checks
+`users_outside_email_is_coordinator` (an active outside row must be a coordinator; a
+departed one keeps its address, and returning it as an agent is refused), and reads a
+real password session's amr claim back through `auth_sign_in_methods` as `service_role`,
+with the OAuth positive control counting an OAuth claim and nothing else. Measured
+2026-10-29: 49 checks pass. Against the earlier 0212 (a CHECK on every row, and an audit
+log read production cannot answer, since it writes no auth audit log to the database) 6
+fail; with 0212 removed from a copy of the tree (`AUTH_HOOK_MIGRATIONS_DIR`), 14 failed.
 
 # Proving the activation import's guard in a real database (`pnpm verify:replace-user-schedule-guard`)
 

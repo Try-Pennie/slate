@@ -143,10 +143,10 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Reconcile org');
     insert into users (id, org_id, email, role, bookable, deactivated_at, bookable_pending_since) values
-      ('${IN_POOL}', '${ORG}', 'a@example.com', 'agent', true, null, null),
-      ('${DEPARTED}', '${ORG}', 'b@example.com', 'agent', false, now() - interval '1 day', null),
-      ('${TAKEN_OUT}', '${ORG}', 'c@example.com', 'agent', false, null, null),
-      ('${OWED}', '${ORG}', 'd@example.com', 'agent', false, null, now() - interval '1 hour');
+      ('${IN_POOL}', '${ORG}', 'a@trypennie.com', 'agent', true, null, null),
+      ('${DEPARTED}', '${ORG}', 'b@trypennie.com', 'agent', false, now() - interval '1 day', null),
+      ('${TAKEN_OUT}', '${ORG}', 'c@trypennie.com', 'agent', false, null, null),
+      ('${OWED}', '${ORG}', 'd@trypennie.com', 'agent', false, null, now() - interval '1 hour');
     ${eventTypesInsertSql([{ id: ET, orgId: ORG, name: "Call", durationMin: 20 }])}
     insert into buckets (id, org_id, code, name, event_type_id) values ('${BKT}', '${ORG}', '100', 'Low', '${ET}');
   `);
@@ -192,7 +192,7 @@ try {
 
   // --- #4259: both sweeps over the placeholder's calls, tick after tick -----------------------
   sql(`insert into users (id, org_id, email, role, bookable, is_placeholder) values
-         ('${PLACEHOLDER}', '${ORG}', 'marcia@example.com', 'agent', false, true);`);
+         ('${PLACEHOLDER}', '${ORG}', 'marcia@trypennie.com', 'agent', false, true);`);
   // Two calls stacked at one time on the placeholder, a departed advisor's call and an in
   // pool advisor's, each with the block its create wrote, then the in pool one's lost.
   const stackedA = book(PLACEHOLDER, "13:00", "13:20", { placeholder: true });

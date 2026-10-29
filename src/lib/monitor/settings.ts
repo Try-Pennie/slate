@@ -331,7 +331,13 @@ export const ALERT_FIELDS: {
     key: "auth_sign_in_beyond_google",
     urgency: "page",
     label: "Sign in open beyond Google",
-    help: "The live Supabase Auth settings allow email sign in, or another provider can create an account, so there is a way into Slate that does not go through Google. Clears itself once the provider is turned off in the Supabase dashboard.",
+    help: "The live Supabase Auth settings allow email sign in, or a provider other than Google and Microsoft can create an account, so there is a way into Slate that does not go through either. Microsoft is how invited coordinators sign in. Clears itself once the provider is turned off in the Supabase dashboard.",
+  },
+  {
+    key: "auth_unexpected_sign_in",
+    urgency: "page",
+    label: "Sign in by an unexpected way, or an account nobody holds",
+    help: "Supabase Auth recorded a sign in in the last day by something other than Google or Microsoft, or holds an account outside trypennie.com that no active coordinator is behind. Checked once an hour from how each session was signed in and from Auth's account list. Clears itself once a day passes with no such sign in and the account is deleted.",
   },
   {
     key: "audit_log_chain_broken",
@@ -620,6 +626,10 @@ export const MONITOR_DEFAULTS = {
     // Sign in open beyond Google (#3082) persists until somebody turns the provider off
     // in the Supabase dashboard. Once a day while unchanged (#3801).
     auth_sign_in_beyond_google: CONDITION_REPEAT_MS,
+    // A sign in by an unexpected way, or an outside account nobody holds (#4379), stays
+    // until the day clears or the account goes. Once a day while unchanged (#3801); a new
+    // address or account is a change and posts at once.
+    auth_unexpected_sign_in: CONDITION_REPEAT_MS,
     // The audit log changed after it was written (#3090). Nothing heals it on its own and
     // it means a privileged role has been used against the trail. Once a day while
     // unchanged (#3801); a further broken entry is a change.

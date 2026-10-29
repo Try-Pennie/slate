@@ -66,7 +66,7 @@ function bookingRow(o: { id?: string; agent?: string; start: string; end: string
     event_type_id: ET,
     assigned_user_id: o.agent ?? A,
     agent_name: "Agent",
-    agent_email: "agent@example.com",
+    agent_email: "agent@trypennie.com",
     // As TypeScript sends them: milliseconds and a Z, never the stored rendering.
     starts_at: `${DAY}T${o.start}:00.000Z`,
     ends_at: `${DAY}T${o.end}:00.000Z`,
@@ -77,7 +77,7 @@ function bookingRow(o: { id?: string; agent?: string; start: string; end: string
     salesforce_id: null,
     attendee_name: "Dana Lead",
     attendee_first_name: "Dana",
-    attendee_email: "dana@example.com",
+    attendee_email: "dana@trypennie.com",
     attendee_phone: "+12155550100",
     prefill: { utm_source: "verify" },
     gcal_event_id: `gcal-${id}`,
@@ -94,7 +94,7 @@ function bookingRow(o: { id?: string; agent?: string; start: string; end: string
 /** A pending reservation, as insertReservation writes it before the calendar event. */
 function reservation(key: string, agent = A): string {
   return sql(`insert into booking_reservations (idempotency_key, pinned_user_id, pinned_agent_email, gcal_client_id, payload)
-    values ('${key}', '${agent}', 'agent@example.com', 'gcal-${key}', '{}'::jsonb) returning id;`);
+    values ('${key}', '${agent}', 'agent@trypennie.com', 'gcal-${key}', '{}'::jsonb) returning id;`);
 }
 
 /** The webhook as fire() builds it: event, payload, dedupe key and a decision per format. */
@@ -150,8 +150,8 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Commit org');
     insert into users (id, org_id, email, role) values
-      ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
-      ('${C}', '${ORG}', 'c@example.com', 'agent');
+      ('${A}', '${ORG}', 'a@trypennie.com', 'agent'), ('${B}', '${ORG}', 'b@trypennie.com', 'agent'),
+      ('${C}', '${ORG}', 'c@trypennie.com', 'agent');
     insert into event_types (id, org_id, name, duration_min, buffer_before_min, buffer_after_min) values ('${ET}', '${ORG}', 'Call', 20, 10, 10);
     ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }])}
     insert into webhook_endpoints (id, org_id, url, format, active, events, created_at) values

@@ -148,20 +148,20 @@ try {
   const A = { id: "00000000-0000-0000-0000-00000000000a", auth: "00000000-0000-0000-0000-0000000000a1" };
   const B = { id: "00000000-0000-0000-0000-00000000000b", auth: "00000000-0000-0000-0000-0000000000b1" };
   sql(`
-    insert into auth.users (id, email) values ('${A.auth}', 'a@example.com'), ('${B.auth}', 'b@example.com');
+    insert into auth.users (id, email) values ('${A.auth}', 'a@trypennie.com'), ('${B.auth}', 'b@trypennie.com');
     insert into organizations (id, name) values ('${ORG}', 'Replay org');
     insert into users (id, org_id, email, auth_user_id) values
-      ('${A.id}', '${ORG}', 'a@example.com', '${A.auth}'),
-      ('${B.id}', '${ORG}', 'b@example.com', '${B.auth}');
+      ('${A.id}', '${ORG}', 'a@trypennie.com', '${A.auth}'),
+      ('${B.id}', '${ORG}', 'b@trypennie.com', '${B.auth}');
   `);
   const as = (sub: string | null, text: string) =>
     sql(`${sub ? `set request.jwt.claim.sub = '${sub}';` : ""}\n${text}`, sub ? "authenticated" : "anon");
   eq(as(null, "select count(*) from users;"), "0", "anon reads no user rows");
-  eq(as(A.auth, "select string_agg(email, ',') from users;"), "a@example.com", "a signed in user reads their own row and only that one");
-  eq(as(B.auth, "select string_agg(email, ',') from users;"), "b@example.com", "and the other user reads theirs, so the policy is keyed on who is asking");
+  eq(as(A.auth, "select string_agg(email, ',') from users;"), "a@trypennie.com", "a signed in user reads their own row and only that one");
+  eq(as(B.auth, "select string_agg(email, ',') from users;"), "b@trypennie.com", "and the other user reads theirs, so the policy is keyed on who is asking");
   eq(sql("select count(*) from users;", "authenticated"), "0", "authenticated with no subject reads nothing");
-  as(A.auth, "update users set email = 'changed@example.com' where id = '" + A.id + "'; delete from users where id = '" + A.id + "';");
-  eq(sql(`select email from users where id = '${A.id}';`), "a@example.com", "a signed in user can neither update nor delete their own row");
+  as(A.auth, "update users set email = 'changed@trypennie.com' where id = '" + A.id + "'; delete from users where id = '" + A.id + "';");
+  eq(sql(`select email from users where id = '${A.id}';`), "a@trypennie.com", "a signed in user can neither update nor delete their own row");
 
   // --- no SECURITY DEFINER function a browser role can call --------------------------
   eq(
