@@ -1254,12 +1254,19 @@ median of 653ms and a p95 of 1874ms that leads felt. This check reads the databa
 memory in use (total RAM minus what Linux reports available) and swap straight from
 Supabase's privileged metrics endpoint, so the class pages on the cause rather than on the
 latency symptom. The page fires when 90% or more of memory is in use for two consecutive
-ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%.
+ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%,
+and also when committed memory reaches 95% of the kernel's commit limit (below).
 
 It first judged committed memory against the kernel's commit limit instead. That limit is
 enforced only in strict overcommit mode, which Supabase does not use, and on the Large
 instance it sits below physical RAM, so on 2026-10-29 at the 50% pilot it whispered at 80%
-committed with 78% of RAM free and no swap. Do not go back to it.
+committed with 78% of RAM free and no swap. Do not go back to it as the page.
+
+Committed memory is still read as a whisper only, at 95% of the commit limit. Supabase's
+published image leaves the kernel's default overcommit mode on, but the live database's
+mode cannot be read from here, and in strict mode it would refuse new connections at 100%
+with RAM free. If that whisper fires on its own, ask Supabase support whether
+`vm.overcommit_memory` is 2 on this project; if it is, make this figure page.
 
 **First checks.** The alert itself carries the two figures (the percent of memory in use and swap
 percent); that is the first read, not any Slate log. Confirm it against the Supabase
