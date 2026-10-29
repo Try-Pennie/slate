@@ -54,7 +54,11 @@ const TOOLS: Record<MarciaOperation, Omit<BookingTool, "name" | "gatewayMethod" 
       type: "object",
       properties: {
         time_zone: timeZone,
-        from: { type: "string", description: "Look from this date (YYYY-MM-DD in the lead's zone) instead of now." },
+        from: {
+          type: "string",
+          description:
+            "Look from this date (YYYY-MM-DD in the lead's zone) instead of now. Work it out from today as a find_times answer states it, never from your own sense of the date.",
+        },
         near: {
           type: "string",
           description:
