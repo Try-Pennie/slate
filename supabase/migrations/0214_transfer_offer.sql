@@ -14,7 +14,7 @@
 --    last reading. The "never reached the threshold across a whole business day" alarm is
 --    judged from it, and only on a day the probe measured from open to close. No lead
 --    data and nothing about any offer the page made (Slate cannot see whether a transfer
---    happened): counts and instants. Kept 30 days by the writer itself. Not mirrored to
+--    happened): counts and instants. Kept for good (Dan, 2026-10-29). Not mirrored to
 --    Snowflake.
 -- 4. record_transfer_queue_reading: the one writer of that table, one atomic upsert per
 --    reading, so two ticks overlapping (assume it runs twice) each count once and the
@@ -49,7 +49,7 @@ alter table transfer_queue_days enable row level security;
 -- reads and writes it, through the function below.
 
 comment on table transfer_queue_days is
-  'What the monitor lane''s transfer queue probe measured per business day (#4380): readings, readings at or above the threshold, the most advisors free, the first and last reading. Written only by record_transfer_queue_reading; kept 30 days.';
+  'What the monitor lane''s transfer queue probe measured per business day (#4380): readings, readings at or above the threshold, the most advisors free, the first and last reading. Written only by record_transfer_queue_reading; kept for good.';
 
 create or replace function record_transfer_queue_reading(
   p_day date,
@@ -67,7 +67,6 @@ as $$
     most_free = greatest(d.most_free, excluded.most_free),
     first_read_at = least(d.first_read_at, excluded.first_read_at),
     last_read_at = greatest(d.last_read_at, excluded.last_read_at);
-  delete from transfer_queue_days where day < p_day - 30;
 $$;
 
 revoke execute on function record_transfer_queue_reading(date, integer, boolean) from public, anon, authenticated;
