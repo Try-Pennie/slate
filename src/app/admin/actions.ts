@@ -3419,18 +3419,18 @@ export async function sendTestWebhook(
     };
   }
 
-  // The configured endpoint, read for two things: the format to build in, and
-  // the host the test may not be aimed at. `unwrap`, because a failed read
-  // resolving to null would drop the collision check, which is the one rule
-  // standing between a test send and the live destination (L345).
-  // The primary endpoint (#4381), the same row the page shows and its form saves.
+  // The primary endpoint (#4381), the same row the page shows and its form saves,
+  // read for the format to build in. `unwrap`, because a failed read resolving to
+  // null would quietly change that format.
   const endpoint = unwrap(
     await readPrimaryWebhookEndpoint(supabaseAdmin(), admin.org_id, "url, format"),
     "sendTestWebhook endpoint",
   ) as { url: string; format: WebhookFormat } | null;
 
   // Every endpoint's host is refused, not only the primary's (#4381): the dialer's
-  // lead sender is a live destination too. `unwrap` for the same reason as above.
+  // lead sender is a live destination too. `unwrap`, because a failed read
+  // resolving to an empty list would drop the collision check, which is the one
+  // rule standing between a test send and a live destination (L345).
   const liveUrls = (
     (unwrap(
       // cap-safe: webhook_endpoints is roster-bounded config, a handful of rows per org.
