@@ -281,6 +281,27 @@ describe("#4380: the live transfer offer (docs/design/coordinator-call-me-now.ht
     expect(screen.queryByRole("button", { name: "Transfer now" })).toBeNull();
   });
 
+  it("after Book another call, the next customer is looked up and asked about afresh", async () => {
+    // The reducer starts every count over on Book another call, so the component's record of
+    // what it already sent must start over too, or the next customer's first lookup and
+    // transfer check (each number 1 again) read as already sent and are never asked.
+    const done = [
+      { type: "dayChosen", date: "2026-11-19" },
+      { type: "timeChosen", start: "2026-11-19T14:00:00.000-07:00" },
+      { type: "confirmPressed" },
+      { type: "placePressed", submissionId: "sub-1", at: NOW },
+      { type: "placeAnswered", seq: 1, outcome: { kind: "booked", on: "advisor", advisorName: "Ada Example", startsAt: "2026-11-19T21:00:00.000Z", sentence: "" } },
+    ] as PageEvent[];
+    draw(stateOf(newCustomer, done));
+    fireEvent.click(screen.getByRole("button", { name: "Book another call" }));
+    actions.lookupCoordinatorCustomer.mockResolvedValue(serverAnswer);
+    actions.checkCoordinatorTransfer.mockResolvedValue({ kind: "offer", line: "786-504-0671" });
+    fireEvent.change(screen.getByLabelText("Salesforce Lead"), { target: { value: ID } });
+    await waitFor(() => expect(actions.lookupCoordinatorCustomer).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("heading", { name: "Advisors are free now" })).toBeTruthy();
+    expect(actions.checkCoordinatorTransfer).toHaveBeenCalledTimes(1);
+  });
+
   it("never asks for a state it was handed already checking, so a design frame calls nothing", async () => {
     draw(stateOf(newCustomer));
     await act(async () => {});

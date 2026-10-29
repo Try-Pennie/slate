@@ -229,6 +229,12 @@ export function CoordinatorBooking({
 
   const again = () => {
     focusNext.current = "lead";
+    // The reducer starts every count over (`initialPageState`), so what was already sent
+    // starts over too, or the next customer's first lookup, booking and transfer check,
+    // each number 1 again, would read as already sent and never be asked (#4380 review).
+    sentLookup.current = 0;
+    sentPlace.current = 0;
+    sentTransfer.current = 0;
     dispatch({ type: "again" });
   };
 
