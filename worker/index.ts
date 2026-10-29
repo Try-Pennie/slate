@@ -296,14 +296,11 @@ const worker = {
       now: () => performance.now(),
       log,
     };
-    // #4189: one public request to the Worker's own custom domain beside the lanes, so the
-    // timings line shows where a public request from this tick was placed next to where the
-    // SELF lanes ran. Started only after every lane is dispatched, never thrown, and outside
-    // the lane time the budget line reads (worker/public-probe.ts).
     // 2026-10-29: the five minute tick also starts any every minute lane that has not
     // claimed a tick in three minutes, because Cloudflare has stopped delivering the minute
     // trigger on its own (worker/lane-backstop.ts). Beside this tick's own lanes, never in
-    // front of them, and through the same SLATE_LANES_DISABLED decision.
+    // front of them, and through the same SLATE_LANES_DISABLED decision. Its check and lanes
+    // count in this tick's lane time on the timings line.
     const backstop: { summary: BackstopSummary | null } = { summary: null };
     const runBackstop = async () => {
       if (controller.cron === BACKSTOP_CRON) {
@@ -313,6 +310,11 @@ const worker = {
       }
       return [];
     };
+    // #4189: one public request to the Worker's own custom domain beside the lanes, so the
+    // timings line shows where a public request from this tick was placed next to where the
+    // SELF lanes ran. Started only after every lane of this tick is dispatched (a lane the backstop starts
+    // goes out after its check answers, so possibly after the probe), never thrown, and outside
+    // the lane time the budget line reads (worker/public-probe.ts).
     const dispatched = dispatchWithProbe(
       () =>
         Promise.all([Promise.all(paths.map((path) => runLane(path, tick, deps))), runBackstop()]).then(
