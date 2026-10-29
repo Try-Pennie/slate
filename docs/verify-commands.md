@@ -1932,12 +1932,12 @@ show that the auth server calls the function and honours its refusal, and a mock
 agree with whatever it was told (L52).
 
 `pnpm verify:auth-domain-hook` starts Supabase's own Postgres image and Supabase's own
-auth server (GoTrue) in Docker, applies the migration verbatim, registers the hook the way
-`config.toml` does, and signs up through the auth API: an outside address, a subdomain
-(`@evil.trypennie.com`) and a suffix lookalike (`@trypennie.com.evil.com`) are each
-refused with 403 and leave no `auth.users` row; a mixed case `trypennie.com` address is
-created; and, as the control, the same outside address signs up with the hook switched
-off, so the refusals are the hook's. It also checks that `anon` and `authenticated` cannot
+auth server (GoTrue) in Docker, registers the hook the way `config.toml` does, and signs
+up through the auth API. As first written (0159 alone, applied verbatim) an outside
+address and its lookalikes were refused and a mixed case `trypennie.com` address was
+created through email; since #4379 every address, `trypennie.com` included, is refused
+through email, and the cases below replace that one. As the control, the same outside
+address signs up with the hook switched off, so the refusals are the hook's. It also checks that `anon` and `authenticated` cannot
 execute the function and `supabase_auth_admin` can. It signs up by email because that is
 the route an API call can drive without a browser; the hook runs for every provider,
 Google included.

@@ -206,8 +206,8 @@ export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
 export const AUTH_SIGN_IN_VERDICT_LANE = "verdict:auth-sign-in";
 /**
  * The unexpected sign in check (#4379). Silent while nothing got past the sign in
- * controls AND while its audit read keeps failing or the audit log stops being written,
- * so only a tick that measured at least one half stamps.
+ * controls AND while its reads keep failing (the sign in method claims, the account
+ * listing, the roster), so only a tick that measured at least one half stamps.
  */
 export const AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE = "verdict:auth-unexpected-sign-in";
 export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";

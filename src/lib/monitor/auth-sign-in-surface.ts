@@ -1,10 +1,12 @@
 /**
- * Does production's Supabase Auth accept anything but Google? (#3082)
+ * Does production's Supabase Auth accept anything but Google, and Microsoft for invited
+ * coordinators? (#3082, #4379)
  *
  * Slate staff sign in with Google only. The app refuses an outside Google account in
- * the OAuth callback, and the before_user_created hook (migration 0159) refuses any new
- * account outside trypennie.com before it exists. Neither can see two settings that
- * live only in the Supabase dashboard:
+ * the OAuth callback, and the before_user_created hook (0159, replaced by 0212) refuses
+ * any new account outside trypennie.com before it exists, except an invited coordinator
+ * created through Microsoft (`azure`). Neither can see two settings that live only in
+ * the Supabase dashboard:
  *
  *   - the Email provider, which opens /signup, /recover, password and magic link sign
  *     in to anybody holding the public key, and lets an EXISTING account in without
