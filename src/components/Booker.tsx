@@ -324,6 +324,12 @@ interface BookerProps {
    * anybody can be recognised.
    */
   landingCall?: ExistingCall | null;
+  /**
+   * #4389: a signed token saying this lead is a program lead, minted on the server by
+   * `/booking/{salesforceId}` only (never `/book` or the widget). Read by the times
+   * (#4390) and the confirm (#4391); null for every other lead.
+   */
+  programLeadToken?: string | null;
 }
 
 interface AvailabilityResponse {
