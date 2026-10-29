@@ -1119,13 +1119,13 @@ describe("the copy", () => {
     { agent: "told", manager: "told" },
   );
 
-  // Dan cut the sentence saying how the calendar differs (2026-10-29); the agent's and
-  // manager's DMs still name the open hours. The exact page is pinned in
-  // scripts/test-ooo-mismatch-notice-copy.ts.
-  it("names the request and the approved window in the agent's zone", () => {
+  // Dan's layout (2026-10-29): a shortened event keeps one line naming the open hours.
+  // The exact page is pinned in scripts/test-ooo-mismatch-notice-copy.ts.
+  it("names the request, the approved window and the open span in the agent's zone", () => {
     expect(text).toContain(`${APP}/admin/ooo?request=13137fb6`);
     expect(text).toContain("Heather McLellen");
     expect(text).toContain("Approved: Wed, Oct 7 2026 from 12:00am - 11:59pm MT\n");
+    expect(text).toContain("Calendar leaves Wed, Oct 7 2026 from 12:00am - 11:30am MT open\n");
   });
 
   it("asks for the two to be made to agree EITHER way, never that the event is wrong", () => {

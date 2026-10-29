@@ -171,7 +171,7 @@ export function oooCoverageStopAlert(requestId: string, reason: string): string 
  * One approved time off whose calendar event no longer covers it (#3360). `coverage`
  * is the judge's own verdict (`event-coverage.ts`), so the DMs that describe the
  * disagreement (`mismatch-notice-copy.ts`) can never name a different one than the
- * one measured. The alerts channel page names only the approved window.
+ * one measured. The alerts channel page names the open hours of a shortened event only.
  */
 export interface OooEventMismatch {
   requestId: string;
@@ -191,16 +191,28 @@ export interface OooEventMismatch {
 
 /**
  * One request's block on the page: the approved window, then the link alone on the
- * last line, in Dan's layout (2026-10-29). It no longer says how the calendar
- * differs (missing, shortened, or only partly checked): Dan cut that sentence, and
- * the action is the same in every case. The agent's and manager's DMs
- * (`mismatch-notice-copy.ts`) still name the open hours. `reason` is the request's
- * own escalation sentence when the requests on one page reached it differently.
+ * last line, in Dan's layout (2026-10-29). Only a shortened event says how the
+ * calendar differs (the hours it leaves open); a missing or partly checked one does
+ * not, because Dan cut that sentence. `reason` is the request's own escalation
+ * sentence when the requests on one page reached it differently, and follows the
+ * open hours.
  */
 function mismatchBlock(f: OooEventMismatch, appBaseUrl: string, reason: string | null): string {
-  const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, f.displayTzLabel ?? undefined);
+  const label = f.displayTzLabel ?? undefined;
+  const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, label);
+  // Dan (2026-10-29): a shortened event alone keeps one line, naming the hours it
+  // leaves open, with no full stop. A missing or partly checked one says nothing more.
+  const open =
+    f.coverage.kind === "uncovered"
+      ? `Calendar leaves ${f.coverage.spans
+          .map((s) =>
+            formatWhenLine(new Date(s.startMs).toISOString(), new Date(s.endMs).toISOString(), f.displayTzId, label),
+          )
+          .join(" and ")} open`
+      : null;
   return [
     `Approved: ${approved}`,
+    ...(open === null ? [] : [open]),
     ...(reason === null ? [] : [reason]),
     `${appBaseUrl}/admin/ooo?request=${f.requestId}`,
   ].join("\n");
