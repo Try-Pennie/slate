@@ -18,7 +18,8 @@
 //   4. The SQL function deletes by prefix plus a colon and by the database's own
 //      clock, under the pinned search_path every Slate function carries.
 //   5. The window counters (`boundary_count`, `unrecognised_page_count`, #3176,
-//      and `opaque_script_error_address`, `opaque_script_error_count`, #3323)
+//      `opaque_script_error_address`, `opaque_script_error_count`, #3323, and
+//      `unattributed_rejection_address`, `unattributed_rejection_count`)
 //      are pruned as a group of their own, aged from THEIR window rather than the
 //      limiters', and their key space is named in one place so the prune and the
 //      writer cannot drift apart.

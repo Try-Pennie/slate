@@ -413,6 +413,17 @@ import { assert, eq, finish } from "./lib/harness.ts";
     "a Slate page as the file",
   );
 
+  // A stack cut at FIELD_LIMITS.stack may have lost the frames that name Slate's
+  // bundle, so extension frames at its head excuse nothing.
+  const LONG_EXTENSION_STACK = `${METAMASK_STACK}\n`.repeat(30) + SLATE_FRAME;
+  const cut = report({ stack: LONG_EXTENSION_STACK });
+  assert(cut.stack!.length === FIELD_LIMITS.stack && !cut.stack!.includes("slate.trypennie.app"), "fixture: the cap cut the Slate frame off");
+  eq(
+    whereClientErrorCameFrom(cut),
+    { from: "other_location" },
+    "a stack cut at its cap is never excused as an extension's, since the cut may have taken Slate's frames",
+  );
+
   // Nothing named at all: no file and no frame. Not excused as an extension's,
   // because nothing says it was; the route decides what that costs.
   eq(whereClientErrorCameFrom(report()), { from: "no_location" }, "no stack and no file names nowhere");

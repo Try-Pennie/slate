@@ -306,6 +306,8 @@ export const EXTENSION_SCHEME = /^(chrome|moz|safari|safari-web|ms-browser)-exte
  *  - `other_location`: it names at least one location that is NOT an extension's,
  *    which is Slate's own bundle or anything else on the page. Slate's code may be
  *    at fault, so it is never excused, even beside extension frames.
+ *    A stack long enough to have been cut at `FIELD_LIMITS.stack` is never excused
+ *    either, since the cut may have taken Slate's frames.
  *  - `no_location`: it names nowhere at all (no file, and no frame with a position).
  *    Not excused as an extension's, because nothing says it was; the route decides
  *    what that costs.
@@ -340,6 +342,9 @@ export function whereClientErrorCameFrom(report: Pick<ClientErrorReport, "source
   const locations = reportLocations(report);
   if (locations.length === 0) return { from: "no_location" };
   if (!locations.every((l) => EXTENSION_SCHEME.test(l))) return { from: "other_location" };
+  // A stack at its cap was probably cut by `normalizeClientError`, and the cut may
+  // have taken the frames naming Slate's bundle, so what is left excuses nothing.
+  if ((report.stack?.length ?? 0) >= FIELD_LIMITS.stack) return { from: "other_location" };
   const scheme = /^[a-z-]+/i.exec(locations[0]!)?.[0] ?? "extension";
   return { from: "extension", scheme: scheme.toLowerCase() };
 }
