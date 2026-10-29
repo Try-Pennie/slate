@@ -756,10 +756,6 @@ export interface Database {
         };
         Returns: string | null;
       };
-      /**
-       * #4202, migration 0208: commit_reschedule for a move onto the placeholder advisor,
-       * written staff_placed and stacking. Refuses any other target (22023).
-       */
       /** #4387: register a Lead for the program, or extend its mark; returns when it lapses. */
       register_program_lead: {
         Args: { p_lead_key: string; p_caller: string };
@@ -780,6 +776,10 @@ export interface Database {
         Args: { p_from: string; p_to: string };
         Returns: { call_day: string; held: number }[];
       };
+      /**
+       * #4202, migration 0208: commit_reschedule for a move onto the placeholder advisor,
+       * written staff_placed and stacking. Refuses any other target (22023).
+       */
       commit_reschedule_onto_placeholder: {
         Args: {
           p_booking_id: string;

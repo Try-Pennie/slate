@@ -23,7 +23,7 @@
 // (the DB replay workflow also runs it, with every other scripts/verify-*-sql.ts)
 import { join } from "node:path";
 import { firstErrorLine, replayEveryMigration, startThrowawayPostgres } from "./lib/throwaway-postgres.ts";
-import { bookingInsertSql, bucketsInsertSql, callEventTypeSql, sqlLiteral } from "./lib/seed-sql.ts";
+import { bookingInsertSql, realAndTestBucketsSql, callEventTypeSql, sqlLiteral } from "./lib/seed-sql.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
 const DIR = join(import.meta.dirname, "..", "supabase", "migrations");
@@ -116,8 +116,7 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Booking org'), ('${ORG2}', 'Other org');
     ${callEventTypeSql(ORG, ET)}
-    ${bucketsInsertSql([{ id: B100, orgId: ORG, code: "100", name: "Low", eventTypeId: ET }, { id: BTEST, orgId: ORG, code: "T100", name: "Test", eventTypeId: ET }])}
-    update buckets set is_test = true where id = '${BTEST}';
+    ${realAndTestBucketsSql(ORG, ET, B100, BTEST)}
   `);
   const P = user(ORG, { placeholder: true });
   const PT = user(ORG, { placeholder: true, test: true });
