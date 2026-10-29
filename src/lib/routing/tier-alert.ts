@@ -52,8 +52,11 @@ export function tierFallbackAlert(input: {
   // cascade stopping at Medium and skipping anybody who also carries Low (#2842).
   // There are six Ultra advisors, so inside a three day window this is ordinary
   // routing, and a page per booking reporting it is the alert nobody reads by the
-  // second week (L36). It is counted once a day on the info channel instead,
-  // `top_tier_cascade_rate` in `src/lib/monitor/top-tier-cascade.ts`.
+  // second week (L36). Dan removed even the daily count of them on 2026-10-29.
+  // A placement OUTSIDE the rule (below Medium, or an advisor who also carries Low)
+  // pages from the monitor lane, `top_tier_forbidden_placement` in
+  // `src/lib/monitor/top-tier-placement.ts`, because this function sees only codes,
+  // and a pair the ladder cannot produce returns null below.
   //
   // The ladder already refuses to go lower than the floor, so any pair that gets
   // this far is inside the rule. What is genuinely wrong for these leads, every

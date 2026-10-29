@@ -294,9 +294,6 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // #3660: an event may still be standing on a calendar, so it is a protection doubt,
   // not a fact only worth knowing.
   ooo_undo_unchecked: "time-off-cover-or-protection-is-in-doubt",
-  // #2843: sales ops made the Ultra High and Very High cascade ordinary routing on
-  // 2026-09-28, so the number is put on the record and nobody is sent to act on it.
-  top_tier_cascade_rate: "something-was-measured-and-is-only-worth-knowing",
   owner_notice_withheld: "something-was-measured-and-is-only-worth-knowing",
   // #3141: the cron CPU check cannot run without its optional token. An info line,
   // so it sits with the other things only worth knowing rather than with the pages.
@@ -380,6 +377,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // landed, so the first thing to establish is the same as for a misroute: which
   // of the two is right, and whether the call has to move.
   booking_below_lead_tier: "the-roster-or-routing-data-is-wrong",
+  // #2842. A top tier lead's call landed below Medium or with an advisor who also
+  // carries Low. The first question is a misroute's: where should the call be, and
+  // what in the routing put it here.
+  top_tier_forbidden_placement: "the-roster-or-routing-data-is-wrong",
   // #2933. A lead reached both bookers during the split, so the first question is
   // the same as a misroute's: which call is the right one, and which has to go.
   cross_system_booking: "the-roster-or-routing-data-is-wrong",

@@ -36,14 +36,14 @@ for (const pair of [
   );
 }
 
-// --- a top tier lead's cascade: counted, never paged (#2843) ---
+// --- a top tier lead's cascade: never paged (#2843) ---
 //
 // Sales ops decided on 2026-09-28 (Slack #C091G6LEQ80, p1790609176877419) that an
 // Ultra High or Very High lead SHOULD be cascaded rather than booked days out, as
 // far as Medium. There are six Ultra advisors, so with a three day window that is
 // ordinary routing, and a page per booking reporting it would be the alert nobody
-// reads by the second week (L36). It is counted once a day instead
-// (`top_tier_cascade_rate`, src/lib/monitor/top-tier-cascade.ts).
+// reads by the second week (L36). Only a placement OUTSIDE the rule pages, from the
+// monitor lane (`top_tier_forbidden_placement`, src/lib/monitor/top-tier-placement.ts).
 for (const code of ["511", "522", "531", "412", "421", "430"]) {
   for (const rung of tierLadder(code).slice(1)) {
     if (rung[0] === code[0]) continue;

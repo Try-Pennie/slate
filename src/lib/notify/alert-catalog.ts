@@ -844,6 +844,18 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "call comes right and goes wrong again (`CHANGE_ONLY_KEYS`, Dan 2026-10-26).",
   },
   {
+    key: "top_tier_forbidden_placement:*",
+    kind: "incident",
+    suffix: "booking",
+    why:
+      "One Ultra High or Very High lead was booked where sales ops' cascade rule " +
+      "(2026-09-28, #2842) never allows: below Medium, or below their own tier with an " +
+      "advisor who also carries Low. The booking already happened, and whoever moves " +
+      "the call knows it is done, so there is no healthy state to announce. It posts " +
+      "once per booking: the cooldown outlasts the day the monitor lane reads back. " +
+      "A cascade inside the rule sends nothing (Dan, 2026-10-29).",
+  },
+  {
     key: "cross_system_booking:*",
     kind: "condition",
     suffix: "booking",
@@ -1487,17 +1499,6 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "notice step records. Nothing is asked at once: the reassigns went through, and " +
       "a waiting handoff already pages. It is a count over a week that has passed, so " +
       "there is no state to end, and a week with none sends nothing.",
-  },
-  {
-    key: "top_tier_cascade_rate",
-    kind: "info",
-    why:
-      "The daily count of Ultra High and Very High leads taken by a lower tier (#2843), " +
-      "which replaced the per booking tier_fallback pages for those leads. Sales ops " +
-      "decided on 2026-09-28 that these leads are cascaded rather than booked days out " +
-      "(as far as Medium, never to a Low carrier), so a cascade is the rule working and " +
-      "nothing is asked of the reader. There is no condition to end: a day with no " +
-      "cascade simply sends nothing.",
   },
   {
     key: "ooo_coverage_gap_later",
