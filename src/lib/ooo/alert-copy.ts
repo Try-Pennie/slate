@@ -190,6 +190,21 @@ export interface OooEventMismatch {
 }
 
 /**
+ * The hours a shortened event leaves open, in the request's zone, joined with "and".
+ * Shared by the alerts channel page and the agent's and manager's DMs
+ * (`mismatch-notice-copy.ts`), so both name the same hours the same way.
+ */
+export function openSpansText(
+  spans: { startMs: number; endMs: number }[],
+  tzId: string,
+  tzLabel: string | undefined,
+): string {
+  return spans
+    .map((s) => formatWhenLine(new Date(s.startMs).toISOString(), new Date(s.endMs).toISOString(), tzId, tzLabel))
+    .join(" and ");
+}
+
+/**
  * One request's block on the page: the approved window, then the link alone on the
  * last line, in Dan's layout (2026-10-29). Only a shortened event says how the
  * calendar differs (the hours it leaves open); a missing or partly checked one does
@@ -203,13 +218,7 @@ function mismatchBlock(f: OooEventMismatch, appBaseUrl: string, reason: string |
   // Dan (2026-10-29): a shortened event alone keeps one line, naming the hours it
   // leaves open, with no full stop. A missing or partly checked one says nothing more.
   const open =
-    f.coverage.kind === "uncovered"
-      ? `Calendar leaves ${f.coverage.spans
-          .map((s) =>
-            formatWhenLine(new Date(s.startMs).toISOString(), new Date(s.endMs).toISOString(), f.displayTzId, label),
-          )
-          .join(" and ")} open`
-      : null;
+    f.coverage.kind === "uncovered" ? `Calendar leaves ${openSpansText(f.coverage.spans, f.displayTzId, label)} open` : null;
   return [
     `Approved: ${approved}`,
     ...(open === null ? [] : [open]),
