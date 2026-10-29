@@ -262,9 +262,11 @@ const from = vi.hoisted(() =>
       // test double, where it would have made the guard pass on the bug (L143).
       then: (resolve: (v: unknown) => unknown) =>
         Promise.resolve({
+          // A table seeded with one row object still answers a LIST read as a list,
+          // as PostgREST does (#4381: the test send reads every endpoint's url).
           data: dbState.errorByTable[_table]
             ? null
-            : (dbState.rowsByTable[_table] ?? []),
+            : [dbState.rowsByTable[_table] ?? []].flat(),
           error: dbState.errorByTable[_table] ?? null,
         }).then(resolve),
       update,

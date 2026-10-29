@@ -21,7 +21,7 @@ import type { WebhookEndpoint } from "@/lib/db/types";
 const LIVE = "https://events.regalvoice.com/events";
 
 /** The refusal message, or "" when the target is accepted. */
-const why = (t: string, configured: string | null = LIVE) => testSendTargetError(t, configured) ?? "";
+const why = (t: string, configured: readonly string[] = [LIVE]) => testSendTargetError(t, configured) ?? "";
 
 // --- a good target is accepted, or every refusal below proves nothing --------
 assert(
@@ -107,8 +107,14 @@ assert(
   "the host match ignores case, which a URL's host is anyway",
 );
 assert(
-  why("https://webhook.site/x", null) === "",
+  why("https://webhook.site/x", []) === "",
   "with no endpoint configured there is nothing to collide with",
+);
+// #4381: an org can hold a second live endpoint (the dialer's lead sender), and
+// its host is a real destination too, so it is refused like the primary.
+assert(
+  why("https://queues.example.com/scratch", [LIVE, "https://queues.example.com/sender"]) !== "",
+  "the host of ANY live endpoint is refused, not only the primary one",
 );
 // A malformed stored URL is accepted rather than refused, deliberately: a URL
 // `new URL()` cannot read is not a reachable destination either, since `emit`

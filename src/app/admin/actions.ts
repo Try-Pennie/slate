@@ -3429,7 +3429,17 @@ export async function sendTestWebhook(
     "sendTestWebhook endpoint",
   ) as { url: string; format: WebhookFormat } | null;
 
-  const refusal = testSendTargetError(target, endpoint?.url ?? null);
+  // Every endpoint's host is refused, not only the primary's (#4381): the dialer's
+  // lead sender is a live destination too. `unwrap` for the same reason as above.
+  const liveUrls = (
+    (unwrap(
+      // cap-safe: webhook_endpoints is roster-bounded config, a handful of rows per org.
+      await supabaseAdmin().from("webhook_endpoints").select("url").eq("org_id", admin.org_id),
+      "sendTestWebhook live endpoints",
+    ) ?? []) as { url: string }[]
+  ).map((e) => e.url);
+
+  const refusal = testSendTargetError(target, liveUrls);
   if (refusal) return { error: refusal, sent: null };
 
   const format: WebhookFormat = endpoint?.format ?? "regal";
