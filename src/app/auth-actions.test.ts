@@ -17,6 +17,7 @@ const store = vi.hoisted(() => {
   return {
     map,
     getAll: vi.fn(() => [...map.values()]),
+    get: vi.fn((name: string) => map.get(name)),
     delete: vi.fn((name: string) => map.delete(name)),
   };
 });
@@ -29,6 +30,7 @@ const warn = vi.fn();
 vi.mock("@/lib/log", () => ({ log: { warn: (...a: unknown[]) => warn(...a) } }));
 
 import { signOut } from "@/app/auth-actions";
+import { LAST_SIGN_IN_PAGE_COOKIE } from "@/lib/auth/sign-in-page";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -69,6 +71,26 @@ describe("signOut (#1031)", () => {
     expect(deleted).toContain("slate_impersonate");
     expect(deleted).toContain("slate-theme");
     expect(warn).toHaveBeenCalledTimes(1);
+    expect(redirect).toHaveBeenCalledWith("/login");
+  });
+
+  // #4398: a coordinator who signs in with Microsoft and signs out must land on the page they
+  // can sign back in on, not /login, whose only button is Google. The record of which page
+  // this browser last signed in on is kept: it says which page to show, and lets nobody in.
+  it("lands a browser that last signed in on the partner page back there, and keeps that record", async () => {
+    store.map.set(LAST_SIGN_IN_PAGE_COOKIE, { name: LAST_SIGN_IN_PAGE_COOKIE, value: "partner" });
+
+    await signOut();
+
+    expect(redirect).toHaveBeenCalledWith("/partner/sign-in");
+    expect(store.delete.mock.calls.map((c) => c[0])).not.toContain(LAST_SIGN_IN_PAGE_COOKIE);
+  });
+
+  it("lands on /login when that record is anything but exactly partner", async () => {
+    store.map.set(LAST_SIGN_IN_PAGE_COOKIE, { name: LAST_SIGN_IN_PAGE_COOKIE, value: "https://evil.example" });
+
+    await signOut();
+
     expect(redirect).toHaveBeenCalledWith("/login");
   });
 });

@@ -18,7 +18,13 @@ import {
   type SessionAgeRefusal,
 } from "@/lib/auth/session-age";
 import { log } from "@/lib/log";
-import { isSignInPath } from "@/lib/auth/sign-in-page";
+import {
+  LAST_SIGN_IN_PAGE_COOKIE,
+  PARTNER_SIGN_IN_PATH,
+  isSignInPath,
+  signInPageFromCookie,
+  signInPathForBrowser,
+} from "@/lib/auth/sign-in-page";
 import {
   buildContentSecurityPolicy,
   cspNonce,
@@ -141,6 +147,24 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
     if (!verdict.admit) return endAgedSession(request, verdict.reason, policy);
   }
 
+  // #4398: a visit carrying no session at all, from a browser whose last sign in was a
+  // coordinator's Microsoft one, goes to the partner sign in page. The pages themselves
+  // send a signed out visit to /login, whose only button is Google, so a coordinator could
+  // not get back in. Without that record nothing happens here and the page redirects to
+  // /login exactly as before, so staff (whose Google sign in clears it) see no change. Only
+  // the absence of any session cookie counts as signed out: whether a session that IS
+  // present lets anybody in stays the session gate's decision, never this hint's. The root
+  // is included because it is the bare address, and it too sends a signed out visit to sign in.
+  const pathname = request.nextUrl.pathname;
+  if (
+    (staff || pathname === "/") &&
+    !isSignInPath(pathname) &&
+    !hasSupabaseSessionCookie(request.cookies.getAll().map((c) => c.name)) &&
+    signInPageFromCookie(request.cookies.get(LAST_SIGN_IN_PAGE_COOKIE)?.value) === "partner"
+  ) {
+    return signInRedirect(new URL(PARTNER_SIGN_IN_PATH, request.url), policy);
+  }
+
   let response = NextResponse.next({ request: { headers: requestHeaders } });
   let sessionLive = false;
 
@@ -230,11 +254,12 @@ async function endAgedSession(
   reason: SessionAgeRefusal,
   policy: string,
 ): Promise<NextResponse> {
-  const to = new URL("/login", request.url);
+  // #4398: back to the page this browser last signed in on, so a coordinator who signs in
+  // with Microsoft is not sent to /login, whose only button is Google. The record itself is
+  // kept (it is not a session cookie), so the page they sign in on next is still right.
+  const to = new URL(signInPathForBrowser(request.cookies.get(LAST_SIGN_IN_PAGE_COOKIE)?.value), request.url);
   to.searchParams.set("error", sessionRefusalLoginError(reason));
-  // 303 rather than the default 307: a server action is a POST, and a 307 would have
-  // the browser repeat it against /login. 303 makes any method a GET of the page.
-  const res = NextResponse.redirect(to, 303);
+  const res = signInRedirect(to, policy);
   log.warn("auth", { msg: "session past its age limit, signing out", reason });
 
   try {
@@ -258,6 +283,16 @@ async function endAgedSession(
   for (const name of sessionCookiesToClear(request.cookies.getAll().map((c) => c.name))) {
     res.cookies.set(name, "", { ...serverAuthCookieOptions(), maxAge: 0 });
   }
+  return res;
+}
+
+/**
+ * A redirect to a sign in page, still a staff response: the framing rule and the policy go on
+ * it as on any staff page. 303 rather than the default 307: a server action is a POST, and a
+ * 307 would have the browser repeat it against the sign in page. 303 makes any method a GET.
+ */
+function signInRedirect(to: URL, policy: string): NextResponse {
+  const res = NextResponse.redirect(to, 303);
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     res.headers.set(name, value);
   }

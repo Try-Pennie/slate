@@ -7,6 +7,7 @@ import { IMPERSONATE_COOKIE } from "@/lib/auth/impersonation";
 import { log } from "@/lib/log";
 import { THEME_COOKIE } from "@/lib/theme/boot";
 import { SESSION_STAMP_COOKIES } from "@/lib/auth/session-age";
+import { LAST_SIGN_IN_PAGE_COOKIE, signInPathForBrowser } from "@/lib/auth/sign-in-page";
 
 /**
  * End the current staff session (#1031). Before this there was no sign-out
@@ -39,5 +40,8 @@ export async function signOut(): Promise<void> {
   store.delete(THEME_COOKIE);
   // #3084: the session's age stamps, so nothing of this sign in outlives it.
   for (const name of SESSION_STAMP_COOKIES) store.delete(name);
-  redirect("/login");
+  // #4398: to the sign in page this browser last signed in on, so a coordinator lands where
+  // they can sign back in, not on /login, whose only button is Google. That record is left in
+  // place: it only says which page to show, and lets nobody in.
+  redirect(signInPathForBrowser(store.get(LAST_SIGN_IN_PAGE_COOKIE)?.value));
 }
