@@ -29,19 +29,28 @@ vi.mock("@/lib/calcom/retirement", async (orig) => ({
 }));
 // Every lane stamped this instant unless a test has pinned its last stamp here.
 const stamps = vi.hoisted(() => new Map<string, number>());
+// Set to make every heartbeat read fail, the watchdog's and the fold's alike.
+const heartbeatRead = vi.hoisted(() => ({ fails: false }));
 vi.mock("@/lib/monitor/heartbeat", async (orig) => ({
   ...(await orig<typeof import("@/lib/monitor/heartbeat")>()),
-  readAllHeartbeatMs: async () =>
-    new Proxy({} as Record<string, number | null>, {
+  readAllHeartbeatMs: async () => {
+    if (heartbeatRead.fails) throw new Error("heartbeat bulk read failed: connection reset");
+    return new Proxy({} as Record<string, number | null>, {
       get: (_t, lane) => (typeof lane === "string" && stamps.has(lane) ? (stamps.get(lane) as number) : Date.now()),
-    }),
+    });
+  },
 }));
 
-import { alertStateRows, refusedAlertStateReads } from "@/lib/notify/alert-state-fake.test-support";
+import {
+  alertStateRows,
+  refusedAlertStateReads,
+  refusedAlertStateWrites,
+} from "@/lib/notify/alert-state-fake.test-support";
 import { resolveAlert, sendThrottledAlert, firingKey, resetRepeatColumnsProbe } from "@/lib/notify/dispatch";
 import { MONITOR_DEFAULTS } from "@/lib/monitor/settings";
 import { REFUSAL_ALERT_KEY, runCiHealthCheck, type WorkflowRunSummary } from "@/lib/monitor/github-ci-health";
 import { alertOnStaleLanes } from "@/lib/monitor/lane-watchdog";
+import { runSyncStalenessCheck, SYNC_STALENESS_THRESHOLD_MS, type SyncAgentStaleness } from "@/lib/monitor/sync-staleness";
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -52,7 +61,9 @@ const CANARY_BOUND = 90 * MIN;
 beforeEach(() => {
   alertStateRows.clear();
   refusedAlertStateReads.clear();
+  refusedAlertStateWrites.clear();
   stamps.clear();
+  heartbeatRead.fails = false;
   resetRepeatColumnsProbe();
   posted.length = 0;
   process.env.SLACK_ALERTS_CHANNEL = "C-alerts";
@@ -243,5 +254,243 @@ describe("the fold's edges (#3802)", () => {
     vi.setSystemTime(T0 + 2 * HOUR + CANARY_BOUND + 10 * MIN);
     await Promise.all([alertOnStaleLanes(), alertOnStaleLanes()]);
     expect(posted.filter(isCanary)).toHaveLength(1);
+  });
+});
+
+// 2026-10-29, 05:06 ET: five core cron lanes, sync among them, had stopped together at
+// about 04:52, and one monitor tick posted two pages for it: "4 bookable agent(s) have not
+// been calendar-synced in over 15 min" three seconds before "5 cron lanes have not run for
+// 14 minutes". A stopped sync lane makes every advisor's calendar go stale by construction,
+// so the stale sync page waits while the lanes' page is firing AND the sync lane is still
+// past its bound. Sync running with advisors stale is the rotation's own fault, and posts.
+describe("a stopped sync lane explains the stale calendar sync page", () => {
+  const STOPPED = Date.UTC(2026, 9, 29, 8, 52); // 04:52 ET
+  const FIRST_TICK = Date.UTC(2026, 9, 29, 9, 1); // 05:01 ET, the tick before the pages
+  const CORE = ["sync", "recompute", "outbox", "selfheal", "reroute-hold-sweep"];
+  // The four advisors were last synced two minutes before the lanes stopped.
+  let lastSynced = STOPPED - 2 * MIN;
+  const advisors = (): SyncAgentStaleness[] =>
+    ["a", "b", "c", "d"].map((id) => ({
+      id,
+      name: `Advisor ${id.toUpperCase()}`,
+      email: `${id}@example.test`,
+      lastSyncedMs: lastSynced,
+      rotationSinceMs: STOPPED - 30 * 24 * HOUR,
+      hasRecordedFailure: false,
+    }));
+  const syncStalenessCheck = () =>
+    runSyncStalenessCheck({
+      loadAgents: async () => advisors(),
+      nowMs: Date.now(),
+      notify: sendThrottledAlert,
+      resolve: resolveAlert,
+      cooldownMs: MONITOR_DEFAULTS.cooldownMs.sync_staleness,
+    });
+  /** One monitor tick, in the order the monitor lane runs them: the watchdog first. */
+  const monitorTick = async () => {
+    await alertOnStaleLanes();
+    await syncStalenessCheck();
+  };
+  const isLanes = (t: string) => /cron lanes? (have|has) not run|cron lanes are all running again|the sync cron lane/i.test(t);
+  const isStaleSync = (t: string) => /calendar-synced|calendar sync rotation has caught up/i.test(t);
+  /** Every post from 05:01 ET for `minutes`, tagged with minutes past 05:01. */
+  async function morning(minutes: number, step: (min: number) => void) {
+    const out: { min: number; text: string }[] = [];
+    for (let m = 0; m <= minutes; m += 5) {
+      vi.setSystemTime(FIRST_TICK + m * MIN);
+      step(m);
+      const before = posted.length;
+      await monitorTick();
+      for (let i = before; i < posted.length; i++) out.push({ min: m, text: posted[i] });
+    }
+    return out;
+  }
+  const stopLanes = (lanes: string[]) => {
+    for (const lane of lanes) stamps.set(lane, STOPPED);
+  };
+  const startLanes = (lanes: string[]) => {
+    for (const lane of lanes) stamps.delete(lane);
+  };
+
+  beforeEach(() => {
+    lastSynced = STOPPED - 2 * MIN;
+  });
+
+  it("the morning of 2026-10-29: one lanes page, which says calendars are going stale, and no stale sync page", async () => {
+    stopLanes(CORE);
+    const out = await morning(60, (m) => {
+      // Cloudflare runs the lanes again at 05:31 and the rotation catches up at once.
+      if (m >= 30) {
+        startLanes(CORE);
+        lastSynced = Date.now();
+      }
+    });
+    expect(out.filter((p) => isStaleSync(p.text))).toEqual([]);
+    const lanes = out.filter((p) => isLanes(p.text));
+    expect(lanes.map((p) => p.min)).toEqual([5, 30]);
+    expect(lanes[0].text).toMatch(/5 cron lanes have not run/);
+    // The consequence the stale sync page carried is said once, on the page that posted.
+    expect(lanes[0].text).toMatch(/advisors' calendars/i);
+    // It was still judged and the hold recorded, never skipped.
+    expect(out).toHaveLength(2);
+  });
+
+  it("FAILURE PATH: sync running with advisors stale posts at once, even while another lane's page fires", async () => {
+    // Only outbox has stopped, so the lanes' page fires, but the sync lane is stamping:
+    // the rotation is skipping these advisors on its own, which nothing else reports.
+    stopLanes(["outbox"]);
+    const out = await morning(15, () => {});
+    expect(out.filter((p) => isLanes(p.text)).map((p) => p.min)).toEqual([5]);
+    expect(out.filter((p) => isStaleSync(p.text)).map((p) => p.min)).toEqual([5]);
+  });
+
+  it("the lanes recovering with advisors still stale: the stale sync page posts one threshold after", async () => {
+    stopLanes(CORE);
+    // The lanes run again at 05:31, but the rotation never reaches these advisors.
+    const out = await morning(70, (m) => {
+      if (m >= 30) startLanes(CORE);
+    });
+    const recovered = FIRST_TICK + 30 * MIN;
+    expect(out.filter((p) => isLanes(p.text)).map((p) => p.min)).toEqual([5, 30]);
+    const stale = out.filter((p) => isStaleSync(p.text));
+    expect(stale).toHaveLength(1);
+    const postedAt = FIRST_TICK + stale[0].min * MIN;
+    expect(postedAt).toBeGreaterThanOrEqual(recovered + SYNC_STALENESS_THRESHOLD_MS);
+    expect(postedAt).toBeLessThanOrEqual(recovered + SYNC_STALENESS_THRESHOLD_MS + 10 * MIN);
+    expect(stale[0].text).toMatch(/4 bookable agent\(s\) have not been calendar-synced/);
+  });
+
+  it("sync running again while other lanes stay stopped: the stale sync page stops waiting on the lanes' page", async () => {
+    stopLanes(CORE);
+    // Sync alone comes back at 05:31; the other four stay stopped, so the lanes' page
+    // keeps firing for a day. The advisors stay stale: the rotation is broken too.
+    const out = await morning(70, (m) => {
+      if (m >= 30) startLanes(["sync"]);
+    });
+    const stale = out.filter((p) => isStaleSync(p.text));
+    expect(stale).toHaveLength(1);
+    const postedAt = FIRST_TICK + stale[0].min * MIN;
+    const back = FIRST_TICK + 30 * MIN;
+    expect(postedAt).toBeGreaterThanOrEqual(back + SYNC_STALENESS_THRESHOLD_MS);
+    expect(postedAt).toBeLessThanOrEqual(back + SYNC_STALENESS_THRESHOLD_MS + 10 * MIN);
+    // The lanes' page is still firing: it has not cleared.
+    expect(out.filter((p) => /running again/.test(p.text))).toEqual([]);
+  });
+
+  it("a heartbeat read that fails while the lanes' page fires never suppresses the stale sync page", async () => {
+    stopLanes(CORE);
+    const out = await morning(10, (m) => {
+      // The lanes' page posted at 05:06; from 05:11 nothing can say whether sync runs.
+      if (m >= 10) heartbeatRead.fails = true;
+    });
+    expect(out.filter((p) => isLanes(p.text)).map((p) => p.min)).toEqual([5]);
+    expect(out.filter((p) => isStaleSync(p.text)).map((p) => p.min)).toEqual([10]);
+  });
+
+  // Item 4 measured the tail on 2026-10-29: the lanes cleared at 05:07:28 (the sync lane's
+  // own watchdog, every minute) and the advisors were all current only by 05:11:21. Here
+  // the lanes' page posts while the advisors are still under the threshold, so nothing is
+  // held before the clear, and the 05:11 tick catches them mid catch up.
+  it("the catch up after the lanes recover never posts as a fresh stale sync page", async () => {
+    const stoppedAt = Date.UTC(2026, 9, 29, 8, 53); // 04:53 ET
+    stopLanes(CORE.map((l) => l));
+    for (const l of CORE) stamps.set(l, stoppedAt);
+    lastSynced = stoppedAt - MIN; // 14 minutes old at 05:06: under the threshold
+    const at = (h: number, m: number, sec = 0) => Date.UTC(2026, 9, 29, h, m, sec);
+    const before = posted.length;
+    vi.setSystemTime(at(9, 1));
+    await monitorTick();
+    vi.setSystemTime(at(9, 6));
+    await monitorTick();
+    // The every minute trigger is back: the sync lane's watchdog clears the lanes' page.
+    vi.setSystemTime(at(9, 7, 28));
+    startLanes(CORE);
+    await alertOnStaleLanes();
+    // 05:11: the rotation has not reached these four yet (19 minutes old).
+    vi.setSystemTime(at(9, 11));
+    await monitorTick();
+    // 05:16: caught up.
+    vi.setSystemTime(at(9, 16));
+    lastSynced = at(9, 11, 21);
+    await monitorTick();
+    const out = posted.slice(before);
+    expect(out.filter(isStaleSync)).toEqual([]);
+    expect(out.filter(isLanes)).toHaveLength(2);
+  });
+
+  /**
+   * The catch up timeline above with a hook at the clear: the lanes' page posts at 05:06
+   * with advisors under the threshold, clears at 05:07:28, and the 05:11 tick finds the
+   * four still stale. Returns every post from 05:01.
+   */
+  async function catchUp(atClear: () => void) {
+    const stoppedAt = Date.UTC(2026, 9, 29, 8, 53);
+    for (const l of CORE) stamps.set(l, stoppedAt);
+    lastSynced = stoppedAt - MIN;
+    const before = posted.length;
+    for (const m of [1, 6]) {
+      vi.setSystemTime(Date.UTC(2026, 9, 29, 9, m));
+      await monitorTick();
+    }
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 7, 28));
+    startLanes(CORE);
+    atClear();
+    await alertOnStaleLanes();
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 11));
+    await monitorTick();
+    return posted.slice(before);
+  }
+
+  it("FAILURE PATH: the lanes' page subjects unreadable at the clear: no grace, so the catch up posts", async () => {
+    const out = await catchUp(() => refusedAlertStateReads.add("cron_lanes_stale"));
+    // The all-clear still went out, once, and the stale sync page posts: the loud side.
+    expect(out.filter((t) => /running again/.test(t))).toHaveLength(1);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+    expect(alertStateRows.has(firingKey("cron_lanes_stale"))).toBe(false);
+  });
+
+  it("FAILURE PATH: the hold record refused at the clear: the all-clear still clears, once, and the catch up posts", async () => {
+    const out = await catchUp(() => refusedAlertStateWrites.set("alert_folded:sync_staleness", "refuse"));
+    expect(out.filter((t) => /running again/.test(t))).toHaveLength(1);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+    expect(alertStateRows.has(firingKey("cron_lanes_stale"))).toBe(false);
+  });
+
+  it("FAILURE PATH: the hold record write throwing at the clear never leaves the lanes' page to be cleared twice", async () => {
+    const out = await catchUp(() => refusedAlertStateWrites.set("alert_folded:sync_staleness", "throw"));
+    expect(alertStateRows.has(firingKey("cron_lanes_stale"))).toBe(false);
+    // Another minute on: the lanes are still running, and nothing is said again.
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 12));
+    const before = posted.length;
+    await alertOnStaleLanes();
+    expect(posted.slice(before)).toEqual([]);
+    expect(out.filter((t) => /running again/.test(t))).toHaveLength(1);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+  });
+
+  it("a lanes' page that never named sync gives a stale sync page after it no grace", async () => {
+    // Only outbox stopped, and cleared at 05:07:28; the rotation is skipping advisors on
+    // its own, so the stale sync page is not explained by anything and posts at 05:11.
+    stopLanes(["outbox"]);
+    lastSynced = Date.UTC(2026, 9, 29, 8, 55);
+    const before = posted.length;
+    for (const [h, m, sec] of [[9, 1, 0], [9, 6, 0]] as const) {
+      vi.setSystemTime(Date.UTC(2026, 9, 29, h, m, sec));
+      await monitorTick();
+    }
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 7, 28));
+    startLanes(["outbox"]);
+    await alertOnStaleLanes();
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 11));
+    await monitorTick();
+    const out = posted.slice(before);
+    expect(out.filter(isLanes)).toHaveLength(2);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+  });
+
+  it("CONTROL: with every lane running, stale advisors post the moment they pass the threshold", async () => {
+    const out = await morning(15, () => {});
+    expect(out.filter((p) => isStaleSync(p.text)).map((p) => p.min)).toEqual([5]);
+    expect(out.filter((p) => isLanes(p.text))).toEqual([]);
   });
 });

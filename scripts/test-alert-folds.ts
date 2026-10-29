@@ -13,6 +13,12 @@
 //      and its grace is that lane's own bound, so the table cannot claim a lane only an
 //      Actions run stamps when something else stamps it, or wait the wrong length.
 //
+// Sections 6 to 8 below pin the other folds. Sections 9 and 10 pin the stale calendar
+// sync fold (2026-10-29): bound to one lane of the lanes' page (`onlyWhileLaneStopped`),
+// it holds only while that lane is stopped, an all-clear starts its grace only when the
+// page named that lane, and its alert is judged AFTER the lane watchdog in the monitor
+// tick, or on the tick both cross it posts before the page explaining it.
+//
 // Each check carries a positive control: a broken table fed to the same function must
 // be refused, or a green run could mean a validator that refuses nothing (L1).
 //
@@ -23,10 +29,15 @@ import { fileURLToPath } from "node:url";
 import {
   ALERT_FOLDS,
   explainedLabels,
+  EXPLAINER_FRESH_MS,
   foldFor,
   foldTableProblems,
+  judgeFold,
+  marksOnClear,
+  clearNeedsSubjects,
   type AlertFold,
 } from "../src/lib/notify/alert-folds.ts";
+import { SYNC_STALENESS_THRESHOLD_MS } from "../src/lib/monitor/sync-staleness.ts";
 import { alertEntry, alertKindOf } from "../src/lib/notify/alert-catalog.ts";
 import {
   CANARY_STALE_BOUNDS_MS,
@@ -63,6 +74,16 @@ broken({ explains: [{ ...lane, graceMs: Number.NaN }] }, "a grace that is not a 
 broken({ explains: [{ ...lane, label: " " }] }, "a key with no label", /no label/);
 broken({ why: "because" }, "a fold with no reason", /carries no reason/);
 broken({ explains: [] }, "a fold explaining nothing", /explains nothing/);
+broken(
+  { explains: [{ ...lane, onlyWhileLaneStopped: "synk" as unknown as "sync" }] },
+  "a fold bound to a lane with no bound",
+  /no bound to be stopped past/,
+);
+broken(
+  { explains: [{ ...lane, onlyWhileLaneStopped: "constructor" as unknown as "sync" }] },
+  "a fold bound to a name every object inherits",
+  /no bound to be stopped past/,
+);
 {
   const chain = foldTableProblems(
     [good, { explainer: "main_not_deployed", why: good.why, explains: [{ ...lane, key: good.explainer }] }],
@@ -144,6 +165,74 @@ eq(foldFor("reminder_email_unrenderable:hour"), null, "the explainer itself is h
     exact,
   );
   assert(mixed.some((p) => /is a family/.test(p)), "CONTROL: a family explainer explaining a single key is refused");
+}
+
+// 9 (2026-10-29): the stale calendar sync page waits on the core lanes' page, but only
+// while the sync lane itself is one of the lanes stopped, read live.
+const syncFold = foldFor("sync_staleness");
+eq(syncFold?.explainer, "cron_lanes_stale", "the stale sync page waits on the core lanes' page");
+eq(syncFold?.folded.onlyWhileLaneStopped, "sync", "only while the sync lane is the one stopped");
+eq(syncFold?.folded.graceMs, SYNC_STALENESS_THRESHOLD_MS, "and waits its own threshold after sync runs again");
+{
+  const now = Date.UTC(2026, 9, 29, 9, 6);
+  const firing = { explainerFiringMs: now, ownFiring: false, markMs: null };
+  const grace = SYNC_STALENESS_THRESHOLD_MS;
+  eq(judgeFold({ ...firing, laneStopped: true }, now, grace, true).act, "hold", "held while the page fires and sync is stopped");
+  eq(
+    judgeFold({ ...firing, laneStopped: false }, now, grace, true),
+    { act: "post", why: "not-folded" },
+    "sync running with the page firing for other lanes: posts at once, nobody was told",
+  );
+  eq(
+    judgeFold({ ...firing, markMs: now - 5 * 60_000, laneStopped: false }, now, grace, true),
+    { act: "hold", why: "grace", untilMs: now - 5 * 60_000 + grace + 5 * 60_000 },
+    "sync just back after a hold: waits its grace, as if the page had cleared",
+  );
+  eq(judgeFold({ ...firing, laneStopped: null }, now, grace, true), { act: "post", why: "unreadable" }, "an unreadable lane holds nothing");
+  eq(judgeFold(firing, now, grace, true), { act: "post", why: "unreadable" }, "a lane nobody read holds nothing");
+  eq(judgeFold(firing, now, grace).act, "hold", "CONTROL: a fold with no lane holds on the firing page alone");
+  eq(
+    judgeFold({ ...firing, explainerFiringMs: now - EXPLAINER_FRESH_MS - 1, laneStopped: true }, now, grace, true),
+    { act: "post", why: "not-folded" },
+    "a lanes' page nobody has heard from in over a day explains nothing, sync stopped or not",
+  );
+}
+
+// When an explainer clears, every key it explains is stamped as held at that moment,
+// so one coming true during the catch up waits its own grace rather than posting fresh.
+// A lane bound key only when the page's last post named its lane.
+eq(marksOnClear("cron_lanes_stale", ["outbox", "sync"]), ["cron_lane_stale:pool-grouping", "sync_staleness"], "the lanes' page naming sync marks both");
+eq(marksOnClear("cron_lanes_stale", ["outbox"]), ["cron_lane_stale:pool-grouping"], "a lanes' page that never named sync marks no stale sync hold");
+eq(marksOnClear("cron_lanes_stale", null), ["cron_lane_stale:pool-grouping"], "unread subjects mark nothing lane bound: it posts, the loud side");
+eq(marksOnClear("reminder_email_unrenderable:hour", null), ["reminder_email_owed:hour"], "a family explainer marks its own member only");
+eq(marksOnClear("booking_reminders_failing", null), [], "a family explained whole has no member to mark");
+eq(marksOnClear("main_not_deployed", ["x"]), [], "a key that explains nothing marks nothing");
+eq(clearNeedsSubjects("cron_lanes_stale"), true, "the lanes' page reads its subjects before it clears");
+eq(clearNeedsSubjects("ci_runs_refused"), false, "the CI page needs no extra read");
+
+// 10: the alert a lane bound fold holds is judged after the lane watchdog in the monitor
+// tick. Every lane bound fold must have a row here, so the next one is ordered too.
+const MONITOR_ROUTE = readFileSync(join(repoRoot, "src/app/api/cron/monitor/route.ts"), "utf8");
+const STEP_OF: Record<string, string> = { sync_staleness: "sync_staleness" };
+const runsAfterWatchdog = (route: string, step: string): boolean => {
+  const watchdog = route.indexOf(`steps.run("lane_watchdog"`);
+  const at = route.indexOf(`steps.run("${step}"`);
+  return watchdog >= 0 && at >= 0 && watchdog < at;
+};
+for (const fold of ALERT_FOLDS) {
+  for (const e of fold.explains) {
+    if (e.onlyWhileLaneStopped === undefined) continue;
+    const step = STEP_OF[e.key];
+    assert(step !== undefined, `${e.key} is lane bound, so its monitor step is named here to be ordered`);
+    if (step === undefined) continue;
+    assert(runsAfterWatchdog(MONITOR_ROUTE, step), `the monitor tick judges ${step} after the lane watchdog`);
+  }
+}
+{
+  // CONTROL: the order the route had on 2026-10-29 is refused.
+  const before = 'steps.run("sync_staleness", null, x);\nsteps.run("lane_watchdog", y, z);';
+  assert(!runsAfterWatchdog(before, "sync_staleness"), "CONTROL: sync staleness judged before the watchdog is refused");
+  assert(!runsAfterWatchdog('steps.run("lane_watchdog", y, z);', "sync_staleness"), "CONTROL: a step that is not there is refused");
 }
 
 // The CI page and its all-clear name every folded lane, from the same table.
