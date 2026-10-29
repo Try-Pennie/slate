@@ -85,8 +85,8 @@ function mintSubmissionId(): string {
  * The coordinator booking page (#4205), built to docs/design/coordinator-booking.html.
  *
  * Every rule lives in `reducePage` (src/lib/coordinator/booking-page.ts), which this only
- * sends events to; this does what a reducer cannot: calls the two server actions, keeps
- * a clock, and moves focus. `fixedNowMs` holds the clock still, for the design's frames.
+ * sends events to; this does what a reducer cannot: calls the three server actions (the
+ * lookup, the booking and the live transfer check), keeps a clock, and moves focus. `fixedNowMs` holds the clock still, for the design's frames.
  */
 export function CoordinatorBooking({
   initial,
