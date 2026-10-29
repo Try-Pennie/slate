@@ -68,7 +68,7 @@ import {
   MICROSOFT_NOT_INVITED_LOGIN_ERROR,
   MicrosoftAccountMismatchError,
 } from "@/lib/auth/microsoft-identity";
-import { SIGN_IN_FROM_COOKIE } from "@/lib/auth/sign-in-page";
+import { LAST_SIGN_IN_PAGE_COOKIE, LAST_SIGN_IN_PAGE_MAX_AGE_S, SIGN_IN_FROM_COOKIE } from "@/lib/auth/sign-in-page";
 
 /** The partner sign in page, where a refused Microsoft sign in lands (#4379). */
 const PARTNER_PAGE = "https://slate.trypennie.app/partner/sign-in";
@@ -648,5 +648,72 @@ describe("auth callback before it knows the provider (#4379)", () => {
     expect(noCode.headers.get("location")).toBe("https://slate.trypennie.app/login?error=missing_code");
     const failed = await GET(request({ cookies }));
     expect(failed.headers.get("location")).toBe("https://slate.trypennie.app/login?error=exchange_failed");
+  });
+});
+
+// #4398: a signed out or aged out coordinator was sent to /login, whose only button is Google.
+// The browser now records which sign in page its last SUCCESSFUL sign in belongs to, written
+// here and only on a completed sign in: partner for a coordinator's Microsoft sign in, cleared
+// by a Google one. A refusal leaves it as it was, because it records success, not attempts.
+describe("auth callback records which sign in page this browser last succeeded on (#4398)", () => {
+  const microsoftCoordinator = {
+    data: {
+      session: {
+        user: {
+          id: "auth-ms-1",
+          email: "dana.coordinator@partner.example",
+          user_metadata: { email_verified: true, full_name: "Dana Coordinator" },
+          identities: [{ provider: "azure", identity_data: { sub: "ms-sub-1" } }],
+        },
+      },
+    },
+    error: null,
+  };
+
+  it("records partner for a coordinator's Microsoft sign in, server only, outlasting the session", async () => {
+    exchangeCodeForSession.mockResolvedValue(microsoftCoordinator);
+    provision.linkCoordinator.mockResolvedValue({ id: "coord-1", role: "coordinator", theme_preference: "system" });
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/coordinator");
+    const c = res.cookies.get(LAST_SIGN_IN_PAGE_COOKIE);
+    expect(c?.value).toBe("partner");
+    expect(c?.httpOnly).toBe(true);
+    expect(c?.path).toBe("/");
+    expect(c?.sameSite).toBe("lax");
+    expect(c?.maxAge).toBe(LAST_SIGN_IN_PAGE_MAX_AGE_S);
+    expect(c?.maxAge).toBeGreaterThan(SESSION_TIME_BOX_MS / 1000);
+  });
+
+  it.each([
+    ["an advisor", "agent"],
+    ["an admin", "admin"],
+    ["a coordinator on a Pennie Google account", "coordinator"],
+  ])("clears it when %s signs in with Google", async (_who, role) => {
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role, theme_preference: "system" });
+
+    const res = await GET(request({ cookies: { [LAST_SIGN_IN_PAGE_COOKIE]: "partner" } }));
+
+    const c = res.cookies.get(LAST_SIGN_IN_PAGE_COOKIE);
+    expect(c?.value).toBe("");
+    expect(c?.maxAge).toBe(0);
+    expect(c?.path).toBe("/");
+    // Next re-reads a route handler's Set-Cookie and drops a Max-Age of 0 (measured in the
+    // browser check), so the header that removes it must carry a past Expires as well.
+    const header = res.headers.getSetCookie().find((h) => h.startsWith(`${LAST_SIGN_IN_PAGE_COOKIE}=`)) ?? "";
+    expect(header).toMatch(/Expires=Thu, 01 Jan 1970 00:00:00 GMT/);
+  });
+
+  it("leaves it alone on a refused sign in, either way", async () => {
+    provision.provisionUser.mockRejectedValue(new DeactivatedAccountError());
+    expect((await GET(request())).cookies.get(LAST_SIGN_IN_PAGE_COOKIE)).toBeUndefined();
+
+    exchangeCodeForSession.mockResolvedValue(microsoftCoordinator);
+    provision.linkCoordinator.mockRejectedValue(new CoordinatorNotInvitedError());
+    expect((await GET(request())).cookies.get(LAST_SIGN_IN_PAGE_COOKIE)).toBeUndefined();
+
+    exchangeCodeForSession.mockResolvedValue({ data: { session: null }, error: { message: "bad code" } });
+    expect((await GET(request())).cookies.get(LAST_SIGN_IN_PAGE_COOKIE)).toBeUndefined();
   });
 });

@@ -37,7 +37,10 @@ import {
 } from "@/lib/theme/boot";
 import type { User } from "@/lib/db/types";
 import {
+  LAST_SIGN_IN_PAGE_COOKIE,
+  LAST_SIGN_IN_PAGE_MAX_AGE_S,
   SIGN_IN_FROM_COOKIE,
+  lastSignInPageCookieOptions,
   signInPageFromCookie,
   signInPathFor,
   type SignInPage,
@@ -79,7 +82,7 @@ async function refuse(
  * age stamps start (#3084). Shared by Google and Microsoft (#4379), so a coordinator's
  * session is held to the same 30 and 7 day limits as staff.
  */
-function completeSignIn(origin: string, slateUser: User): NextResponse {
+function completeSignIn(origin: string, slateUser: User, via: "google" | "microsoft"): NextResponse {
   // Managers + admins get the admin console; agents land on their own page, and a
   // coordinator on the coordinator page (#4205).
   const res = NextResponse.redirect(`${origin}${landingPathFor(slateUser.role)}`);
@@ -97,6 +100,15 @@ function completeSignIn(origin: string, slateUser: User): NextResponse {
   const signedInAt = stampValue(Date.now());
   res.cookies.set(SESSION_STARTED_COOKIE, signedInAt, sessionStampCookieOptions("started"));
   res.cookies.set(SESSION_SEEN_COOKIE, signedInAt, sessionStampCookieOptions("seen"));
+  // #4398: which sign in page this browser's sign in succeeded on, so a signed out or aged
+  // out visit goes back to it: the partner page for a coordinator's Microsoft sign in, and
+  // /login (the record cleared) for every Google one, a coordinator on a Pennie Google
+  // account included. Written here and only here, so a refused attempt changes nothing.
+  if (via === "microsoft" && slateUser.role === "coordinator") {
+    res.cookies.set(LAST_SIGN_IN_PAGE_COOKIE, "partner", lastSignInPageCookieOptions(LAST_SIGN_IN_PAGE_MAX_AGE_S));
+  } else {
+    res.cookies.set(LAST_SIGN_IN_PAGE_COOKIE, "", lastSignInPageCookieOptions(0));
+  }
   return res;
 }
 
@@ -261,7 +273,7 @@ export async function GET(req: NextRequest) {
   // the busy-block cache within a minute, off the login hot path.
   await ensureWatches(slateUser.id); // never throws; returns a status
 
-  return completeSignIn(origin, slateUser);
+  return completeSignIn(origin, slateUser, "google");
 }
 
 /**
@@ -330,5 +342,5 @@ async function microsoftSignIn(
     log.error("auth-callback", { msg: "coordinator link refused", auth_user_id: authUserId }, err);
     return refuse(supabase, origin, "provision_failed", "local", "partner");
   }
-  return completeSignIn(origin, slateUser);
+  return completeSignIn(origin, slateUser, "microsoft");
 }

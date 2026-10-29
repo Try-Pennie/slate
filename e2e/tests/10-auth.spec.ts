@@ -51,6 +51,35 @@ test("a hand off that comes back with no code lands on the page it started from 
   await expect(page).toHaveURL(/\/login\?error=missing_code$/);
 });
 
+test("a signed out visit goes to the sign in page this browser last signed in on (#4398)", async ({ page }) => {
+  // The record a coordinator's Microsoft sign in leaves (written by the callback, which the
+  // local stack cannot reach through Microsoft, so it is set here as the callback sets it).
+  await page.context().addCookies([{ name: "slate_last_sign_in_page", value: "partner", url: E2E_APP_ORIGIN, httpOnly: true }]);
+  await page.goto("/coordinator");
+  await expect(page).toHaveURL(/\/partner\/sign-in$/);
+  await expect(page.getByRole("button", { name: /continue with microsoft/i })).toBeVisible();
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/partner\/sign-in$/);
+
+  // Anything but exactly partner, and no record at all, is /login as it always was.
+  await page.context().clearCookies();
+  await page.context().addCookies([{ name: "slate_last_sign_in_page", value: "elsewhere", url: E2E_APP_ORIGIN }]);
+  await page.goto("/coordinator");
+  await expect(page).toHaveURL(/\/login$/);
+  await page.context().clearCookies();
+  await page.goto("/coordinator");
+  await expect(page).toHaveURL(/\/login$/);
+  await expect(page.getByRole("button", { name: /continue with google/i })).toBeVisible();
+});
+
+test("a Google sign in clears the record, so staff are sent to /login when signed out (#4398)", async ({ page }) => {
+  await page.context().addCookies([{ name: "slate_last_sign_in_page", value: "partner", url: E2E_APP_ORIGIN, httpOnly: true }]);
+  const landed = await signIn(page, seed.users.admin.email);
+  expect(landed.pathname).toBe("/admin");
+  const cookies = await page.context().cookies();
+  expect(cookies.some((c) => c.name === "slate_last_sign_in_page"), "the Google sign in cleared the record").toBe(false);
+});
+
 test("an admin signs in through the callback and lands on the console, linked to their row", async ({ page }) => {
   const landed = await signIn(page, seed.users.admin.email);
   expect(landed.pathname).toBe("/admin");

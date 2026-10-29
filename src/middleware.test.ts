@@ -34,6 +34,7 @@ import {
   SESSION_STARTED_COOKIE,
   SESSION_TIME_BOX_MS,
 } from "@/lib/auth/session-age";
+import { LAST_SIGN_IN_PAGE_COOKIE } from "@/lib/auth/sign-in-page";
 import { frameAncestorSources } from "@/lib/embed/frame-policy";
 import { middleware } from "@/middleware";
 import { SECURITY_HEADERS } from "@/lib/security-headers";
@@ -212,12 +213,13 @@ describe("staff session age limits (#3084)", () => {
     [SESSION_SEEN_COOKIE]: NOW - seenMsAgo,
   });
 
-  const expectRefused = async (res: Response, error: string) => {
+  const expectRefused = async (res: Response, error: string, signInPath = "/login") => {
     // 303, never 307: a 307 makes the browser repeat a server action's POST against
     // /login. 303 turns any method into a GET of the sign in page.
     expect(res.status).toBe(303);
     const to = new URL(res.headers.get("location") ?? "");
-    expect(to.pathname).toBe("/login");
+    expect(to.origin).toBe("https://slate.test");
+    expect(to.pathname).toBe(signInPath);
     expect(to.searchParams.get("error")).toBe(error);
     const cleared = res.headers
       .getSetCookie()
@@ -307,6 +309,86 @@ describe("staff session age limits (#3084)", () => {
     );
     expect(res.status).toBe(200);
     expect(res.headers.get("location")).toBeNull();
+  });
+
+  // #4398: a coordinator's session ages out like anybody's, and /login offers them only
+  // Google. The browser's record of the page its last sign in succeeded from sends them
+  // back to the partner page instead, with the same reason; anything else is /login.
+  it("sends an aged session back to the partner page when this browser last signed in there", async () => {
+    for (const path of ["/coordinator", "/admin"]) {
+      await expectRefused(
+        await middleware(staffRequest(path, { ...signedIn(10 * 86_400_000, SESSION_IDLE_MS), [LAST_SIGN_IN_PAGE_COOKIE]: "partner" })),
+        "session_idle",
+        "/partner/sign-in",
+      );
+    }
+    await expectRefused(
+      await middleware(staffRequest("/coordinator", { ...signedIn(SESSION_TIME_BOX_MS, 0), [LAST_SIGN_IN_PAGE_COOKIE]: "partner" })),
+      "session_expired",
+      "/partner/sign-in",
+    );
+  });
+
+  it.each(["staff", "Partner", "https:%2F%2Fevil.example", "%2Fadmin", ""])(
+    "sends an aged session to /login when the record reads %j, not exactly partner",
+    async (value) => {
+      await expectRefused(
+        await middleware(staffRequest("/coordinator", { ...signedIn(SESSION_TIME_BOX_MS, 0), [LAST_SIGN_IN_PAGE_COOKIE]: value })),
+        "session_expired",
+      );
+    },
+  );
+
+  // #4398: the same record for a visit with no session at all. Without it the page itself
+  // redirects to /login as it always has, so a browser that never signed in on the partner
+  // page sees no change; with it, the visit goes to the partner page before the page renders.
+  it.each(["/coordinator", "/coordinator/x", "/", "/admin", "/me/time-off"])(
+    "sends a signed out visit to %s to the partner page when this browser last signed in there",
+    async (path) => {
+      const res = await middleware(staffRequest(path, { [LAST_SIGN_IN_PAGE_COOKIE]: "partner" }));
+      expect(res.status).toBe(303);
+      const to = new URL(res.headers.get("location") ?? "");
+      expect(to.origin).toBe("https://slate.test");
+      expect(to.pathname).toBe("/partner/sign-in");
+      expect(to.search).toBe("");
+      // Nobody was signed in, so nobody is signed out.
+      expect(signOut).not.toHaveBeenCalled();
+      expect(res.headers.get("x-frame-options")).toBe("DENY");
+    },
+  );
+
+  it.each([
+    ["no record", {}],
+    ["a record that is not exactly partner", { [LAST_SIGN_IN_PAGE_COOKIE]: "https:%2F%2Fevil.example" }],
+    ["the ten minute mark alone", { slate_sign_in_from: "partner" }],
+  ])("leaves a signed out visit to /coordinator to the page, as before, with %s", async (_what, cookies) => {
+    const res = await middleware(staffRequest("/coordinator", cookies));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("leaves a visit carrying a session to the session gate, whatever the record says", async () => {
+    const res = await middleware(
+      staffRequest("/coordinator", { ...signedIn(60_000, 60_000), [LAST_SIGN_IN_PAGE_COOKIE]: "partner" }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it.each(["/partner/sign-in", "/login", "/book", "/booking/manage/tok-abc"])(
+    "never sends a signed out visit to %s anywhere",
+    async (path) => {
+      const res = await middleware(staffRequest(path, { [LAST_SIGN_IN_PAGE_COOKIE]: "partner" }));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+    },
+  );
+
+  it("keeps the record when it ends an aged session, so the next sign in is on the right page", async () => {
+    const res = await middleware(
+      staffRequest("/coordinator", { ...signedIn(SESSION_TIME_BOX_MS, 0), [LAST_SIGN_IN_PAGE_COOKIE]: "partner" }),
+    );
+    expect(res.headers.getSetCookie().some((c) => c.startsWith(`${LAST_SIGN_IN_PAGE_COOKIE}=`))).toBe(false);
   });
 
   it("still clears the session when the revoke itself fails", async () => {
