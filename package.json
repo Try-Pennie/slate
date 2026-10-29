@@ -37,6 +37,7 @@
     "verify:agent-link-names": "node --experimental-strip-types scripts/verify-agent-link-names-sql.ts",
     "verify:replace-user-schedule-guard": "node --experimental-strip-types scripts/verify-replace-user-schedule-guard-sql.ts",
     "verify:reroute-holds-sql": "node --experimental-strip-types scripts/verify-reroute-holds-sql.ts",
+    "verify:program-leads-sql": "node --experimental-strip-types scripts/verify-program-leads-sql.ts",
     "verify:reroute-live": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-reroute-live.ts",
     "verify:marcia-rebook": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-marcia-rebook-live.ts",
     "verify:availability-truth": "node --experimental-strip-types --import ./scripts/register-paths.mjs scripts/verify-availability-truth-live.ts",

@@ -284,6 +284,9 @@ const EXPECTED_PINNED = [
   "capacity_fill_pattern",
   // #3936: the past days capacity history holds, for the page's date picker. Plain SQL.
   "capacity_history_days",
+  // #4387: a place on a day's placeholder limit, under a per day advisory lock. Security
+  // INVOKER, pinned; hashtextextended, pg_advisory_xact_lock and now() are pg_catalog built ins.
+  "claim_placeholder_day",
   // #4296: the reminder email claim, under a per booking advisory lock; definer, pinned
   // to public, pg_catalog built ins only (hashtextextended, pg_advisory_xact_lock).
   "claim_reminder_send",
@@ -325,6 +328,10 @@ const EXPECTED_PINNED = [
   "ooo_release_held_window",
   // #3247: holds an advisor at a booking's buffered window for a bucket correction.
   "place_reroute_hold",
+  // #4387: the held count per day over a range, and the one predicate behind it. Security
+  // INVOKER, plain SQL; generate_series, now() and the time zone casts are pg_catalog built ins.
+  "placeholder_day_counts",
+  "placeholder_day_held",
   // #3248: removes expired reroute holds' busy blocks, on the self heal lane.
   "prune_expired_reroute_hold_blocks",
   // #3109: the daily rate_limits prune.
@@ -345,6 +352,9 @@ const EXPECTED_PINNED = [
   // SQL; now() is a pg_catalog built in.
   "recreate_missing_busy_blocks",
   "regal_call_reason_counts",
+  // #4387: registers a program lead or extends its mark. Security INVOKER, pinned; now()
+  // and greatest are pg_catalog built ins.
+  "register_program_lead",
   // #4296: a reminder email claim given back after a transient failure.
   "release_reminder_send",
   // #1293: replaces a schedule's weekly rules in one transaction, so a failure
