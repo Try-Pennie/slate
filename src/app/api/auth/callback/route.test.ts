@@ -71,7 +71,7 @@ import {
 import { SIGN_IN_FROM_COOKIE } from "@/lib/auth/sign-in-page";
 
 /** The partner sign in page, where a refused Microsoft sign in lands (#4379). */
-const PARTNER = "https://slate.trypennie.app/partner/sign-in";
+const PARTNER_PAGE = "https://slate.trypennie.app/partner/sign-in";
 
 const SESSION = {
   session: {
@@ -511,7 +511,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
     const res = await GET(request());
 
     // Back on the partner page, whose button they pressed, which points them at /login.
-    expect(res.headers.get("location")).toBe(`${PARTNER}?error=domain_not_allowed`);
+    expect(res.headers.get("location")).toBe(`${PARTNER_PAGE}?error=domain_not_allowed`);
     expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
     expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
@@ -522,7 +522,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       signOut.mockReset();
       exchangeCodeForSession.mockResolvedValue(microsoftSession({ meta: { email_verified: claim } }));
       const res = await GET(request());
-      expect(res.headers.get("location"), String(claim)).toBe(`${PARTNER}?error=sign_in_unavailable`);
+      expect(res.headers.get("location"), String(claim)).toBe(`${PARTNER_PAGE}?error=sign_in_unavailable`);
       expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     }
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
@@ -534,7 +534,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       throw new Error("GOOGLE_HOSTED_DOMAIN is not set");
     });
     const res = await GET(request());
-    expect(res.headers.get("location")).toBe(`${PARTNER}?error=sign_in_unavailable`);
+    expect(res.headers.get("location")).toBe(`${PARTNER_PAGE}?error=sign_in_unavailable`);
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
   });
 
@@ -570,7 +570,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       }),
     );
     const res = await GET(request({ cookies: { [SIGN_IN_FROM_COOKIE]: "partner" } }));
-    expect(res.headers.get("location")).toBe(`${PARTNER}?error=sign_in_unavailable`);
+    expect(res.headers.get("location")).toBe(`${PARTNER_PAGE}?error=sign_in_unavailable`);
   });
 
   it("refuses two Microsoft accounts on one sign in", async () => {
@@ -583,7 +583,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
       }),
     );
     const res = await GET(request());
-    expect(res.headers.get("location")).toBe(`${PARTNER}?error=sign_in_unavailable`);
+    expect(res.headers.get("location")).toBe(`${PARTNER_PAGE}?error=sign_in_unavailable`);
     expect(provision.linkCoordinator).not.toHaveBeenCalled();
   });
 
@@ -602,7 +602,7 @@ describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
     provision.linkCoordinator.mockRejectedValue(err);
     const res = await GET(request());
     // On the partner page, never /login: the staff page's only button is Google.
-    expect(res.headers.get("location")).toBe(`${PARTNER}?error=${code}`);
+    expect(res.headers.get("location")).toBe(`${PARTNER_PAGE}?error=${code}`);
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(signOut).toHaveBeenCalledWith({ scope: "local" });
     expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
@@ -636,7 +636,7 @@ describe("auth callback before it knows the provider (#4379)", () => {
   ])("sends %s from the partner page back there", async (_what, url, code) => {
     exchangeCodeForSession.mockResolvedValue({ data: { session: null }, error: { message: "bad code" } });
     const res = await GET(request({ url, cookies: { [SIGN_IN_FROM_COOKIE]: "partner" } }));
-    expect(res.headers.get("location")).toBe(`${PARTNER}?error=${code}`);
+    expect(res.headers.get("location")).toBe(`${PARTNER_PAGE}?error=${code}`);
   });
 
   it.each([

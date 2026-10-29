@@ -44,7 +44,8 @@ test("a hand off that comes back with no code lands on the page it started from 
   await page.context().addCookies([{ name: "slate_sign_in_from", value: "partner", url: E2E_APP_ORIGIN }]);
   await page.goto("/api/auth/callback?error=access_denied");
   await expect(page).toHaveURL(/\/partner\/sign-in\?error=missing_code$/);
-  await expect(page.getByRole("alert")).toHaveText("That sign-in didn't complete. Please try again.");
+  // Inside main: Next's route announcer is an alert too.
+  await expect(page.getByRole("main").getByRole("alert")).toHaveText("That sign-in didn't complete. Please try again.");
   await page.context().clearCookies();
   await page.goto("/api/auth/callback?error=access_denied");
   await expect(page).toHaveURL(/\/login\?error=missing_code$/);
