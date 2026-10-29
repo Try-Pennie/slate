@@ -61,6 +61,7 @@ So the policy is:
 - [Bookable toggle (key-authed)](#bookable-toggle-key-authed)
 - [GET /api/bookings/bookable (key-authed validate-only check)](#get-apibookingsbookable)
 - [POST /api/regal/calls (key-authed inbound call feed)](#post-apiregalcalls)
+- [POST /api/program-leads (key-authed program lead register)](#post-apiprogram-leads)
 - [Webhooks emitted to Regal and Cadence](#webhooks-emitted-to-regal-and-cadence)
 - [Customer self-serve manage routes (token-authed)](#customer-self-serve-manage-routes-token-authed)
 - [Admin routes (session-authed, internal)](#admin-routes-session-authed-internal)
@@ -83,6 +84,7 @@ names which one it requires.
 | Offboarding API key | `Authorization: Bearer <key>` | `OFFBOARDING_API_KEY` | `POST /api/users/lifecycle`, `POST /api/users/deactivate`, `POST /api/users/reactivate` |
 | Bookable API key | `Authorization: Bearer <key>` | `BOOKABLE_API_KEY` | `POST /api/users/bookable` |
 | Regal inbound key | `Authorization: Bearer <key>` | `REGAL_INBOUND_KEY` | `POST /api/regal/calls` |
+| Program leads key | `Authorization: Bearer <key>` | `BOOKING_API_KEY_BIDSPOKE`, with a `_2` slot. Named like the booking keys but NOT one: it is in no booking caller key set, so every booking route refuses it (#4388) | `POST /api/program-leads` only |
 | Cron secret | `Authorization: Bearer <secret>` | `CRON_SECRET` | every `GET /api/cron/*` lane |
 | Google channel token | `X-Goog-Channel-Token` header | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` |
 | Slack signature | `X-Slack-Signature` + `X-Slack-Request-Timestamp` | Slack signing secret | `POST /api/slack/interactions` |
@@ -886,6 +888,55 @@ evidence that Regal called a customer whose call sits on the placeholder advisor
 
 ---
 
+## POST /api/program-leads
+
+Source: `src/app/api/program-leads/route.ts` (#4388), over
+`src/lib/program-leads/register.ts`. Bidspoke, Pennie's own lead intake, registers
+each lead it accepts for the program, by Salesforce Lead id. For 30 days from its
+latest registration that lead is a program lead (#4255): its texted booking link may
+offer a time on the placeholder advisor when no real advisor is free, up to the
+placeholder day limit. The mark is a row in `program_leads` (migration 0213), keyed by
+the id's 15 character form.
+
+**Auth:** `Authorization: Bearer <BOOKING_API_KEY_BIDSPOKE>`, either of its two slots.
+It is Bidspoke's own key and opens this route alone: it is not a booking API key, so
+the booking routes (the cancel included) refuse it, and this route refuses every other
+key, a booking API key included (`scripts/test-program-lead-key-scope.ts`). Refused
+keys go through the failed credential limiter, so one address guessing keys is
+answered `429` after a minute's worth of failures.
+
+**Request:** `{ "salesforceLeadId": "00Q..." }`, the Lead id in its 15 or 18 character
+form. An 18 character id must be sent exactly as Salesforce gives it: its last three
+characters encode the case of the first fifteen, and an id whose case changed on the
+way is refused rather than registered under a different record.
+
+**Response:**
+
+| Status | Body | Meaning |
+|---|---|---|
+| `200` | `{ "registered": true, "expiresAt": "<ISO instant>" }` | Registered. Registering the same lead again is also `200` and extends the mark to 30 days from now; it never shortens it. Both spellings of one id are one lead. |
+| `400` | `{ "error", "code": "VALIDATION" }` | The body is not JSON, or `salesforceLeadId` is missing, blank or not a string |
+| `400` | `{ "error", "code": "NOT_A_LEAD_ID" }` | Not a Lead id: it must start `00Q` and be 15 or 18 letters and digits |
+| `400` | `{ "error", "code": "LEAD_ID_CASE_MISMATCH" }` | An 18 character id whose last three characters do not match the case of the first fifteen |
+| `401` | `unauthorized` | A missing or wrong key |
+| `429` | `{ "error" }` | Too many refused keys from this address in a minute |
+| `503` | `{ "error", "code": "NOT_CONFIGURED" }` | No Bidspoke key is set on this deployment |
+| `503` | `{ "error", "code": "STORE_UNAVAILABLE" }` | Nothing was recorded. Retry. Each one is logged and pages, throttled per route. |
+
+A `400` is final: the same body will be refused again. Nothing else is written for any
+answer but the `200`.
+
+**The contract for Bidspoke:**
+
+1. Register the lead BEFORE the first text carrying its booking link goes out. A lead
+   who opens the link before the registration lands is shown the ordinary times only.
+2. On a `503`, retry with backoff until it answers `200`. Until one does, the lead is
+   not a program lead. A `401` or `400` will not change on a retry: alert on it instead.
+3. Registering again is always safe, so a retry after a lost response, or a second
+   registration of a lead already registered, needs no special handling.
+
+---
+
 ## Webhooks emitted to Regal and Cadence
 
 Slate is the sender for these. Every booking lifecycle change funnels through one
@@ -1213,6 +1264,7 @@ canary key is not configured.
 | `OFFBOARDING_API_KEY` | `/api/users/lifecycle`, `/api/users/deactivate`, `/api/users/reactivate` | `503` |
 | `BOOKABLE_API_KEY` | `POST /api/users/bookable` | `503` |
 | `REGAL_INBOUND_KEY` | `POST /api/regal/calls` | `503` naming the variable |
+| `BOOKING_API_KEY_BIDSPOKE`, `_2` | `POST /api/program-leads` only (#4388) | `503 NOT_CONFIGURED`, so no program lead is registered |
 | `CRON_SECRET` | every `/api/cron/*` lane | required env; lane returns `401` without a matching Bearer |
 | `GOOGLE_CHANNEL_TOKEN` | `POST /api/google/push` | required env; `403` on token mismatch |
 

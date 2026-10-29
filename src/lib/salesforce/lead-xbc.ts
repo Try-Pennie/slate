@@ -10,6 +10,7 @@
  * the chunking and the id matching without Salesforce.
  */
 import { chunkSoqlValues, sfInList } from "@/lib/salesforce/soql";
+import { idChecksum } from "./lead-id.ts";
 
 /**
  * A Salesforce id's case sensitive 15 character form.
@@ -23,33 +24,21 @@ export function leadIdKey(id: string): string {
   return id.slice(0, 15);
 }
 
-const ID_CHECKSUM_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
-
 /**
  * Both spellings of a Salesforce id, for a lookup that must find a row stored under
  * either (#3541). `short` is `leadIdKey`; `long` is it plus the case checksum
- * Salesforce defines: per five character block, one bit per uppercase letter (the
- * first character the lowest bit), indexing `ID_CHECKSUM_ALPHABET`. An 18 character
- * id is kept AS GIVEN, since that is the spelling a row written with it holds; only a
- * 15 character one has its long form computed.
+ * Salesforce defines (`idChecksum`, in `lead-id.ts`). An 18 character id is kept AS
+ * GIVEN, since that is the spelling a row written with it holds; only a 15 character
+ * one has its long form computed.
  */
 export function leadIdSpellings(id: string): { short: string; long: string } {
   const short = leadIdKey(id);
   if (id.length === 18) return { short, long: id };
-  let suffix = "";
-  for (let block = 0; block < 3; block++) {
-    let bits = 0;
-    for (let i = 0; i < 5; i++) {
-      const c = short[block * 5 + i] ?? "";
-      if (c >= "A" && c <= "Z") bits |= 1 << i;
-    }
-    suffix += ID_CHECKSUM_ALPHABET[bits];
-  }
-  return { short, long: short + suffix };
+  return { short, long: short + idChecksum(short) };
 }
 
 /** A Salesforce LEAD id: the `00Q` key prefix, 15 or 18 characters. Defined client safe in `lead-id.ts`. */
-export { isLeadId } from "./lead-id.ts";
+export { isLeadId, idCaseChecksumMatches } from "./lead-id.ts";
 
 /** One query's worth of Lead records: the id plus whichever field was asked for. */
 export type LeadFieldRecord = { Id: string; [field: string]: unknown };
