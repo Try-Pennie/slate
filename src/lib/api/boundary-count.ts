@@ -127,8 +127,8 @@ type CounterHit = { ok: true; within: boolean } | { ok: false };
 /**
  * One atomic increment of `key` in its fixed window, and whether the count is now
  * at most `max`. The one place a window counter calls the RPC, so the boundary,
- * unrecognised page and opaque script error counts cannot drift into three readings
- * of it (L370). Never throws; a failure is logged under `tag=client-errors` and
+ * unrecognised page, opaque script error and unattributed rejection counts cannot
+ * drift into several readings of it (L370). Never throws; a failure is logged under `tag=client-errors` and
  * returned as `ok: false`, and each caller decides which way that falls.
  */
 async function hitCounter(key: string, windowSeconds: number, max: number, what: string): Promise<CounterHit> {
