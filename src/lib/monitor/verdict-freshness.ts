@@ -39,6 +39,7 @@ import type { CalendarWindowResult } from "@/lib/monitor/calendar-window-coverag
 import type { BusyDriftResult } from "@/lib/monitor/busy-drift-sampler";
 import type { OffsiteOriginResult } from "@/lib/monitor/offsite-origin";
 import type { AuthSignInSurfaceHealth } from "@/lib/monitor/auth-sign-in-surface";
+import type { AuthUnexpectedSignInResult } from "@/lib/monitor/auth-unexpected-sign-ins";
 import type { AwaitingActivationResult } from "@/lib/monitor/awaiting-activation";
 import type { StrandedHiresResult } from "@/lib/monitor/stranded-hires";
 import type { AuditChainResult } from "@/lib/monitor/audit-chain";
@@ -203,6 +204,12 @@ export const OFFSITE_ORIGIN_VERDICT_LANE = "verdict:offsite-origin";
  * project where Google is the only way in from a detector that stopped reading.
  */
 export const AUTH_SIGN_IN_VERDICT_LANE = "verdict:auth-sign-in";
+/**
+ * The unexpected sign in check (#4379). Silent while nothing got past the sign in
+ * controls AND while its audit read keeps failing or the audit log stops being written,
+ * so only a tick that measured at least one half stamps.
+ */
+export const AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE = "verdict:auth-unexpected-sign-in";
 export const AWAITING_ACTIVATION_VERDICT_LANE = "verdict:awaiting-activation";
 /**
  * The stranded hire check (#2481). Silent on a healthy roster AND on a broken
@@ -342,6 +349,7 @@ export type DetectorVerdictLane =
   | typeof CALENDAR_WINDOW_VERDICT_LANE
   | typeof OFFSITE_ORIGIN_VERDICT_LANE
   | typeof AUTH_SIGN_IN_VERDICT_LANE
+  | typeof AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE
   | typeof AWAITING_ACTIVATION_VERDICT_LANE
   | typeof STRANDED_HIRES_VERDICT_LANE
   | typeof AUDIT_CHAIN_VERDICT_LANE
@@ -581,6 +589,16 @@ export function offsiteOriginReachedVerdict(result: OffsiteOriginResult | null):
  */
 export function authSignInReachedVerdict(result: AuthSignInSurfaceHealth | null): boolean {
   return result !== null && result.status !== "unmeasured";
+}
+
+/**
+ * Did the unexpected sign in check measure anything? (#4379) A tick it was not due on,
+ * and one where neither half could be read, stamp nothing, so a check that has gone
+ * blind ages and pages instead of reading as nobody signing in another way.
+ */
+export function authUnexpectedSignInReachedVerdict(result: AuthUnexpectedSignInResult | null): boolean {
+  if (result === null || result.status === "not-due") return false;
+  return result.logins.status === "measured" || result.accounts.status === "measured";
 }
 
 /**

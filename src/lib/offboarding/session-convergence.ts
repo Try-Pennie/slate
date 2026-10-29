@@ -1,4 +1,5 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { listAuthUsers } from "@/lib/auth/auth-users";
 import { unwrap } from "@/lib/db/result";
 import { parseStampMs } from "@/lib/date/stamp";
 import { log } from "@/lib/log";
@@ -69,11 +70,6 @@ export type { SessionConvergenceResult };
  * by the next run.
  */
 export const MAX_SESSION_REVOKES_PER_RUN = 25;
-
-/** GoTrue's own maximum page size. The roster is a few hundred people. */
-const AUTH_PAGE_SIZE = 1000;
-/** A listing longer than this is reported as partial rather than walked for ever. */
-const AUTH_MAX_PAGES = 5;
 
 /**
  * Half the length of the ban Slate writes, DERIVED from the duration that ships so
@@ -237,15 +233,10 @@ export async function convergeDepartedSessions(
 
 // ------------------------------------------------------------- the reads
 
+/** The shared auth user listing (`listAuthUsers`, #4379), reduced to each user's ban. */
 async function listAuthBans(): Promise<AuthBanListing> {
-  const bans = new Map<string, string | null>();
-  for (let page = 1; page <= AUTH_MAX_PAGES; page++) {
-    const { data, error } = await supabaseAdmin().auth.admin.listUsers({ page, perPage: AUTH_PAGE_SIZE });
-    if (error) throw new Error(`could not list auth users: ${error.message}`);
-    for (const u of data.users) bans.set(u.id, u.banned_until ?? null);
-    if (data.users.length < AUTH_PAGE_SIZE) return { complete: true, bans };
-  }
-  return { complete: false, bans };
+  const listing = await listAuthUsers();
+  return { complete: listing.complete, bans: new Map(listing.users.map((u) => [u.id, u.banned_until])) };
 }
 
 async function listRoster(): Promise<RosterAuthRow[]> {

@@ -28,6 +28,7 @@
  */
 import { LANE_STALE_BOUNDS_MS } from "@/lib/monitor/health";
 import { CROSS_SYSTEM_BOOKINGS_CADENCE_MS } from "@/lib/monitor/cross-system-bookings";
+import { AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS } from "@/lib/monitor/auth-unexpected-sign-ins";
 import {
   ALL_SETUP_READ,
   monitorSetupGates,
@@ -84,6 +85,8 @@ export const MONITOR_STEP_ALERT_COOLDOWN_MS = 2 * 60 * 60_000;
  */
 export const MONITOR_STEP_CADENCE_MS: Readonly<Record<string, number>> = {
   cross_system_bookings: CROSS_SYSTEM_BOOKINGS_CADENCE_MS,
+  // #4379: the audit log has no index on its time, so it is read once an hour.
+  auth_unexpected_sign_in: AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS,
 };
 
 /** How often `step` actually does its work. */

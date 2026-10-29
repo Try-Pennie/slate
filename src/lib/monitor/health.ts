@@ -774,6 +774,10 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // the checks above, it has no legitimate silence, and six hours is a maintenance
   // window (about seventy failed reads in a row) rather than a measure of the cadence.
   "verdict:auth-sign-in": 6 * 60 * MIN,
+  // #4379: the unexpected sign in check reads once an hour, and a whole day with no
+  // audit entry of any kind (a quiet weekend) is unmeasured rather than clean, so its
+  // silence is bounded at three days rather than at its cadence.
+  "verdict:auth-unexpected-sign-in": 3 * 24 * 60 * MIN,
   // Waiting to become bookable concludes on every tick the roster reads, and an
   // empty queue is its ordinary answer.
   "verdict:awaiting-activation": 6 * 60 * MIN,

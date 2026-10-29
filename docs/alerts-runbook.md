@@ -845,7 +845,8 @@ backfill is fixed by rewinding that table's cursor, in the same change as the wr
 ## A limit or a guard is not working
 
 Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:*`,
-`rate_limit_unidentified:*`, `confirm_line_unreachable`, `lane_claim_unreadable`.
+`rate_limit_unidentified:*`, `confirm_line_unreachable`, `lane_claim_unreadable`,
+`auth_unexpected_sign_in`.
 
 **What fired it.** A control that is supposed to bound something has stopped bounding
 it. Every limiter here fails OPEN, so the page means requests are being served
@@ -880,6 +881,19 @@ It is not a statement that the limit is down across the deployment; that is
   applied (`docs/migrations-runbook.md`); a timeout or lock means look for what holds
   `lane_runs` (the daily prune at 03:05 is one range delete). It clears on the monitor's
   next claim that is written.
+- `auth_unexpected_sign_in` (#4379) means a way in got past the sign in controls. The
+  monitor reads Auth's own record once an hour: a login in the last day by anything but
+  Google or Microsoft (`auth_logins_by_provider` over `auth.audit_log_entries`), or an
+  account outside trypennie.com that no active coordinator is linked to (the admin
+  account listing against `users`). A login line: open Authentication, Sign In /
+  Providers in the Supabase dashboard and turn off whatever allowed it (the Email
+  provider stays off), then find who the named addresses are; their sessions are already
+  refused on every request by the amr check in `realCurrentUser`. An account line: a
+  coordinator removal whose sign in delete failed, or a Microsoft sign in the hook
+  admitted and the callback then refused before linking. Delete the account under
+  Authentication, Users unless the address should be granted on Team access. It clears
+  once a day passes with no such login and the accounts are gone. Its verdict goes stale
+  if the audit log stops being written at all, which hosted projects can switch off.
 
 **Fix or escalate.** A missing binding is a deploy fix. Treat an unmetered public path
 as time-sensitive rather than urgent: nothing is broken for a customer, and nothing is

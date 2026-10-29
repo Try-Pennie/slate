@@ -103,6 +103,16 @@ function settings(over: { external?: Record<string, unknown>; [k: string]: unkno
     "healthy",
     "this check is about what is open beyond Google, so Google off is not its finding",
   );
+  // #4379: invited coordinators sign in with Microsoft (the azure provider), and the
+  // before_user_created hook decides who may be created through it. On or off, it is
+  // part of the healthy state: off before the rollout switches it on, on after.
+  const withMicrosoft = authSignInSurfaceHealth(settings({ external: { email: false, azure: true } }));
+  eq(withMicrosoft.status, "healthy", "Google plus Microsoft, with email off, is healthy");
+  eq(withMicrosoft.status === "healthy" ? withMicrosoft.providersOn.join(",") : "", "azure,google", "and both are reported as on");
+  const msAndEmail = authSignInSurfaceHealth(settings({ external: { email: true, azure: true } }));
+  assert(msAndEmail.status === "open" && msAndEmail.emailOn && msAndEmail.signupProviders.length === 0, "email still opens it, and Microsoft is not named as a finding");
+  const msAndGithub = authSignInSurfaceHealth(settings({ external: { email: false, azure: true, github: true } }));
+  eq(msAndGithub.status === "open" ? msAndGithub.signupProviders.join(",") : "", "github", "a third provider beside them is open, named alone");
 }
 
 // --- another provider that can create accounts ----------------------------------------
@@ -139,6 +149,8 @@ function settings(over: { external?: Record<string, unknown>; [k: string]: unkno
   const healthy = authSignInSurfaceHealth(settings({ external: { email: false } }));
   if (healthy.status !== "healthy") throw new Error("fixture should be healthy");
   assert(/Google/.test(formatAuthSignInClearedAlert(healthy)), "the all clear says Google is the only way in");
+  assert(/Microsoft/.test(formatAuthSignInClearedAlert(healthy)), "and that Microsoft, for invited coordinators, is the other");
+  assert(/Microsoft/.test(text), "the page says which two ways in are expected");
 }
 
 // --- the step: pages on open, clears on healthy, does neither on unmeasured -------------

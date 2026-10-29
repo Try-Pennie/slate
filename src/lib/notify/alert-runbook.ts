@@ -408,6 +408,8 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   edge_limiter_unusable: "a-limit-or-a-guard-is-not-working",
   definer_grants_to_web_roles: "a-limit-or-a-guard-is-not-working",
   auth_sign_in_beyond_google: "a-limit-or-a-guard-is-not-working",
+  // #4379: a way in got past the sign in hook, the callback or the session gate.
+  auth_unexpected_sign_in: "a-limit-or-a-guard-is-not-working",
   // #4222: the lanes' guard against running twice fails open, like a limiter.
   lane_claim_unreadable: "a-limit-or-a-guard-is-not-working",
   // #3090. Its own family: the guard did not fail, somebody switched it off, and the

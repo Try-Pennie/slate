@@ -690,6 +690,34 @@ The monitor lane reads the live `/auth/v1/settings` every tick and pages
 `auth_sign_in_beyond_google` while email is on or another provider can create an
 account, with an all clear once it is off.
 
+### Invited coordinators: Microsoft (#4379)
+The call center partner's scheduling coordinators sign in with their **own company
+Microsoft account**, through the **Azure** provider, and nobody else may. Healthy is
+**Google on, Azure on, Email off, every other provider off**; the settings check above
+treats Azure on or off as healthy. Migration 0212 replaced the hook's function under the
+same name, so the dashboard registration does not change: `trypennie.com` is created
+through Google only, an outside address through Azure only when an active, unlinked
+coordinator row holds it (Team access grants one), and everything else is refused. The
+callback links the coordinator's row (`linkCoordinator`) and records the Microsoft
+account id; `realCurrentUser` refuses any session whose `amr` is not OAuth alone, and a
+coordinator's session without exactly that Microsoft account or with a Google one.
+Removing a coordinator deletes their auth user. The monitor's hourly
+`auth_unexpected_sign_in` pages on a login by anything else in the audit log and on an
+outside account no active coordinator holds.
+
+**Rollout order, which must not change:** apply 0212 with `supabase db push` before the
+merge; deploy and confirm the code is live; only then switch Azure on in the dashboard
+(Authentication, Sign In / Providers, Azure, with the Entra app's client id and secret and
+the `xms_edov` and `email` optional claims, so Supabase marks the address verified).
+**Rollback is switching Azure off.** The Azure app's client secret expires; its renewal
+reminder is on the Phase 0 card for #4379.
+
+A Pennie staffer who signs in with a Microsoft account on their own `trypennie.com`
+address is refused, and GoTrue links that Microsoft account onto their auth user by
+address, so their next Google sign in is refused too (an auth user holding both). An
+admin clears it with "Link a new Google account" on their page, which deletes the auth
+user.
+
 **There is no enforced second factor for Slate staff accounts (as of 2026-10-03).**
 Slate has no MFA of its own and relies on Google for the second factor, and **Google
 2-Step Verification is NOT enforced for Pennie staff** (Dan, 2026-10-03: "2SV not
