@@ -11,10 +11,13 @@
 //   4. each fold says why, and each explained key has a label and a usable grace;
 //   5. for the CI refusal, every explained key is a lane the canary workflow stamps,
 //      and its grace is that lane's own bound, so the table cannot claim a lane only an
-//      Actions run stamps when something else stamps it, or wait the wrong length;
-//   6. a fold bound to one lane of the lanes' page (`onlyWhileLaneStopped`) holds only
-//      while that lane is stopped, and its alert is judged AFTER the lane watchdog in
-//      the monitor tick, or on the tick both cross it posts before the page explaining it.
+//      Actions run stamps when something else stamps it, or wait the wrong length.
+//
+// Sections 6 to 8 below pin the other folds. Sections 9 and 10 pin the stale calendar
+// sync fold (2026-10-29): bound to one lane of the lanes' page (`onlyWhileLaneStopped`),
+// it holds only while that lane is stopped, an all-clear starts its grace only when the
+// page named that lane, and its alert is judged AFTER the lane watchdog in the monitor
+// tick, or on the tick both cross it posts before the page explaining it.
 //
 // Each check carries a positive control: a broken table fed to the same function must
 // be refused, or a green run could mean a validator that refuses nothing (L1).
