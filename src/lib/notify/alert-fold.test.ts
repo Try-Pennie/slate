@@ -41,7 +41,11 @@ vi.mock("@/lib/monitor/heartbeat", async (orig) => ({
   },
 }));
 
-import { alertStateRows, refusedAlertStateReads } from "@/lib/notify/alert-state-fake.test-support";
+import {
+  alertStateRows,
+  refusedAlertStateReads,
+  refusedAlertStateWrites,
+} from "@/lib/notify/alert-state-fake.test-support";
 import { resolveAlert, sendThrottledAlert, firingKey, resetRepeatColumnsProbe } from "@/lib/notify/dispatch";
 import { MONITOR_DEFAULTS } from "@/lib/monitor/settings";
 import { REFUSAL_ALERT_KEY, runCiHealthCheck, type WorkflowRunSummary } from "@/lib/monitor/github-ci-health";
@@ -57,6 +61,7 @@ const CANARY_BOUND = 90 * MIN;
 beforeEach(() => {
   alertStateRows.clear();
   refusedAlertStateReads.clear();
+  refusedAlertStateWrites.clear();
   stamps.clear();
   heartbeatRead.fails = false;
   resetRepeatColumnsProbe();
@@ -411,6 +416,56 @@ describe("a stopped sync lane explains the stale calendar sync page", () => {
     const out = posted.slice(before);
     expect(out.filter(isStaleSync)).toEqual([]);
     expect(out.filter(isLanes)).toHaveLength(2);
+  });
+
+  /**
+   * The catch up timeline above with a hook at the clear: the lanes' page posts at 05:06
+   * with advisors under the threshold, clears at 05:07:28, and the 05:11 tick finds the
+   * four still stale. Returns every post from 05:01.
+   */
+  async function catchUp(atClear: () => void) {
+    const stoppedAt = Date.UTC(2026, 9, 29, 8, 53);
+    for (const l of CORE) stamps.set(l, stoppedAt);
+    lastSynced = stoppedAt - MIN;
+    const before = posted.length;
+    for (const m of [1, 6]) {
+      vi.setSystemTime(Date.UTC(2026, 9, 29, 9, m));
+      await monitorTick();
+    }
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 7, 28));
+    startLanes(CORE);
+    atClear();
+    await alertOnStaleLanes();
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 11));
+    await monitorTick();
+    return posted.slice(before);
+  }
+
+  it("FAILURE PATH: the lanes' page subjects unreadable at the clear: no grace, so the catch up posts", async () => {
+    const out = await catchUp(() => refusedAlertStateReads.add("cron_lanes_stale"));
+    // The all-clear still went out, once, and the stale sync page posts: the loud side.
+    expect(out.filter((t) => /running again/.test(t))).toHaveLength(1);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+    expect(alertStateRows.has(firingKey("cron_lanes_stale"))).toBe(false);
+  });
+
+  it("FAILURE PATH: the hold record refused at the clear: the all-clear still clears, once, and the catch up posts", async () => {
+    const out = await catchUp(() => refusedAlertStateWrites.set("alert_folded:sync_staleness", "refuse"));
+    expect(out.filter((t) => /running again/.test(t))).toHaveLength(1);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+    expect(alertStateRows.has(firingKey("cron_lanes_stale"))).toBe(false);
+  });
+
+  it("FAILURE PATH: the hold record write throwing at the clear never leaves the lanes' page to be cleared twice", async () => {
+    const out = await catchUp(() => refusedAlertStateWrites.set("alert_folded:sync_staleness", "throw"));
+    expect(alertStateRows.has(firingKey("cron_lanes_stale"))).toBe(false);
+    // Another minute on: the lanes are still running, and nothing is said again.
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 12));
+    const before = posted.length;
+    await alertOnStaleLanes();
+    expect(posted.slice(before)).toEqual([]);
+    expect(out.filter((t) => /running again/.test(t))).toHaveLength(1);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
   });
 
   it("a lanes' page that never named sync gives a stale sync page after it no grace", async () => {

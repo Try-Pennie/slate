@@ -508,8 +508,10 @@ async function laneIsStopped(lane: LaneName, nowMs: number): Promise<boolean | n
 
 /**
  * Whether `key` waits because the alert that explains it is firing (#3802). The rule
- * is `judgeFold` (`src/lib/notify/alert-folds.ts`); this is its one read and its two
- * writes. Every key the fold table does not name answers false without a read.
+ * is `judgeFold` (`src/lib/notify/alert-folds.ts`); this is its reads and its two
+ * writes. Every key the fold table does not name answers false without a read. A lane
+ * bound fold (`onlyWhileLaneStopped`) also reads the lane heartbeats, and only while its
+ * explainer is firing (`laneIsStopped`).
  *
  * The three rows it needs (the explainer's firing marker, this key's own, and the
  * record of this key's hold) come back from one read, because a stale canary lane
@@ -572,6 +574,11 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
   // the lane was stale at the record's moment, so it can only be stale again a full
   // bound after a LATER stamp, by when at most FOLD_MARK_REFRESH_MS of the record's
   // grace can remain. So a refused delete is only logged.
+  //
+  // One stamped at an explainer's all-clear (`markExplainedOnClear`) may be for a key that
+  // was never true at all, and that one is NOT inert: anything coming true within its grace
+  // of the clear waits out the rest of it. That is the point (the catch up after a cause
+  // ends), and it lasts at most one grace from the clear, after which the record is spent.
   if (stamps?.has(holdMark)) {
     reportWriteFailure(await db.from("alert_state").delete().eq("key", holdMark), "alert fold mark clear");
   }
@@ -584,25 +591,35 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
  * posting fresh. Read before the clear deletes the explainer's row, for its subjects.
  * Every key outside the fold table pays nothing. A failed read marks no lane bound key
  * and a refused write is reported: both only let a key post sooner, the loud side.
+ *
+ * Never throws: it runs between the delivered all-clear and the firing marker's delete,
+ * so a throw would leave the marker and post the same all-clear again next tick.
  */
 async function markExplainedOnClear(explainer: string): Promise<void> {
-  let subjects: string[] | null = null;
-  if (clearNeedsSubjects(explainer)) {
-    const seen = await readStamp(explainer).catch(() => ({ kind: "unreadable" }) as const);
-    subjects = seen.kind === "present" ? seen.subjects : null;
+  try {
+    let subjects: string[] | null = null;
+    if (clearNeedsSubjects(explainer)) {
+      const seen = await readStamp(explainer);
+      subjects = seen.kind === "present" ? seen.subjects : null;
+      if (seen.kind === "unreadable") {
+        log.warn("slack-alert", { msg: "explainer subjects unreadable at its clear; lane bound keys get no grace", key: explainer });
+      }
+    }
+    const keys = marksOnClear(explainer, subjects);
+    if (keys.length === 0) return;
+    const at = new Date().toISOString();
+    reportWriteFailure(
+      await supabaseAdmin()
+        .from("alert_state")
+        .upsert(
+          keys.map((k) => ({ key: foldMarkKey(k), last_sent_at: at })),
+          { onConflict: "key" },
+        ),
+      "alert fold mark on clear",
+    );
+  } catch (err) {
+    log.warn("slack-alert", { msg: "fold marks at a clear failed; the keys it explains get no grace", key: explainer }, err);
   }
-  const keys = marksOnClear(explainer, subjects);
-  if (keys.length === 0) return;
-  const at = new Date().toISOString();
-  reportWriteFailure(
-    await supabaseAdmin()
-      .from("alert_state")
-      .upsert(
-        keys.map((k) => ({ key: foldMarkKey(k), last_sent_at: at })),
-        { onConflict: "key" },
-      ),
-    "alert fold mark on clear",
-  );
 }
 
 async function sendThrottledAlertUnrecorded(
