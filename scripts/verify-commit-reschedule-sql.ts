@@ -76,7 +76,7 @@ const lit = (v: unknown) => (v === null ? "null" : `'${JSON.stringify(v).replace
 /** A new advisor, so each case's calls can never clash with another case's. */
 function advisor(): string {
   const id = nextId().replace(/^2/, "3");
-  sql(`insert into users (id, org_id, email, role) values ('${id}', '${ORG}', '${id}@example.com', 'agent');`);
+  sql(`insert into users (id, org_id, email, role) values ('${id}', '${ORG}', '${id}@trypennie.com', 'agent');`);
   return id;
 }
 
@@ -114,7 +114,7 @@ function moveSql(m: Move): string {
   return `select coalesce(commit_reschedule(
       p_booking_id => '${m.booking}', p_guard_assigned => ${sqlLiteral(guardAssigned)}, p_guard_event => ${sqlLiteral(guardEvent)},
       p_starts_at => '${at(m.start)}', p_ends_at => '${at(m.end)}', p_assigned_user_id => '${m.to}',
-      p_agent_name => 'Agent ${m.to.slice(-1)}', p_agent_email => '${m.to.slice(-1)}@example.com',
+      p_agent_name => 'Agent ${m.to.slice(-1)}', p_agent_email => '${m.to.slice(-1)}@trypennie.com',
       p_gcal_event_id => '${newEvent(m)}', p_reschedule_seq => ${m.seq ?? 1},
       p_set_routing_trace => ${m.trace !== undefined}, p_routing_trace => ${lit(m.trace ?? null)},
       p_steps => ${m.steps === undefined ? lit(STEPS) : lit(m.steps)}, p_payload => ${lit(m.payload ?? payloadFor(m))})::text, 'null');`;
@@ -140,8 +140,8 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Reschedule org');
     insert into users (id, org_id, email, role) values
-      ('${A}', '${ORG}', 'a@example.com', 'agent'), ('${B}', '${ORG}', 'b@example.com', 'agent'),
-      ('${H}', '${ORG}', 'h@example.com', 'agent');
+      ('${A}', '${ORG}', 'a@trypennie.com', 'agent'), ('${B}', '${ORG}', 'b@trypennie.com', 'agent'),
+      ('${H}', '${ORG}', 'h@trypennie.com', 'agent');
     ${callEventTypeSql(ORG, ET)}
     ${lowBucketSql(ORG, B100, ET)}
   `);
@@ -167,7 +167,7 @@ try {
     const answer = move(m);
     assert(UUID.test(answer), `a move to another advisor answers its outbox row's id (got ${answer})`);
     eq(state(id),
-      sql(`select concat_ws('|', '${at("13:00")}'::timestamptz, '${at("13:20")}'::timestamptz, '${B}', 'Agent b', 'b@example.com',
+      sql(`select concat_ws('|', '${at("13:00")}'::timestamptz, '${at("13:20")}'::timestamptz, '${B}', 'Agent b', 'b@trypennie.com',
              'rescheduled', '${newEvent(m)}', 1, ${lit(trace)}::text, false);`),
       "the booking carries the new time, advisor, event id, ordinal and trace, and reads as rescheduled");
     eq(outboxRows(id), "1", "exactly one outbox row for the booking");

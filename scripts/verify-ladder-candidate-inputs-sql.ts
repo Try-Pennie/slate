@@ -91,7 +91,7 @@ function booking(o: { bucket: string; user: string; start: string; kind?: string
       startIso: o.start,
       endIso: end,
       status: o.status,
-      attendeeEmail: `lead-${id}@example.com`,
+      attendeeEmail: `lead-${id}@trypennie.com`,
       kind: o.kind,
     }),
   );
@@ -137,14 +137,14 @@ try {
   sql(`
     insert into organizations (id, name) values ('${ORG}', 'Ladder org'), ('${ORG2}', 'Other org');
     insert into users (id, org_id, email, role, bookable, deactivated_at, attributes) values
-      ('${A}', '${ORG}', 'a@example.com', 'agent', true, null, '{"debt_team":["Low"]}'),
-      ('${B}', '${ORG}', 'b@example.com', 'agent', true, null, '{"debt_team":["Medium"]}'),
-      ('${C}', '${ORG}', 'c@example.com', 'agent', true, null, '{}'),
-      ('${D}', '${ORG}', 'd@example.com', 'agent', true, null, '{"debt_team":["High"]}'),
-      ('${OFF}', '${ORG}', 'off@example.com', 'agent', false, null, '{}'),
-      ('${GONE}', '${ORG}', 'gone@example.com', 'agent', true, now() - interval '1 day', '{}'),
-      ('${OTHER}', '${ORG2}', 'other@example.com', 'agent', true, null, '{}'),
-      ('${NOSCHED}', '${ORG}', 'nosched@example.com', 'agent', true, null, '{}');
+      ('${A}', '${ORG}', 'a@trypennie.com', 'agent', true, null, '{"debt_team":["Low"]}'),
+      ('${B}', '${ORG}', 'b@trypennie.com', 'agent', true, null, '{"debt_team":["Medium"]}'),
+      ('${C}', '${ORG}', 'c@trypennie.com', 'agent', true, null, '{}'),
+      ('${D}', '${ORG}', 'd@trypennie.com', 'agent', true, null, '{"debt_team":["High"]}'),
+      ('${OFF}', '${ORG}', 'off@trypennie.com', 'agent', false, null, '{}'),
+      ('${GONE}', '${ORG}', 'gone@trypennie.com', 'agent', true, now() - interval '1 day', '{}'),
+      ('${OTHER}', '${ORG2}', 'other@trypennie.com', 'agent', true, null, '{}'),
+      ('${NOSCHED}', '${ORG}', 'nosched@trypennie.com', 'agent', true, null, '{}');
     ${eventTypesInsertSql([
       { id: ET, orgId: ORG, name: "Call", durationMin: 20, bufferBeforeMin: 10, bufferAfterMin: 10 },
       { id: ET2, orgId: ORG2, name: "Other call", durationMin: 30 },

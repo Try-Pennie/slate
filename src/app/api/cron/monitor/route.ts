@@ -284,6 +284,8 @@ import {
   offsiteOriginReachedVerdict,
   AUTH_SIGN_IN_VERDICT_LANE,
   authSignInReachedVerdict,
+  AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE,
+  authUnexpectedSignInReachedVerdict,
   AWAITING_ACTIVATION_VERDICT_LANE,
   awaitingActivationReachedVerdict,
   STRANDED_HIRES_VERDICT_LANE,
@@ -333,7 +335,7 @@ import {
   runCiHealthCheck,
 } from "@/lib/monitor/github-ci-health";
 import { BUILD_COMMIT } from "@/lib/build-info";
-import { githubCanaryToken, appUrl, publicSupabaseUrl, publicSupabasePublishableKey } from "@/lib/env";
+import { githubCanaryToken, appUrl, publicSupabaseUrl, publicSupabasePublishableKey, googleHostedDomain } from "@/lib/env";
 import {
   runMigrationDriftCheck,
   readAppliedMigrationVersions,
@@ -384,6 +386,11 @@ import { runDefinerGrantsCheck, type DefinerFunctionRow } from "@/lib/monitor/de
 import { runLaneClaimHealthCheck } from "@/lib/monitor/lane-claim-health";
 import type { LaneClaim } from "@/lib/monitor/lane-claim";
 import { runAuthSignInSurfaceCheck, readAuthSettings } from "@/lib/monitor/auth-sign-in-surface";
+import {
+  runAuthUnexpectedSignInCheck,
+  type AuthUnexpectedSignInResult,
+} from "@/lib/monitor/auth-unexpected-sign-ins";
+import { listAuthUsers } from "@/lib/auth/auth-users";
 import { runAuditChainCheck, type AuditChainRow } from "@/lib/monitor/audit-chain";
 import { EDGE_LIMITER_BINDINGS } from "@/lib/rate-limit-core";
 import { BURST_LIMITER_BINDING } from "@/lib/rate-limit-burst";
@@ -4739,6 +4746,66 @@ export async function GET(req: NextRequest) {
         log: (msg) => log.info("auth-sign-in", { msg }),
       }),
     );
+    // Did anybody get in by a way other than Google or Microsoft, or does an account
+    // outside trypennie.com outlive its coordinator (#4379)? Read from Auth's OWN record:
+    // each recent session's sign in method through auth_sign_in_methods (auth.mfa_amr_claims;
+    // production writes no auth audit log to the database), and the admin account listing
+    // against the active coordinators' links. Independent of the session gate and of the
+    // settings check above, which see a session refused and a provider switched on.
+    //
+    // Cost on this lane: nothing on eleven ticks in twelve. On the first tick of each hour,
+    // one RPC over auth.mfa_amr_claims (a few hundred rows, no index on its time), one account
+    // listing (one page at the roster's size) and one roster bounded users read. Not gated
+    // on the shared setup reads: it reads its own. A half that cannot be read is
+    // unmeasured and clears nothing; either half's finding still pages.
+    const authUnexpectedSignIn = await steps.run<AuthUnexpectedSignInResult | null>("auth_unexpected_sign_in", null, (step) =>
+      runAuthUnexpectedSignInCheck({
+        nowMs: now,
+        hostedDomain: (() => {
+          try {
+            return googleHostedDomain();
+          } catch {
+            // An unknown domain makes the accounts half unmeasured, never "all inside".
+            return "";
+          }
+        })(),
+        readLogins: async (sinceIso, controlSinceIso) => {
+          const { data, error } = await db.rpc("auth_sign_in_methods", { p_since: sinceIso, p_control_since: controlSinceIso });
+          if (error) {
+            log.warn("auth-unexpected-sign-in", { msg: "sign in method read failed" }, error);
+            throw new Error(error.message);
+          }
+          return data;
+        },
+        readAccounts: () => listAuthUsers(),
+        readActiveCoordinatorAuthIds: async () => {
+          const rows = unwrap(
+            await db
+              // cap-safe: users is roster bounded (SAFE_TABLES), and coordinators are a handful.
+              // any-advisor-ok: which coordinators hold a sign in, never the advisor roster.
+              .from("users")
+              .select("auth_user_id")
+              .eq("role", "coordinator")
+              .is("deactivated_at", null)
+              .not("auth_user_id", "is", null),
+            "auth-unexpected-sign-in.coordinators",
+          ) as { auth_user_id: string }[] | null;
+          return (rows ?? []).map((r) => r.auth_user_id);
+        },
+        // alert-key: auth_unexpected_sign_in
+        // alert-text-ok: our own copy from auth-unexpected-sign-ins.ts, built from providers,
+        // counts and addresses; no error text can reach it.
+        notify: sendThrottledAlert,
+        // A condition: it stays true until the day clears or the account is deleted.
+        // alert-key: auth_unexpected_sign_in
+        // all-clear-proof: scripts/test-auth-unexpected-sign-ins.ts - a week with no OAuth sign in, a
+        // refused read, an unreadable roster and an incomplete listing each clear nothing.
+        resolve: resolveAlert,
+        cooldownMs: cooldownMs.auth_unexpected_sign_in,
+        log: (msg) => log.info("auth-unexpected-sign-in", { msg }),
+      }).then((result) => (result.status === "not-due" ? step.unmeasured(result) : result)),
+    );
+
     // Has the audit log been changed after it was written? (#3090)
     //
     // Migration 0160 chains every audit_log row to the one before it by hash. This walks
@@ -5160,6 +5227,9 @@ export async function GET(req: NextRequest) {
       // #3082: the auth settings check is silent while Google is the only way in AND
       // while its read keeps failing, so only a measured reading stamps.
       recordDetectorVerdict(AUTH_SIGN_IN_VERDICT_LANE, authSignInReachedVerdict(authSignIn)),
+      // #4379: hourly, and silent both on a clean day and on a blind read, so only a tick
+      // that measured a half stamps.
+      recordDetectorVerdict(AUTH_UNEXPECTED_SIGN_IN_VERDICT_LANE, authUnexpectedSignInReachedVerdict(authUnexpectedSignIn)),
       recordDetectorVerdict(
         AWAITING_ACTIVATION_VERDICT_LANE,
         awaitingActivationReachedVerdict(awaitingActivation),
@@ -5267,6 +5337,8 @@ export async function GET(req: NextRequest) {
       // null when the step failed; status "unmeasured" inside when the settings could not
       // be read. Carries every provider the hosted project reports on (#3082).
       authSignIn,
+      // null when the step failed, not-due off the hour (#4379).
+      authUnexpectedSignIn,
       truncated,
       volume,
       pageVolume,

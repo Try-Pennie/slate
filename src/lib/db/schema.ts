@@ -384,6 +384,14 @@ export interface Database {
         Args: Record<string, never>;
         Returns: string[] | null;
       };
+      /** #4379 (migration 0212): how each session made since `p_since` was signed in, by
+       *  amr method with the addresses, read from auth.mfa_amr_claims, and how many oauth
+       *  sign ins were made since `p_control_since`, the positive control. Judged in
+       *  `src/lib/monitor/auth-unexpected-sign-ins.ts`. One jsonb value. */
+      auth_sign_in_methods: {
+        Args: { p_since: string; p_control_since: string };
+        Returns: unknown;
+      };
       /** #2090 (migration 0138): events received at or after `p_since`, per reason.
        *  One row per reason at most, so eleven rows, far below PostgREST's cap. */
       regal_call_reason_counts: {
@@ -458,7 +466,7 @@ export interface Database {
         Args: { p_key: string; p_window_seconds: number; p_max: number };
         Returns: boolean;
       };
-      /** #4380 (migration 0212): count one transfer queue reading against its business day. */
+      /** #4380 (migration 0213): count one transfer queue reading against its business day. */
       record_transfer_queue_reading: {
         Args: { p_day: string; p_free: number; p_reached: boolean };
         Returns: undefined;

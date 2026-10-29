@@ -178,10 +178,13 @@ export function staffAccessInputError(input: {
   if (!canGrantStaffAccess(input.actorRole)) return "not_authorized";
   const email = normalizeStaffEmail(input.email);
   if (staffEmailError(email)) return "invalid_email";
-  // Sign in is gated on the Workspace domain (#589), so an address outside it can
-  // never become a session. Granting to one is a guaranteed silent failure, and
-  // this is the one mismatch Slate can catch at the moment of typing.
-  if (!isAllowedEmail(email, input.allowedDomain)) return "wrong_domain";
+  // Staff sign in with Google, gated on the Workspace domain (#589), so for them an
+  // address outside it can never become a session: granting to one is a guaranteed
+  // silent failure, and this is the one mismatch Slate can catch at the moment of
+  // typing. #4379: a scheduling coordinator is the one exception. They sign in with
+  // their own company's Microsoft account, so an outside address IS their login, and
+  // the database holds it to them (users_outside_email_is_coordinator).
+  if (!isAllowedEmail(email, input.allowedDomain) && input.requestedRole !== "coordinator") return "wrong_domain";
   if (!isGrantableStaffRole(input.requestedRole)) return "invalid_role";
   return null;
 }
@@ -289,7 +292,7 @@ export function staffAccessMessage(
     case "wrong_domain":
       return {
         tone: "error",
-        text: `${email} is outside the company Google domain, so it could never sign in. Use their work address.`,
+        text: `${email} is outside the company Google domain, so it could only sign in as a coordinator. Use their Pennie address, or grant the coordinator role.`,
       };
     case "invalid_role":
       return {

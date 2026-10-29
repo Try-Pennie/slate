@@ -72,6 +72,14 @@ sign_in_sign_ups = 300
 token_verifications = 300
 token_refresh = 300
 
+# #4379: Slate refuses a session whose amr is not OAuth alone, and the sign in check
+# makes its session with a magic link, so this hook gives every local session the
+# OAuth amr production's sessions carry. Defined by e2e/oauth-session-hook.sql, which
+# e2e/run.ts applies after the real migrations; production registers no such hook.
+[auth.hook.custom_access_token]
+enabled = true
+uri = "pg-functions://postgres/public/e2e_oauth_session_claims"
+
 [auth.email]
 enable_signup = true
 double_confirm_changes = false

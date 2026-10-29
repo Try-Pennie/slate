@@ -3786,7 +3786,7 @@ const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1)
 
 /**
  * Save when the coordinator page offers a live transfer, and to which line (#4380,
- * `booking_settings.transfer_offer_threshold` and `transfer_line`, migration 0212). SUPER
+ * `booking_settings.transfer_offer_threshold` and `transfer_line`, migration 0213). SUPER
  * ADMIN only, like the rest of the coordinators' settings on this page.
  *
  * WHO: `requireSuperAdmin`, checked here, never trusted to the page. WHOSE DATA: the one org
@@ -3845,6 +3845,8 @@ export async function setTransferOfferSettings(form: FormData): Promise<void> {
  * `writeRoutableState` and bans their Supabase sign in. So a removed coordinator is
  * refused on their very next request (`gateSessionRow` in `realCurrentUser`, which the
  * coordinator page's own gate reads) and at sign in (`DeactivatedAccountError`).
+ * #4379: their Supabase auth user is then deleted, so a coordinator's company
+ * Microsoft sign in does not outlive their row; see the step itself for the order.
  *
  * Their role is left as coordinator, so removing them can never make them an advisor,
  * and no coverage sweep is asked for: the calls a coordinator booked sit with the
@@ -3863,14 +3865,14 @@ export async function removeCoordinator(form: FormData): Promise<void> {
   // cap-safe: single-row primary-key lookup.
   const { data, error: lookupError } = await supabaseAdmin()
     .from("users")
-    .select("id, org_id, role, name, email, deactivated_at")
+    .select("id, org_id, role, name, email, deactivated_at, auth_user_id")
     .eq("id", userId)
     .maybeSingle();
   if (lookupError) {
     log.error("admin-actions", { msg: "coordinator removal lookup failed", user_id: userId }, lookupError);
     refuse("Slate could not check who that is, so nobody's access changed. Try again in a moment.");
   }
-  const target = data as Pick<User, "id" | "org_id" | "role" | "name" | "email" | "deactivated_at"> | null;
+  const target = data as Pick<User, "id" | "org_id" | "role" | "name" | "email" | "deactivated_at" | "auth_user_id"> | null;
   if (!target || target.org_id !== actor.org_id || target.role !== "coordinator") {
     refuse("That person is not a coordinator here, so nothing was changed.");
   }
@@ -3885,8 +3887,37 @@ export async function removeCoordinator(form: FormData): Promise<void> {
   }
   if (result!.status === "not_found") refuse("That person is not a coordinator here, so nothing was changed.");
 
+  // #4379: then their Supabase auth user goes, so no sign in outside trypennie.com
+  // outlives its row. AFTER the departure, never before: a delete that landed ahead of
+  // a failed departure would leave an active, unlinked coordinator row, which the
+  // before_user_created hook lets sign in again. Deleting it ends every session on it
+  // and sets `auth_user_id` null through its foreign key, as relinking a Google account
+  // does (`relinkGoogleAccount`). It runs on a second press too, so a delete the first
+  // press failed converges; 404 is an auth user already gone. A failure is said, logged
+  // and recorded, and the monitor's orphan check pages on the auth user until it goes.
+  let signIn: "deleted" | "delete_failed" | null = null;
+  if (target!.auth_user_id) {
+    const { error: deleteError } = await supabaseAdmin().auth.admin.deleteUser(target!.auth_user_id);
+    if (deleteError && deleteError.status !== 404) {
+      log.error("admin-actions", { msg: "coordinator removal could not delete the sign in", user_id: userId }, deleteError);
+      signIn = "delete_failed";
+    } else if (!deleteError) {
+      signIn = "deleted";
+    }
+  }
+
   // After the change, and only when it changed something: a second press on somebody
-  // already removed is a no-op and records nothing, as `setUserLifecycle` does.
+  // already removed is a no-op and records nothing, as `setUserLifecycle` does, unless
+  // it deleted a sign in the first press left behind.
+  if (result!.status === "noop" && signIn === "deleted") {
+    await recordAudit({
+      orgId: actor.org_id,
+      actorId: actor.id,
+      action: "agent.sign_in_removed",
+      targetUserId: userId,
+      details: { sign_in: { from: "present", to: "deleted" }, because: "coordinator removed" },
+    });
+  }
   if (result!.status === "applied") {
     await recordAudit({
       orgId: actor.org_id,
@@ -3900,10 +3931,16 @@ export async function removeCoordinator(form: FormData): Promise<void> {
         // A ban that did not land is recorded: the session gate refuses them anyway, and
         // this is the fact somebody reading the trail would need.
         ...(result!.sessionRevoke ? { session_revoke: result!.sessionRevoke } : {}),
+        ...(signIn ? { sign_in: { from: "present", to: signIn } } : {}),
       },
     });
   }
   revalidatePath(COORDINATOR_BOOKING_HREF);
+  if (signIn === "delete_failed") {
+    refuse(
+      `${who} was removed and can no longer sign in, but their sign in could not be deleted. Slate flags it until it is gone; press Remove again from their row if it is still listed.`,
+    );
+  }
   redirect(`${COORDINATOR_BOOKING_HREF}${savedQuery("coordinator-removed")}`);
 }
 

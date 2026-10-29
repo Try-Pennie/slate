@@ -4,7 +4,7 @@
  * line the customer is transferred to. Every sentence the section says, and the one reading
  * of what was typed, which the server action uses (the page never decides what is valid).
  *
- * The bounds and the line's shape are the column checks' (migration 0212), from
+ * The bounds and the line's shape are the column checks' (migration 0213), from
  * `transfer-queue.ts`, so the form cannot accept what the database refuses
  * (scripts/test-transfer-offer-form.ts). Pure, relative imports only.
  */

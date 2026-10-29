@@ -38,14 +38,14 @@ const nextId = () => `30000000-0000-4000-8000-${String(++seq).padStart(12, "0")}
 function user(org: string, cols: { placeholder?: boolean; test?: boolean; bookable?: boolean } = {}): string {
   const id = nextId();
   sql(`insert into users (id, org_id, email, role, is_placeholder, is_test, bookable)
-       values ('${id}', '${org}', '${id}@example.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false}, ${cols.bookable ?? false});`);
+       values ('${id}', '${org}', '${id}@trypennie.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false}, ${cols.bookable ?? false});`);
   return id;
 }
 /** The same insert, expected to be refused: the verbose error, or null if it ran. */
 function userRefused(org: string, cols: { placeholder?: boolean; test?: boolean; bookable?: boolean }): string | null {
   const id = nextId();
   return pg.verboseError(`insert into users (id, org_id, email, role, is_placeholder, is_test, bookable)
-       values ('${id}', '${org}', '${id}@example.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false}, ${cols.bookable ?? false});`);
+       values ('${id}', '${org}', '${id}@trypennie.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false}, ${cols.bookable ?? false});`);
 }
 
 try {

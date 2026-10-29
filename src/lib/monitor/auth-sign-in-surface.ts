@@ -1,10 +1,12 @@
 /**
- * Does production's Supabase Auth accept anything but Google? (#3082)
+ * Does production's Supabase Auth accept anything but Google, and Microsoft for invited
+ * coordinators? (#3082, #4379)
  *
  * Slate staff sign in with Google only. The app refuses an outside Google account in
- * the OAuth callback, and the before_user_created hook (migration 0159) refuses any new
- * account outside trypennie.com before it exists. Neither can see two settings that
- * live only in the Supabase dashboard:
+ * the OAuth callback, and the before_user_created hook (0159, replaced by 0212) refuses
+ * any new account outside trypennie.com before it exists, except an invited coordinator
+ * created through Microsoft (`azure`). Neither can see two settings that live only in
+ * the Supabase dashboard:
  *
  *   - the Email provider, which opens /signup, /recover, password and magic link sign
  *     in to anybody holding the public key, and lets an EXISTING account in without
@@ -22,7 +24,8 @@
  *   unmeasured - the read failed, or answered a shape this cannot judge. A flag that is
  *                missing or not a boolean is never read as off. Pages nobody, clears
  *                nothing.
- *   healthy    - Google is the only way in.
+ *   healthy    - Google is the only way in for staff, and Microsoft (`azure`) for
+ *                invited coordinators (#4379), on or off.
  *   open       - email is on, or another provider can create an account. This pages.
  *
  * Google being OFF is deliberately not a finding here: that is nobody being able to
@@ -38,6 +41,14 @@ export const AUTH_SIGN_IN_SURFACE_KEY = "auth_sign_in_beyond_google";
 
 /** The one provider Slate signs staff in with. */
 export const ALLOWED_PROVIDER = "google";
+
+/**
+ * #4379: the providers that are part of the healthy state, on or off. Google for staff,
+ * and Microsoft (`azure`) for invited scheduling coordinators, whose accounts the
+ * before_user_created hook (migration 0212) lets be created only for an active,
+ * unlinked coordinator row. Anything else that can create an account is open.
+ */
+export const ALLOWED_PROVIDERS: readonly string[] = [ALLOWED_PROVIDER, "azure"];
 
 /**
  * How long the settings read may take before the tick calls it unmeasured. The
@@ -161,7 +172,7 @@ export function authSignInSurfaceHealth(body: unknown): AuthSignInSurfaceHealth 
   const emailOn = parsed.external.email === true;
   const signupProviders = parsed.disableSignup
     ? []
-    : providersOn.filter((name) => name !== ALLOWED_PROVIDER && name !== "email");
+    : providersOn.filter((name) => !ALLOWED_PROVIDERS.includes(name) && name !== "email");
   const samlSignup = !parsed.disableSignup && parsed.samlEnabled;
 
   if (emailOn || signupProviders.length > 0 || samlSignup) {
@@ -197,10 +208,10 @@ export function formatAuthSignInOpenAlert(
   }
   if (health.samlSignup) lines.push("- SAML single sign on can create new accounts");
   return (
-    `Supabase Auth in production accepts more than Google sign in:\n` +
+    `Supabase Auth in production accepts more than Google and invited coordinators' Microsoft sign in:\n` +
     lines.join("\n") +
     `\nTurn ${lines.length === 1 ? "it" : "each"} off in the Supabase dashboard under ` +
-    `Authentication, Sign In / Providers, leaving Google on. Slate staff sign in with Google only (#3082).`
+    `Authentication, Sign In / Providers, leaving Google and Microsoft (Azure) on. Slate staff sign in with Google only (#3082), and invited coordinators with Microsoft (#4379).`
   );
 }
 
@@ -209,8 +220,8 @@ export function formatAuthSignInClearedAlert(
   _health: Extract<AuthSignInSurfaceHealth, { status: "healthy" }>,
 ): string {
   return (
-    "Supabase Auth in production accepts Google sign in only again: email is off and no " +
-    "other provider can create an account, read from the live auth settings."
+    "Supabase Auth in production is back to Google sign in, and Microsoft for invited coordinators: " +
+    "email is off and no other provider can create an account, read from the live auth settings."
   );
 }
 

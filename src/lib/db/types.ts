@@ -86,6 +86,13 @@ export interface User {
   name: string | null;
   role: Role;
   google_sub: string | null;
+  /**
+   * The Microsoft account subject a coordinator signs in with (#4379, migration 0212),
+   * recorded when their first Microsoft sign in links their row (`linkCoordinator`) and
+   * compared on every request after. Null for everybody who signs in with Google.
+   * Optional in the type so a partial select or an older fixture reads as unset.
+   */
+  microsoft_sub?: string | null;
   /** Google profile picture URL from OAuth metadata; null until first login. */
   avatar_url: string | null;
   attributes: Attributes;
@@ -626,11 +633,11 @@ export interface BookingSettings {
    *  false: a prerender is a no op until an admin turns it on. Read through
    *  `src/lib/embed/prerender-switch.ts`. */
   embed_prerender_enabled: boolean;
-  /** #4380, migration 0212: free advisors in the transfer queue at or above which the
+  /** #4380, migration 0213: free advisors in the transfer queue at or above which the
    *  coordinator booking page offers Transfer now. NOT NULL DEFAULT 3, 1 to 100. Read
    *  through `readTransferOfferSettings`. */
   transfer_offer_threshold: number;
-  /** #4380, migration 0212: the line a partner agent transfers the customer to, as
+  /** #4380, migration 0213: the line a partner agent transfers the customer to, as
    *  786-504-0671. NOT NULL DEFAULT '786-504-0671', held to that shape by a check. */
   transfer_line: string;
   updated_at: string;
@@ -1546,7 +1553,7 @@ export interface LeadTextingLine {
   replaced_at: string | null;
 }
 
-/** #4380, migration 0212: what the monitor lane's transfer queue probe measured on one
+/** #4380, migration 0213: what the monitor lane's transfer queue probe measured on one
  *  business day (the org's zone). Written only by `record_transfer_queue_reading`. */
 export interface TransferQueueDay {
   day: string;

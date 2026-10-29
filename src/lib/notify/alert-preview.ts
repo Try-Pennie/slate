@@ -588,6 +588,10 @@ import {
   formatAuthSignInClearedAlert,
 } from "@/lib/monitor/auth-sign-in-surface";
 import {
+  formatAuthUnexpectedSignInAlert,
+  formatAuthUnexpectedSignInCleared,
+} from "@/lib/monitor/auth-unexpected-sign-ins";
+import {
   formatHydrationFailingAlert,
   formatHydrationRecovery,
 } from "@/lib/google/hydration";
@@ -3015,6 +3019,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         availableBytes: 0.6 * 1024 ** 3,
         swapTotalBytes: 1 * 1024 ** 3,
         swapFreeBytes: 0.6 * 1024 ** 3,
+        committedBytes: 4 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
       }),
     ),
   },
@@ -3034,6 +3040,8 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         availableBytes: 1.2 * 1024 ** 3,
         swapTotalBytes: 1 * 1024 ** 3,
         swapFreeBytes: 1 * 1024 ** 3,
+        committedBytes: 4 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
       }),
     ),
   },
@@ -3047,6 +3055,23 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
         availableBytes: 3 * 1024 ** 3,
         swapTotalBytes: 1 * 1024 ** 3,
         swapFreeBytes: 0.7 * 1024 ** 3,
+        committedBytes: 4 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
+      }),
+    ),
+  },
+  {
+    key: "db_saturation_warn",
+    state: "committed memory near the commit limit, memory and swap healthy",
+    channel: "info",
+    text: formatDbSaturationWarn(
+      judgeDbSaturation({
+        totalBytes: 7.54 * 1024 ** 3,
+        availableBytes: 5.2 * 1024 ** 3,
+        swapTotalBytes: 1 * 1024 ** 3,
+        swapFreeBytes: 1 * 1024 ** 3,
+        committedBytes: 4.6 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
       }),
     ),
   },
@@ -4716,6 +4741,30 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: formatAuthSignInClearedAlert({ status: "healthy", providersOn: ["google"] }),
   },
   {
+    key: "auth_unexpected_sign_in",
+    state: "two sign ins by a one time code in the last day",
+    channel: "alert",
+    text: formatAuthUnexpectedSignInAlert({
+      offending: [{ method: "otp", sessions: 2, actors: ["ada.admin@trypennie.com"] }],
+      orphans: [],
+    }),
+  },
+  {
+    key: "auth_unexpected_sign_in",
+    state: "a removed coordinator's account left behind, beside a password sign in",
+    channel: "alert",
+    text: formatAuthUnexpectedSignInAlert({
+      offending: [{ method: "password", sessions: 1, actors: ["dana.coordinator@partner.example"] }],
+      orphans: [{ authUserId: "00000000-0000-4000-8000-000000000001", email: "left.already@partner.example" }],
+    }),
+  },
+  {
+    key: "auth_unexpected_sign_in",
+    state: "cleared",
+    channel: "recovery",
+    text: formatAuthUnexpectedSignInCleared(),
+  },
+  {
     key: "audit_log_chain_broken",
     state: "a row's content was edited",
     channel: "alert",
@@ -5525,6 +5574,7 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
       ["verdict:busy-drift", "the busy drift sampler has stopped concluding"],
       ["verdict:offsite-origin", "the off site origin check has stopped concluding"],
       ["verdict:auth-sign-in", "the auth sign in settings check has stopped concluding"],
+      ["verdict:auth-unexpected-sign-in", "the unexpected sign in check has stopped concluding"],
       ["verdict:awaiting-activation", "the waiting to become bookable check has stopped concluding"],
       ["verdict:regal-call-feed", "the Regal feed checks have stopped concluding"],
       ["verdict:regal-call-outcomes", "the Regal call outcome check has stopped concluding"],

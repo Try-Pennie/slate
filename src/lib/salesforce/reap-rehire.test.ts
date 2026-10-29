@@ -28,6 +28,7 @@ vi.mock("@/lib/env", () => ({
   sfClientId: () => "cid",
   sfClientSecret: () => "sec",
   sfInstanceUrl: () => "https://sf.example",
+  googleHostedDomain: () => "trypennie.com",
 }));
 
 const sf = vi.hoisted(() => ({ fetchSfWithRetry: vi.fn() }));

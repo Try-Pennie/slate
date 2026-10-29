@@ -7,7 +7,7 @@
  * never has enough advisors, would look exactly like a busy week. This probe is what
  * speaks. In business hours, on every tick, it asks the endpoint the same way the page
  * does (`readTransferQueue`), counts the reading against its business day
- * (`transfer_queue_days`, migration 0212), and judges two CONDITIONS:
+ * (`transfer_queue_days`, migration 0213), and judges two CONDITIONS:
  *
  *  - `transfer_queue_unreadable`: the endpoint failed on `TRANSFER_QUEUE_FAILING_TICKS`
  *    ticks in a row (fifteen minutes), so no coordinator is being offered a transfer. Only a

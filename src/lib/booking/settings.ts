@@ -345,7 +345,7 @@ export async function readPlaceholderBookingEnabled(): Promise<boolean | null> {
 
 /**
  * When the coordinator page offers a live transfer, and to which line (#4380, migration
- * 0212): `{ threshold, line }`, or **null** when the read failed.
+ * 0213): `{ threshold, line }`, or **null** when the read failed.
  *
  * Read when a coordinator finds a customer, when they press Transfer now, and by the
  * monitor lane's probe. An absent settings row is a real answer (nobody has changed them)

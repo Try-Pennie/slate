@@ -55,7 +55,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function user(org: string, cols: { placeholder?: boolean; test?: boolean } = {}): string {
   const id = nextId().replace(/^4/, "5");
   sql(`insert into users (id, org_id, email, role, is_placeholder, is_test)
-       values ('${id}', '${org}', '${id}@example.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false});`);
+       values ('${id}', '${org}', '${id}@trypennie.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false});`);
   return id;
 }
 
@@ -100,7 +100,7 @@ function moveSql(fn: "commit_reschedule" | "commit_reschedule_onto_placeholder",
   return `select coalesce(${fn}(
       p_booking_id => '${m.booking}', p_guard_assigned => '${m.from}', p_guard_event => ${sqlLiteral(guardEvent)},
       p_starts_at => '${at(m.start)}', p_ends_at => '${at(m.end)}', p_assigned_user_id => '${m.to}',
-      p_agent_name => 'Agent', p_agent_email => 'agent@example.com',
+      p_agent_name => 'Agent', p_agent_email => 'agent@trypennie.com',
       p_gcal_event_id => 'moved-${m.booking}-${m.seq ?? 1}', p_reschedule_seq => ${m.seq ?? 1},
       p_set_routing_trace => false, p_routing_trace => null,
       p_steps => ${m.steps === undefined ? lit(STEPS) : lit(m.steps)}, p_payload => ${lit(payloadFor(m))})::text, 'null');`;
@@ -193,17 +193,17 @@ try {
   {
     const coordinator = user(ORG);
     const row = (id: string, o: { doubleBook?: boolean } = {}) => ({
-      id, org_id: ORG, bucket_id: B100, event_type_id: ET, assigned_user_id: P, agent_name: "Marcia", agent_email: "marcia@example.com",
+      id, org_id: ORG, bucket_id: B100, event_type_id: ET, assigned_user_id: P, agent_name: "Marcia", agent_email: "marcia@trypennie.com",
       starts_at: at("06:00"), ends_at: at("06:20"), original_starts_at: at("06:00"), original_ends_at: at("06:20"),
       timezone: "America/Chicago", status: "confirmed", salesforce_id: "00Q000000000001", attendee_name: "Dana Lead",
-      attendee_first_name: null, attendee_email: "dana@example.com", attendee_phone: "+12155550100", prefill: {},
+      attendee_first_name: null, attendee_email: "dana@trypennie.com", attendee_phone: "+12155550100", prefill: {},
       gcal_event_id: `gcal-${id}`, manage_token: `tok-${id}`, idempotency_key: `coordinator:${id}`, external_id: null,
       source: "coordinator", referrer_origin: null, kind: "staff_placed", routing_trace: null,
       placed_by_user_id: coordinator, ...(o.doubleBook === false ? {} : { allow_double_book: true }),
     });
     const save = (r: ReturnType<typeof row>) => {
       const reservation = sql(`insert into booking_reservations (idempotency_key, pinned_user_id, pinned_agent_email, gcal_client_id, payload)
-        values ('${r.idempotency_key}', '${P}', 'marcia@example.com', '${r.gcal_event_id}', '{}'::jsonb) returning id;`);
+        values ('${r.idempotency_key}', '${P}', 'marcia@trypennie.com', '${r.gcal_event_id}', '{}'::jsonb) returning id;`);
       const hook = { event: "booking.created", payload: { booking_id: r.id, bucket_code: "100", status: "confirmed", booking_kind: "staff_placed" }, dedupe_key: r.id, suppression: { generic: null, regal: null } };
       return `select commit_fresh_booking(p_booking => ${lit(r)}, p_reservation_id => '${reservation}', p_webhook => ${lit(hook)}, p_routing => null)::text;`;
     };

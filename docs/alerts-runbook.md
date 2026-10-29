@@ -845,7 +845,8 @@ backfill is fixed by rewinding that table's cursor, in the same change as the wr
 ## A limit or a guard is not working
 
 Keys: `edge_limiter_unusable`, `rate_limit_broken:*`, `rate_limit_refund_broken:*`,
-`rate_limit_unidentified:*`, `confirm_line_unreachable`, `lane_claim_unreadable`.
+`rate_limit_unidentified:*`, `confirm_line_unreachable`, `lane_claim_unreadable`,
+`auth_unexpected_sign_in`.
 
 **What fired it.** A control that is supposed to bound something has stopped bounding
 it. Every limiter here fails OPEN, so the page means requests are being served
@@ -880,6 +881,21 @@ It is not a statement that the limit is down across the deployment; that is
   applied (`docs/migrations-runbook.md`); a timeout or lock means look for what holds
   `lane_runs` (the daily prune at 03:05 is one range delete). It clears on the monitor's
   next claim that is written.
+- `auth_unexpected_sign_in` (#4379) means a way in got past the sign in controls. The
+  monitor reads Auth's own record once an hour: a login in the last day by anything but
+  OAuth (`auth_sign_in_methods` over `auth.mfa_amr_claims`, since production writes no
+  auth audit log to the database), or an
+  account outside trypennie.com that no active coordinator is linked to (the admin
+  account listing against `users`). A login line: open Authentication, Sign In /
+  Providers in the Supabase dashboard and turn off whatever allowed it (the Email
+  provider stays off), then find who the named addresses are; their sessions are already
+  refused on every request by the amr check in `realCurrentUser`. An account line: a
+  coordinator removal whose sign in delete failed, or a Microsoft sign in the hook
+  admitted and the callback then refused before linking. Delete the account under
+  Authentication, Users unless the address should be granted on Team access. It clears
+  once a day passes with no such login and the accounts are gone. A week with no OAuth
+  sign in at all is read as the claims not being written, never as clean, so its verdict
+  goes stale and pages instead.
 
 **Fix or escalate.** A missing binding is a deploy fix. Treat an unmetered public path
 as time-sensitive rather than urgent: nothing is broken for a customer, and nothing is
@@ -1254,12 +1270,19 @@ median of 653ms and a p95 of 1874ms that leads felt. This check reads the databa
 memory in use (total RAM minus what Linux reports available) and swap straight from
 Supabase's privileged metrics endpoint, so the class pages on the cause rather than on the
 latency symptom. The page fires when 90% or more of memory is in use for two consecutive
-ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%.
+ticks; the whisper fires one step earlier, when over 80% is in use or swap use is over 10%,
+and also when committed memory reaches 95% of the kernel's commit limit (below).
 
 It first judged committed memory against the kernel's commit limit instead. That limit is
 enforced only in strict overcommit mode, which Supabase does not use, and on the Large
 instance it sits below physical RAM, so on 2026-10-29 at the 50% pilot it whispered at 80%
-committed with 78% of RAM free and no swap. Do not go back to it.
+committed with 78% of RAM free and no swap. Do not go back to it as the page.
+
+Committed memory is still read as a whisper only, at 95% of the commit limit. Supabase's
+published image leaves the kernel's default overcommit mode on, but the live database's
+mode cannot be read from here, and in strict mode it would refuse new connections at 100%
+with RAM free. If that whisper fires on its own, ask Supabase support whether
+`vm.overcommit_memory` is 2 on this project; if it is, make this figure page.
 
 **First checks.** The alert itself carries the two figures (the percent of memory in use and swap
 percent); that is the first read, not any Slate log. Confirm it against the Supabase

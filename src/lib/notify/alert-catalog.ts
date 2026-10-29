@@ -443,6 +443,11 @@ export const ALERT_CATALOG: AlertEntry[] = [
     why: "Supabase Auth in production accepts email sign in or another account creating provider, which stays true until somebody turns it off in the dashboard, so the reader needs to be told when it is over (#3082).",
   },
   {
+    key: "auth_unexpected_sign_in",
+    kind: "condition",
+    why: "Supabase Auth recorded a sign in by something other than Google or Microsoft in the last day, or holds an account outside trypennie.com that no active coordinator is behind, which stays true until the day clears or somebody deletes the account; the next hourly reading that finds both halves clean is the measured healthy reading that ends it (#4379).",
+  },
+  {
     key: "audit_log_chain_broken",
     kind: "condition",
     why: "An audit log entry no longer matches the hash chain written with it, which stays true until the trail is put back or re-anchored; the next complete walk from the first entry to the last that finds nothing wrong is the measured healthy reading that ends it (#3090).",

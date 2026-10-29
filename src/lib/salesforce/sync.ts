@@ -1,5 +1,7 @@
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { normalizeEmail } from "@/lib/auth/email";
+import { isAllowedEmail } from "@/lib/auth/domain";
+import { googleHostedDomain } from "@/lib/env";
 import { ensureDefaultOrg } from "@/lib/provision";
 import { querySoqlAll, sfToken } from "@/lib/salesforce/rest";
 import { mergeSfAttributes } from "@/lib/salesforce/attributes";
@@ -325,6 +327,15 @@ export interface SyncResult {
    * can tell the two apart.
    */
   salesNotBookableUnexplained: number;
+  /**
+   * Salesforce agents and managers of record this run did NOT create because their
+   * address is outside the company domain (#4379). Such an address may only belong to
+   * a scheduling coordinator (`users_outside_email_is_coordinator`), so inserting one
+   * as an agent or a manager would fail the whole batch, and every hire in it with
+   * them. Counted and logged, so a person left out this way is visible rather than
+   * silently missing from the roster.
+   */
+  outsideDomainSkipped: number;
   /** Emails made bookable this run because Salesforce moved them to Sales or gave
    *  them a first debt team, through the same gated service the admin toggle uses. */
   bookableFlipped: string[];
@@ -458,6 +469,12 @@ export interface SyncDeps {
    * nobody never loads the booking service behind it.
    */
   coverDeparture: (plan: OffboardingSweepPlan) => Promise<"queued" | "none" | "failed">;
+  /**
+   * The company domain a new roster row's address must be on (#4379). Throws when it
+   * is not configured, which refuses the run before anybody is inserted, rather than
+   * reading as "any address".
+   */
+  hostedDomain: () => string;
 }
 
 const defaultSyncDeps = (): SyncDeps => ({
@@ -466,6 +483,7 @@ const defaultSyncDeps = (): SyncDeps => ({
   nowIso: () => new Date().toISOString(),
   allowance: activationAllowance(),
   coverDeparture: async (plan) => (await (await import("@/lib/offboarding/service")).coverDeparture(plan)).coverageSweep,
+  hostedDomain: () => googleHostedDomain(),
 });
 
 /** One planned flip, carried from the roster loop to the attempt after inserts. */
@@ -518,6 +536,10 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
   const sfUsers = await queryPeople(instanceUrl, token, soql, apiOnlyExcluded);
   const db = supabaseAdmin();
   const org = await ensureDefaultOrg();
+  // #4379: read before anything is written, so an unconfigured domain refuses the run.
+  const hostedDomain = deps.hostedDomain();
+  /** Addresses this run would have created and left out as outside the domain. */
+  const outsideDomain = new Set<string>();
 
   // Every (email, Salesforce Id) pair this run observes, from whichever query
   // happened to return it (#1587). Collected as the queries run rather than
@@ -658,6 +680,10 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
         flips.push({ email, reason: plan.reason, attributes: row.attributes as Attributes, userId: current.id });
       }
       updates.push(row);
+    } else if (!isAllowedEmail(email, hostedDomain)) {
+      // #4379: an outside address may only be a coordinator's, so inserting it as an
+      // agent would fail this whole batch at users_outside_email_is_coordinator.
+      outsideDomain.add(email);
     } else {
       const plan = planOnboardingFlip({
         prev: null,
@@ -807,7 +833,20 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     }),
     new Set([...byEmail.keys(), ...placeholderEmails]),
   );
-  const managerInserts: Partial<User>[] = plan.managersToCreate.map((m) => ({
+  // #4379: a manager of record on an outside address is left out for the same reason
+  // as an agent above: users_outside_email_is_coordinator would refuse the batch.
+  const managersToInsert = plan.managersToCreate.filter((m) => {
+    if (isAllowedEmail(m.email, hostedDomain)) return true;
+    outsideDomain.add(normalizeEmail(m.email));
+    return false;
+  });
+  if (outsideDomain.size > 0) {
+    log.warn("sf-sync", {
+      msg: "left Salesforce users on an outside address out of the roster, since only a coordinator may hold one",
+      count: outsideDomain.size,
+    });
+  }
+  const managerInserts: Partial<User>[] = managersToInsert.map((m) => ({
     org_id: org.id,
     email: m.email,
     name: m.name,
@@ -1323,7 +1362,8 @@ export async function syncSalesforceAgents(over: Partial<SyncDeps> = {}): Promis
     bookablePending,
     bookableHeldByTwilio,
     bookableDeferredToNextRun,
-    managersCreated: plan.managersToCreate.length,
+    managersCreated: managersToInsert.length,
+    outsideDomainSkipped: outsideDomain.size,
     managersLinked,
     managersUnlinked,
     managersUnresolved: managerRefusals.missing.length,

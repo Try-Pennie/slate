@@ -182,6 +182,7 @@ const healthy = () => ({
   "verdict:busy-drift": ago(5 * MIN),
   "verdict:offsite-origin": ago(5 * MIN),
   "verdict:auth-sign-in": ago(5 * MIN),
+  "verdict:auth-unexpected-sign-in": ago(5 * MIN),
   "verdict:awaiting-activation": ago(5 * MIN),
   "verdict:stranded-hires": ago(5 * MIN),
   // #3090: the audit chain walk judges every tick the trail reads.
