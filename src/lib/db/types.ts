@@ -621,7 +621,7 @@ export interface BookingSettings {
   demotion_reroute_enabled: boolean;
   /** #4200: the go live switch for placeholder bookings. Off by default. */
   placeholder_booking_enabled: boolean;
-  /** #4387, migration 0212: the most program bookings on the placeholder advisor on one
+  /** #4387, migration 0213: the most program bookings on the placeholder advisor on one
    *  Eastern day, counted by the day of the call. 0 to 500 (a check constraint), 50 to
    *  start. Enforced by `claim_placeholder_day`, never in application code. */
   placeholder_day_limit: number;
@@ -823,7 +823,7 @@ export interface RegalCallOutcome {
   received_at: string;
 }
 
-/** #4387, migration 0212: a Lead Bidspoke registered for the program (#4255). Live
+/** #4387, migration 0213: a Lead Bidspoke registered for the program (#4255). Live
  *  while `expires_at` is in the future; kept after, as the record of when it was
  *  recognised. */
 export interface ProgramLead {
@@ -836,7 +836,7 @@ export interface ProgramLead {
   expires_at: string;
 }
 
-/** #4387, migration 0212: a place on a day's placeholder limit taken by a program
+/** #4387, migration 0213: a place on a day's placeholder limit taken by a program
  *  booking still in flight. Holds it for 15 minutes or until its booking's write lands. */
 export interface PlaceholderDayClaim {
   /** A new booking's idempotency key, or a move's own key. */
@@ -1025,7 +1025,7 @@ export interface Booking {
   allow_double_book: boolean;
   /**
    * True when a program lead (#4255, `program_leads`) made this booking (#4387,
-   * migration 0212). Carried through every move by the row and never cleared, so the
+   * migration 0213). Carried through every move by the row and never cleared, so the
    * record outlives the lead's 30 day mark. Its program bookings on the placeholder are
    * what the placeholder day limit counts (`placeholder_day_held`).
    */

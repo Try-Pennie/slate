@@ -2525,7 +2525,7 @@ stamped on every save, ON DELETE CASCADE in place of RESTRICT, and no stale chec
 # Proving the placeholder day limit in a real database (`pnpm verify:program-leads-sql`)
 
 #4387 (phase 1 of #4255, program leads booking any time with the placeholder advisor as
-overflow): migration 0212 adds `program_leads`, `bookings.program_lead`,
+overflow): migration 0213 adds `program_leads`, `bookings.program_lead`,
 `booking_settings.placeholder_day_limit`, `placeholder_day_claims` and four functions. The
 limit is decided by Postgres alone, under a per day advisory lock, and the HELD count is
 derived from the bookings themselves (`placeholder_day_held`), so a cancel, a move off the
@@ -2545,7 +2545,7 @@ concurrent claims for the last place grant exactly one; the per day counts agree
 the per day figure; the limit refuses -1 and 501 and starts at 50; and the web roles see
 no rows and can run none of the functions. No Docker is exit 2, UNMEASURED; any failed
 check is exit 1. It runs in the DB replay workflow with the other `verify-*-sql.ts`
-suites. Seen failing on a planted breakage of 0212: with the advisory lock removed, both
+suites. Seen failing on a planted breakage of 0213: with the advisory lock removed, both
 racers were granted the last place.
 
 **Re-run it after any change to `placeholder_day_held`, `claim_placeholder_day` or what
