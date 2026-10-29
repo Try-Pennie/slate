@@ -776,8 +776,9 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   "verdict:auth-sign-in": 6 * 60 * MIN,
   // #4379: the unexpected sign in check reads once an hour and stamps whenever either
   // half measured; the accounts half measures on every hourly run the listing and the
-  // roster read, so a quiet week of sign ins alone never ages it. Three days rather than
-  // its cadence, so a weekend of failed reads is not a page but a broken detector is.
+  // roster read, so a quiet week of sign ins alone never ages it. Its only silence is
+  // both halves unreadable run after run; three days lets a passing outage of the admin
+  // API and the database clear on its own, and still pages a detector that is broken.
   "verdict:auth-unexpected-sign-in": 3 * 24 * 60 * MIN,
   // Waiting to become bookable concludes on every tick the roster reads, and an
   // empty queue is its ordinary answer.

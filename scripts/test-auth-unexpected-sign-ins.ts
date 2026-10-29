@@ -91,7 +91,7 @@ const DASHES = new RegExp("[\\u2014\\u2013]");
 
 // --- cadence ----------------------------------------------------------------------------
 {
-  eq(AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS, 60 * 60_000, "it runs once an hour, since the audit table has no index on its time");
+  eq(AUTH_UNEXPECTED_SIGN_IN_CADENCE_MS, 60 * 60_000, "it runs once an hour: the claims table has no index on its time, and the account listing is an admin API call");
   assert(authUnexpectedSignInDue(Date.UTC(2026, 9, 29, 14, 2)), "the first tick of the hour is due");
   assert(!authUnexpectedSignInDue(Date.UTC(2026, 9, 29, 14, 7)), "the next is not");
   let due = 0;
