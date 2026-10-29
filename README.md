@@ -139,6 +139,8 @@ trigger drives sync, recompute, outbox, and self-heal. Every endpoint requires
   `scripts/test-booking-source.ts` holds this table, the code and the database
   constraint to one another.
 - Everything else prefills the form and is forwarded in the webhook payload.
+- Program leads (#4255, #4389) are recognised on this link and its manage page only;
+  `/book` and `widget.js` are not program paths and treat every lead as an ordinary one.
 
 ### An agent's own booking link (#2073)
 

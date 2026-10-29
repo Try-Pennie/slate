@@ -113,6 +113,9 @@ export const PRODUCTION_ONLY_SECRETS = [
   // #2666: signs the public test bucket's pass. Production's; the load run never
   // books the public test bucket, so without it the test path is simply off there.
   "EMBED_TEST_PASS_SECRET",
+  // #4389: signs the program lead token. Production's; a load test Worker holding it could
+  // mint tokens production's routes would honour.
+  "PROGRAM_LEAD_TOKEN_SECRET",
   // #3105: the Better Stack source token. It belongs to the slate-log-tail Worker,
   // never to Slate, so ANY Slate deployment holding it was handed it by mistake,
   // and a load test one would be shipping synthetic traffic into production's logs.
