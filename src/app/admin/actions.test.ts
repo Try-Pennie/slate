@@ -253,6 +253,8 @@ const from = vi.hoisted(() =>
       maybeSingle: vi.fn(readOne),
       single: vi.fn(readOne),
       limit: vi.fn(() => q),
+      // The primary webhook endpoint read orders by age (#4381).
+      order: vi.fn(() => q),
       // A LIST read is awaited straight off the chain with no terminal, so the
       // builder itself has to be thenable. Without this the awaited value is the
       // builder, `unwrap` sees no error and no data, and a failed read arrives as
@@ -260,9 +262,11 @@ const from = vi.hoisted(() =>
       // test double, where it would have made the guard pass on the bug (L143).
       then: (resolve: (v: unknown) => unknown) =>
         Promise.resolve({
+          // A table seeded with one row object still answers a LIST read as a list,
+          // as PostgREST does (#4381: the test send reads every endpoint's url).
           data: dbState.errorByTable[_table]
             ? null
-            : (dbState.rowsByTable[_table] ?? []),
+            : [dbState.rowsByTable[_table] ?? []].flat(),
           error: dbState.errorByTable[_table] ?? null,
         }).then(resolve),
       update,
@@ -2936,6 +2940,20 @@ describe("the webhook test send cannot reach the real destination (#1951)", () =
 
   it("refuses the host the live endpoint is on, and sends nothing", async () => {
     const state = await send(LIVE);
+    expect(state.error).toMatch(/live endpoint/i);
+    expect(fetched).toHaveLength(0);
+  });
+
+  // #4381: the dialer's lead sender is a second live endpoint, and the test send
+  // must refuse its host too, not only the primary's.
+  it("refuses the host of a second live endpoint, and sends nothing", async () => {
+    dbState.rowsByTable = {
+      webhook_endpoints: [
+        { url: LIVE, format: "regal" },
+        { url: "https://queues.example.com/sender", format: "generic" },
+      ],
+    };
+    const state = await send("https://queues.example.com/scratch");
     expect(state.error).toMatch(/live endpoint/i);
     expect(fetched).toHaveLength(0);
   });

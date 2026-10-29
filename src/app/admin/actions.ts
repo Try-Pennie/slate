@@ -99,6 +99,7 @@ import { runRosterSync } from "@/lib/salesforce/run-roster-sync";
 import type { TwilioSyncResult } from "@/lib/twilio/sync";
 import { replayDeadLetteredDeliveries, resendDelivery } from "@/lib/webhooks/emit";
 import { webhookEndpointAuditDetails, webhookUrlError } from "@/lib/webhooks/url";
+import { readPrimaryWebhookEndpoint } from "@/lib/webhooks/primary-endpoint";
 import { acquireLock } from "@/lib/locks";
 import { recordAudit } from "@/lib/audit";
 import { CALCOM_RETIREMENT_FORM, loadCalcomRetired, __resetCalcomRetiredCache } from "@/lib/calcom/retirement";
@@ -2937,13 +2938,11 @@ export async function setWebhookEndpoint(form: FormData): Promise<void> {
   // `.limit(1)` read would afterwards show whichever row came back first.
   //
   // #3089: the url and format are read too, as the "before" the trail records.
+  //
+  // #4381: the org's PRIMARY (oldest) endpoint, so a second endpoint, the dialer's
+  // lead sender, is never the row this form overwrites.
   const existing = unwrap(
-    await db
-      .from("webhook_endpoints")
-      .select("id, url, format")
-      .eq("org_id", admin.org_id)
-      .limit(1)
-      .maybeSingle(),
+    await readPrimaryWebhookEndpoint(db, admin.org_id, "id, url, format"),
     "webhook endpoint upsert lookup",
   ) as { id: string; url: string; format: string } | null;
 
@@ -3420,21 +3419,27 @@ export async function sendTestWebhook(
     };
   }
 
-  // The configured endpoint, read for two things: the format to build in, and
-  // the host the test may not be aimed at. `unwrap`, because a failed read
-  // resolving to null would drop the collision check, which is the one rule
-  // standing between a test send and the live destination (L345).
+  // The primary endpoint (#4381), the same row the page shows and its form saves,
+  // read for the format to build in. `unwrap`, because a failed read resolving to
+  // null would quietly change that format.
   const endpoint = unwrap(
-    await supabaseAdmin()
-      .from("webhook_endpoints")
-      .select("url, format")
-      .eq("org_id", admin.org_id)
-      .limit(1)
-      .maybeSingle(),
+    await readPrimaryWebhookEndpoint(supabaseAdmin(), admin.org_id, "url, format"),
     "sendTestWebhook endpoint",
   ) as { url: string; format: WebhookFormat } | null;
 
-  const refusal = testSendTargetError(target, endpoint?.url ?? null);
+  // Every endpoint's host is refused, not only the primary's (#4381): the dialer's
+  // lead sender is a live destination too. `unwrap`, because a failed read
+  // resolving to an empty list would drop the collision check, which is the one
+  // rule standing between a test send and a live destination (L345).
+  const liveUrls = (
+    (unwrap(
+      // cap-safe: webhook_endpoints is roster-bounded config, a handful of rows per org.
+      await supabaseAdmin().from("webhook_endpoints").select("url").eq("org_id", admin.org_id),
+      "sendTestWebhook live endpoints",
+    ) ?? []) as { url: string }[]
+  ).map((e) => e.url);
+
+  const refusal = testSendTargetError(target, liveUrls);
   if (refusal) return { error: refusal, sent: null };
 
   const format: WebhookFormat = endpoint?.format ?? "regal";

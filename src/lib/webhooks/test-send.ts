@@ -151,7 +151,7 @@ function isUnreachableAddress(host: string): boolean {
  * a receiver a developer is running and wrong for a field an operator types
  * into, since the same code path serves both in production.
  */
-export function testSendTargetError(target: string, configuredUrl: string | null): string | null {
+export function testSendTargetError(target: string, configuredUrls: readonly string[]): string | null {
   const raw = target.trim();
   if (!raw) return "Paste a URL to send the test to.";
 
@@ -171,10 +171,12 @@ export function testSendTargetError(target: string, configuredUrl: string | null
     return "That address is on a private or local network, which Slate will not fetch. Use a public URL such as a webhook.site address.";
   }
 
-  // The configured endpoint is refused by HOST, not by exact URL. The reason to
-  // refuse it is that the test must not reach the real destination, and a
-  // different path on the same host is still that destination.
-  if (configuredUrl) {
+  // Every configured endpoint is refused by HOST, not by exact URL. The reason to
+  // refuse one is that the test must not reach a real destination, and a
+  // different path on the same host is still that destination. An org can hold
+  // more than one live endpoint (#4381: the dialer's lead sender beside Regal), so
+  // every one of them is checked, not only the one the page edits.
+  for (const configuredUrl of configuredUrls) {
     let configured: URL | null = null;
     try {
       configured = new URL(configuredUrl);

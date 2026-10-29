@@ -3005,33 +3005,67 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
   // --- the database running low on memory (#3588) ------------------------------
   {
     key: "db_saturation",
-    state: "committed memory critically high with swap in use",
+    state: "memory in use critically high with swap in use",
     channel: "alert",
     text: formatDbSaturationAlert(
       judgeDbSaturation({
-        committedBytes: 1.55 * 1024 ** 3,
-        limitBytes: 1.69 * 1024 ** 3,
+        totalBytes: 7.54 * 1024 ** 3,
+        availableBytes: 0.6 * 1024 ** 3,
         swapTotalBytes: 1 * 1024 ** 3,
         swapFreeBytes: 0.6 * 1024 ** 3,
+        committedBytes: 4 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
       }),
     ),
   },
   {
     key: "db_saturation",
-    state: "committed memory fully back under the 80% warning line",
+    state: "memory in use fully back under the 80% warning line",
     channel: "recovery",
     text: formatDbSaturationRecovery(),
   },
   {
     key: "db_saturation_warn",
-    state: "memory elevated but not yet critical",
+    state: "memory in use past the 80% line, no swap",
     channel: "info",
     text: formatDbSaturationWarn(
       judgeDbSaturation({
-        committedBytes: 0.85 * 1024 ** 3,
-        limitBytes: 1 * 1024 ** 3,
+        totalBytes: 7.54 * 1024 ** 3,
+        availableBytes: 1.2 * 1024 ** 3,
         swapTotalBytes: 1 * 1024 ** 3,
-        swapFreeBytes: 0.95 * 1024 ** 3,
+        swapFreeBytes: 1 * 1024 ** 3,
+        committedBytes: 4 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
+      }),
+    ),
+  },
+  {
+    key: "db_saturation_warn",
+    state: "swapping with memory in use under the line",
+    channel: "info",
+    text: formatDbSaturationWarn(
+      judgeDbSaturation({
+        totalBytes: 7.54 * 1024 ** 3,
+        availableBytes: 3 * 1024 ** 3,
+        swapTotalBytes: 1 * 1024 ** 3,
+        swapFreeBytes: 0.7 * 1024 ** 3,
+        committedBytes: 4 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
+      }),
+    ),
+  },
+  {
+    key: "db_saturation_warn",
+    state: "committed memory near the commit limit, memory and swap healthy",
+    channel: "info",
+    text: formatDbSaturationWarn(
+      judgeDbSaturation({
+        totalBytes: 7.54 * 1024 ** 3,
+        availableBytes: 5.2 * 1024 ** 3,
+        swapTotalBytes: 1 * 1024 ** 3,
+        swapFreeBytes: 1 * 1024 ** 3,
+        committedBytes: 4.6 * 1024 ** 3,
+        commitLimitBytes: 4.77 * 1024 ** 3,
       }),
     ),
   },
