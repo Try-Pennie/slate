@@ -23,7 +23,14 @@ import {
   type AlertRepeat,
   type RepeatChange,
 } from "@/lib/notify/repeat-policy";
-import { foldFor, foldMarkKey, judgeFold, type FoldRead } from "@/lib/notify/alert-folds";
+import {
+  clearNeedsSubjects,
+  foldFor,
+  foldMarkKey,
+  judgeFold,
+  marksOnClear,
+  type FoldRead,
+} from "@/lib/notify/alert-folds";
 import { readAllHeartbeatMs } from "@/lib/monitor/heartbeat";
 import { findStaleLanes, LANE_STALE_BOUNDS_MS, type LaneName } from "@/lib/monitor/health";
 import { isChangeOnly } from "@/lib/notify/alert-catalog";
@@ -571,6 +578,33 @@ async function heldByFold(key: string, nowMs: number): Promise<boolean> {
   return false;
 }
 
+/**
+ * Once an explainer's all-clear is delivered, stamp each key it explains as held now
+ * (`marksOnClear`), so one coming true in the catch up waits its own grace rather than
+ * posting fresh. Read before the clear deletes the explainer's row, for its subjects.
+ * Every key outside the fold table pays nothing. A failed read marks no lane bound key
+ * and a refused write is reported: both only let a key post sooner, the loud side.
+ */
+async function markExplainedOnClear(explainer: string): Promise<void> {
+  let subjects: string[] | null = null;
+  if (clearNeedsSubjects(explainer)) {
+    const seen = await readStamp(explainer).catch(() => ({ kind: "unreadable" }) as const);
+    subjects = seen.kind === "present" ? seen.subjects : null;
+  }
+  const keys = marksOnClear(explainer, subjects);
+  if (keys.length === 0) return;
+  const at = new Date().toISOString();
+  reportWriteFailure(
+    await supabaseAdmin()
+      .from("alert_state")
+      .upsert(
+        keys.map((k) => ({ key: foldMarkKey(k), last_sent_at: at })),
+        { onConflict: "key" },
+      ),
+    "alert fold mark on clear",
+  );
+}
+
 async function sendThrottledAlertUnrecorded(
   key: string,
   cooldownMs: number,
@@ -960,6 +994,7 @@ export async function resolveAlert(
     });
     return false;
   }
+  await markExplainedOnClear(key);
   // Cleared only while it still carries THIS claim: a page delivered while the notice
   // was in flight re-stamped it, and that page is still open, so its marker and its
   // cooldown both stay. An unclaimed notice clears unconditionally, as every notice

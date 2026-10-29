@@ -81,8 +81,11 @@ refreshed, and the stale calendar sync page (`sync_staleness`) waits while it fi
 lane itself is past its bound, read live, so a `sync_staleness` page arriving while this
 one fires means sync IS running and the rotation is skipping advisors on its own: treat
 it as its own problem. Once sync runs again it waits one staleness threshold (15 minutes)
-for the rotation to catch up, then posts if advisors are still stale. The monitor tick
-judges it after the lane watchdog for this reason (`scripts/test-alert-folds.ts`).
+for the rotation to catch up, then posts if advisors are still stale; that includes
+advisors who first pass the threshold during the catch up (on 2026-10-29 the lanes cleared
+at 05:07 ET and the last advisor was current at 05:11), because the lanes page's all-clear
+starts that wait for every page it explains (`marksOnClear`). The monitor tick judges it
+after the lane watchdog for this reason (`scripts/test-alert-folds.ts`).
 
 The usual causes of a single quiet lane, which the page no longer lists: a deploy
 cancelled a run part way, a run went to a server far from the database and ran slowly,

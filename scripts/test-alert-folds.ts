@@ -30,6 +30,8 @@ import {
   foldFor,
   foldTableProblems,
   judgeFold,
+  marksOnClear,
+  clearNeedsSubjects,
   type AlertFold,
 } from "../src/lib/notify/alert-folds.ts";
 import { SYNC_STALENESS_THRESHOLD_MS } from "../src/lib/monitor/sync-staleness.ts";
@@ -72,6 +74,11 @@ broken({ explains: [] }, "a fold explaining nothing", /explains nothing/);
 broken(
   { explains: [{ ...lane, onlyWhileLaneStopped: "synk" as unknown as "sync" }] },
   "a fold bound to a lane with no bound",
+  /no bound to be stopped past/,
+);
+broken(
+  { explains: [{ ...lane, onlyWhileLaneStopped: "constructor" as unknown as "sync" }] },
+  "a fold bound to a name every object inherits",
   /no bound to be stopped past/,
 );
 {
@@ -187,6 +194,18 @@ eq(syncFold?.folded.graceMs, SYNC_STALENESS_THRESHOLD_MS, "and waits its own thr
     "a lanes' page nobody has heard from in over a day explains nothing, sync stopped or not",
   );
 }
+
+// When an explainer clears, every key it explains is stamped as held at that moment,
+// so one coming true during the catch up waits its own grace rather than posting fresh.
+// A lane bound key only when the page's last post named its lane.
+eq(marksOnClear("cron_lanes_stale", ["outbox", "sync"]), ["cron_lane_stale:pool-grouping", "sync_staleness"], "the lanes' page naming sync marks both");
+eq(marksOnClear("cron_lanes_stale", ["outbox"]), ["cron_lane_stale:pool-grouping"], "a lanes' page that never named sync marks no stale sync hold");
+eq(marksOnClear("cron_lanes_stale", null), ["cron_lane_stale:pool-grouping"], "unread subjects mark nothing lane bound: it posts, the loud side");
+eq(marksOnClear("reminder_email_unrenderable:hour", null), ["reminder_email_owed:hour"], "a family explainer marks its own member only");
+eq(marksOnClear("booking_reminders_failing", null), [], "a family explained whole has no member to mark");
+eq(marksOnClear("main_not_deployed", ["x"]), [], "a key that explains nothing marks nothing");
+eq(clearNeedsSubjects("cron_lanes_stale"), true, "the lanes' page reads its subjects before it clears");
+eq(clearNeedsSubjects("ci_runs_refused"), false, "the CI page needs no extra read");
 
 // 10: the alert a lane bound fold holds is judged after the lane watchdog in the monitor
 // tick. Every lane bound fold must have a row here, so the next one is ordered too.

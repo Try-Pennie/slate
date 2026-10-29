@@ -382,6 +382,57 @@ describe("a stopped sync lane explains the stale calendar sync page", () => {
     expect(out.filter((p) => isStaleSync(p.text)).map((p) => p.min)).toEqual([10]);
   });
 
+  // Item 4 measured the tail on 2026-10-29: the lanes cleared at 05:07:28 (the sync lane's
+  // own watchdog, every minute) and the advisors were all current only by 05:11:21. Here
+  // the lanes' page posts while the advisors are still under the threshold, so nothing is
+  // held before the clear, and the 05:11 tick catches them mid catch up.
+  it("the catch up after the lanes recover never posts as a fresh stale sync page", async () => {
+    const stoppedAt = Date.UTC(2026, 9, 29, 8, 53); // 04:53 ET
+    stopLanes(CORE.map((l) => l));
+    for (const l of CORE) stamps.set(l, stoppedAt);
+    lastSynced = stoppedAt - MIN; // 14 minutes old at 05:06: under the threshold
+    const at = (h: number, m: number, sec = 0) => Date.UTC(2026, 9, 29, h, m, sec);
+    const before = posted.length;
+    vi.setSystemTime(at(9, 1));
+    await monitorTick();
+    vi.setSystemTime(at(9, 6));
+    await monitorTick();
+    // The every minute trigger is back: the sync lane's watchdog clears the lanes' page.
+    vi.setSystemTime(at(9, 7, 28));
+    startLanes(CORE);
+    await alertOnStaleLanes();
+    // 05:11: the rotation has not reached these four yet (19 minutes old).
+    vi.setSystemTime(at(9, 11));
+    await monitorTick();
+    // 05:16: caught up.
+    vi.setSystemTime(at(9, 16));
+    lastSynced = at(9, 11, 21);
+    await monitorTick();
+    const out = posted.slice(before);
+    expect(out.filter(isStaleSync)).toEqual([]);
+    expect(out.filter(isLanes)).toHaveLength(2);
+  });
+
+  it("a lanes' page that never named sync gives a stale sync page after it no grace", async () => {
+    // Only outbox stopped, and cleared at 05:07:28; the rotation is skipping advisors on
+    // its own, so the stale sync page is not explained by anything and posts at 05:11.
+    stopLanes(["outbox"]);
+    lastSynced = Date.UTC(2026, 9, 29, 8, 55);
+    const before = posted.length;
+    for (const [h, m, sec] of [[9, 1, 0], [9, 6, 0]] as const) {
+      vi.setSystemTime(Date.UTC(2026, 9, 29, h, m, sec));
+      await monitorTick();
+    }
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 7, 28));
+    startLanes(["outbox"]);
+    await alertOnStaleLanes();
+    vi.setSystemTime(Date.UTC(2026, 9, 29, 9, 11));
+    await monitorTick();
+    const out = posted.slice(before);
+    expect(out.filter(isLanes)).toHaveLength(2);
+    expect(out.filter(isStaleSync)).toHaveLength(1);
+  });
+
   it("CONTROL: with every lane running, stale advisors post the moment they pass the threshold", async () => {
     const out = await morning(15, () => {});
     expect(out.filter((p) => isStaleSync(p.text)).map((p) => p.min)).toEqual([5]);
