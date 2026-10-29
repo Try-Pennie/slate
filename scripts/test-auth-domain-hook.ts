@@ -68,6 +68,30 @@ assert(Boolean(HOOK_FILE), `a migration defines the auth domain gate hook, and t
   eq("file" in one ? one.file : null, "0159_auth_domain_gate_hook.sql", "one defining migration is found whatever its number");
 }
 
+// --- #4379: the CHECK binds only rows that can sign in -------------------------
+// Production holds one departed agent on an outside domain (measured 2026-10-29), so a
+// CHECK on every row would fail `db push`. The rule is about who can SIGN IN: an active
+// outside row must be a coordinator, a departed one keeps the address it left with. The
+// violators the migration counts before adding it must be exactly the rows the CHECK
+// would refuse, or the count passes and the ALTER still fails, or the reverse. The
+// behaviour itself (a departed row allowed, returning it as an agent refused, as a
+// coordinator allowed) is driven in Docker by `pnpm verify:auth-domain-hook`.
+{
+  const check = migration.match(/add constraint users_outside_email_is_coordinator\s+check \(([\s\S]*?)\);/)?.[1]?.replace(/\s+/g, " ").trim() ?? "";
+  eq(
+    check,
+    "role = 'coordinator' or deactivated_at is not null or coalesce(lower(substring(email from '@([^@]*)$')), '') = 'trypennie.com'",
+    "the CHECK admits a coordinator, a departed row, or a trypennie.com address, and nothing else",
+  );
+  const counted = migration.match(/select count\(\*\) into violators\s+from public\.users\s+where ([\s\S]*?);/)?.[1]?.replace(/\s+/g, " ").trim() ?? "";
+  eq(
+    counted,
+    "role <> 'coordinator' and deactivated_at is null and coalesce(lower(substring(email from '@([^@]*)$')), '') <> 'trypennie.com'",
+    "the violator count is the CHECK's exact negation, so it counts what the ALTER would refuse",
+  );
+  assert(/if violators > 0 then\s+raise exception/.test(migration), "and any violator stops the migration before the ALTER");
+}
+
 // --- #4379: the shipped hook is the Microsoft aware one ------------------------
 {
   eq(HOOK_FILE, "0212_coordinator_microsoft_sign_in.sql", "the hook production runs is 0212's, which knows the azure provider");

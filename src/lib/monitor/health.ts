@@ -774,9 +774,10 @@ export const VERDICT_STALE_BOUNDS_MS: Record<string, number> = {
   // the checks above, it has no legitimate silence, and six hours is a maintenance
   // window (about seventy failed reads in a row) rather than a measure of the cadence.
   "verdict:auth-sign-in": 6 * 60 * MIN,
-  // #4379: the unexpected sign in check reads once an hour, and its logins half is
-  // unmeasured, not clean, after a WEEK with no OAuth sign in, so its silence is bounded
-  // at three days rather than at its cadence.
+  // #4379: the unexpected sign in check reads once an hour and stamps whenever either
+  // half measured; the accounts half measures on every hourly run the listing and the
+  // roster read, so a quiet week of sign ins alone never ages it. Three days rather than
+  // its cadence, so a weekend of failed reads is not a page but a broken detector is.
   "verdict:auth-unexpected-sign-in": 3 * 24 * 60 * MIN,
   // Waiting to become bookable concludes on every tick the roster reads, and an
   // empty queue is its ordinary answer.
