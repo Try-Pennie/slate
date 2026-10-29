@@ -169,7 +169,7 @@ export const ALERT_FIELDS: {
     key: "db_saturation_warn",
     urgency: "whisper",
     label: "Database memory getting tight",
-    help: "Over 80% of the booking database's memory is in use, or it is swapping, an early warning before it reaches the critical mark. Below the level that pages, but worth scaling the instance proactively.",
+    help: "Over 80% of the booking database's memory is in use, it is swapping, or its committed memory is near the kernel's commit limit, an early warning before it reaches the critical mark. Below the level that pages, but worth scaling the instance proactively.",
   },
   {
     key: "busy_cache_drift",

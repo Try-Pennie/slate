@@ -25,6 +25,7 @@ import {
   parseDbMemoryMetrics,
   judgeDbSaturation,
   swapWarrantsWhisper,
+  commitLimitWarrantsWhisper,
   formatDbSaturationAlert,
   formatDbSaturationRecovery,
   formatDbSaturationWarn,
@@ -40,7 +41,13 @@ const GB = 1024 * 1024 * 1024;
 
 /** A realistic metrics body at a given total/available memory and swap, in node_exporter
  *  shape. It also carries the commit accounting gauges, which the check must ignore. */
-const body = (total: number, available: number, swapTotal: number, swapFree: number): string =>
+const body = (
+  total: number,
+  available: number,
+  swapTotal: number,
+  swapFree: number,
+  commit: { committed: number; limit: number } = { committed: 0.5 * GB, limit: 1 * GB },
+): string =>
   [
     "# HELP node_memory_MemTotal_bytes Memory information field MemTotal_bytes.",
     "# TYPE node_memory_MemTotal_bytes gauge",
@@ -49,8 +56,8 @@ const body = (total: number, available: number, swapTotal: number, swapFree: num
     `${DB_METRIC_NAMES.swapTotal} ${swapTotal}`,
     `${DB_METRIC_NAMES.swapFree} ${swapFree}`,
     "node_memory_MemFree_bytes 123456",
-    "node_memory_Committed_AS_bytes 999999999999",
-    "node_memory_CommitLimit_bytes 1",
+    `${DB_METRIC_NAMES.committed} ${commit.committed}`,
+    `${DB_METRIC_NAMES.commitLimit} ${commit.limit}`,
   ].join("\n");
 
 describe("parseDbMemoryMetrics (#3588)", () => {
@@ -60,6 +67,14 @@ describe("parseDbMemoryMetrics (#3588)", () => {
     expect(r.availableBytes).toBe(5.87 * GB);
     expect(r.swapTotalBytes).toBe(2 * GB);
     expect(r.swapFreeBytes).toBe(1.8 * GB);
+  });
+
+  it("reads the commit accounting gauges, and leaves them null when absent", () => {
+    const r = parseDbMemoryMetrics(body(1 * GB, 0.5 * GB, 1 * GB, 1 * GB, { committed: 3.85 * GB, limit: 4.77 * GB }));
+    expect(r.committedBytes).toBe(3.85 * GB);
+    expect(r.commitLimitBytes).toBe(4.77 * GB);
+    const bare = parseDbMemoryMetrics(`${DB_METRIC_NAMES.total} 100\n${DB_METRIC_NAMES.available} 50`);
+    expect([bare.committedBytes, bare.commitLimitBytes]).toEqual([null, null]);
   });
 
   it("tolerates a label set on the gauge line", () => {
@@ -105,6 +120,8 @@ describe("judgeDbSaturation (#3588)", () => {
     availableBytes: 0.5 * GB,
     swapTotalBytes: 1 * GB,
     swapFreeBytes: 1 * GB, // no swap used
+    committedBytes: 0.5 * GB,
+    commitLimitBytes: 1 * GB,
     ...over,
   });
 
@@ -172,6 +189,31 @@ describe("judgeDbSaturation (#3588)", () => {
     expect(judgeDbSaturation(read({ availableBytes: -1 })).status).toBe("unreadable");
   });
 
+  it("reports committed memory against the commit limit but never lets it drive the status", () => {
+    // A hedge, not a judge: Supabase's image appears to leave the kernel's heuristic
+    // overcommit on, where the limit is not enforced, but that could not be read from the
+    // live database. So the figure only ever whispers, at 95, and never pages.
+    const v = judgeDbSaturation(read({ committedBytes: 0.99 * GB }));
+    expect(v.status).toBe("ok");
+    expect(Math.round(v.committedPct ?? -1)).toBe(99);
+    expect(commitLimitWarrantsWhisper(v.committedPct)).toBe(true);
+  });
+
+  it("a missing or zero commit limit is no reading of it, and never makes the whole check unreadable", () => {
+    for (const over of [{ committedBytes: null }, { commitLimitBytes: null }, { commitLimitBytes: 0 }]) {
+      const v = judgeDbSaturation(read(over));
+      expect(v.status).toBe("ok");
+      expect(v.committedPct).toBeNull();
+    }
+  });
+
+  it("commitLimitWarrantsWhisper fires from 95, and not on the 2026-10-29 reading of 80.7", () => {
+    expect(commitLimitWarrantsWhisper(80.7)).toBe(false);
+    expect(commitLimitWarrantsWhisper(94.9)).toBe(false);
+    expect(commitLimitWarrantsWhisper(95)).toBe(true);
+    expect(commitLimitWarrantsWhisper(null)).toBe(false);
+  });
+
   it("treats absent swap as zero pressure, judging on memory in use alone", () => {
     const v = judgeDbSaturation(read({ swapTotalBytes: null, swapFreeBytes: null }));
     expect(v.status).toBe("ok");
@@ -180,12 +222,14 @@ describe("judgeDbSaturation (#3588)", () => {
 });
 
 describe("the db-saturation copy (#3588)", () => {
-  const verdict = (inUse: number, swapUsed: number) =>
+  const verdict = (inUse: number, swapUsed: number, committed = 0.5) =>
     judgeDbSaturation({
       totalBytes: 1 * GB,
       availableBytes: (1 - inUse) * GB,
       swapTotalBytes: 1 * GB,
       swapFreeBytes: (1 - swapUsed) * GB,
+      committedBytes: committed * GB,
+      commitLimitBytes: 1 * GB,
     });
   const v = verdict(0.92, 0.5);
   for (const [name, text] of [
@@ -200,7 +244,7 @@ describe("the db-saturation copy (#3588)", () => {
     });
   }
 
-  it("no copy speaks of committed memory or a ceiling, the figure that misled on Large", () => {
+  it("no copy speaks of committed memory or a ceiling unless the commit limit is what tripped it", () => {
     for (const text of [formatDbSaturationAlert(v), formatDbSaturationWarn(v), formatDbSaturationRecovery()]) {
       expect(text).not.toMatch(/committed|ceiling/i);
     }
@@ -224,6 +268,19 @@ describe("the db-saturation copy (#3588)", () => {
     expect(text).toContain("50% of its memory is in use");
     expect(text).toContain("100% of its swap");
     expect(text).not.toContain("past the 80% early warning line");
+  });
+
+  it("a warn on the commit limit alone says what it is, that it may not be enforced, and does not call memory tight", () => {
+    const text = formatDbSaturationWarn(verdict(0.3, 0, 0.97));
+    expect(text).toContain("97% of the kernel's commit limit");
+    expect(text).toContain("new connections");
+    expect(text).toContain("30% of its memory is in use");
+    expect(text).not.toMatch(/getting tight|swapping/i);
+    expect(text).not.toContain("past the 80% early warning line");
+  });
+
+  it("the commit limit stays out of a warn it did not trip", () => {
+    expect(formatDbSaturationWarn(verdict(0.85, 0, 0.9))).not.toMatch(/commit limit/i);
   });
 
   it("a warn on both names both", () => {
@@ -293,6 +350,14 @@ describe("runDbSaturationCheck (#3588)", () => {
     expect(res.status).toBe("warn"); // still whispering about swap
     expect(resolveAlert).toHaveBeenCalledWith(DB_SATURATION_KEY, expect.any(String)); // but the page IS resolved
     expect(sendThrottledInfo).toHaveBeenCalledWith(DB_SATURATION_WARN_KEY, 60 * 60_000, expect.any(String));
+    expect(sendThrottledAlert).not.toHaveBeenCalled();
+  });
+
+  it("whispers on committed memory near the commit limit with memory and swap healthy, and still resolves the page", async () => {
+    const res = await run(async () => body(1 * GB, 0.7 * GB, 1 * GB, 1 * GB, { committed: 0.96 * GB, limit: 1 * GB }));
+    expect(res.status).toBe("warn");
+    expect(resolveAlert).toHaveBeenCalledWith(DB_SATURATION_KEY, expect.any(String));
+    expect(sendThrottledInfo).toHaveBeenCalledWith(DB_SATURATION_WARN_KEY, 60 * 60_000, expect.stringContaining("commit limit"));
     expect(sendThrottledAlert).not.toHaveBeenCalled();
   });
 
