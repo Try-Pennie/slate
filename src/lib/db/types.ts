@@ -628,16 +628,20 @@ export interface BookingSettings {
   demotion_reroute_enabled: boolean;
   /** #4200: the go live switch for placeholder bookings. Off by default. */
   placeholder_booking_enabled: boolean;
+  /** #4387, migration 0213: the most program bookings on the placeholder advisor on one
+   *  Eastern day, counted by the day of the call. 0 to 500 (a check constraint), 50 to
+   *  start. Enforced by `claim_placeholder_day`, never in application code. */
+  placeholder_day_limit: number;
   /** #3706, migration 0195: the prerender switch. True lets widget.js build the booker
    *  frame, hidden, when a host page calls prerender at page load. NOT NULL DEFAULT
    *  false: a prerender is a no op until an admin turns it on. Read through
    *  `src/lib/embed/prerender-switch.ts`. */
   embed_prerender_enabled: boolean;
-  /** #4380, migration 0213: free advisors in the transfer queue at or above which the
+  /** #4380, migration 0214: free advisors in the transfer queue at or above which the
    *  coordinator booking page offers Transfer now. NOT NULL DEFAULT 3, 1 to 100. Read
    *  through `readTransferOfferSettings`. */
   transfer_offer_threshold: number;
-  /** #4380, migration 0213: the line a partner agent transfers the customer to, as
+  /** #4380, migration 0214: the line a partner agent transfers the customer to, as
    *  786-504-0671. NOT NULL DEFAULT '786-504-0671', held to that shape by a check. */
   transfer_line: string;
   updated_at: string;
@@ -833,6 +837,31 @@ export interface RegalCallOutcome {
   received_at: string;
 }
 
+/** #4387, migration 0213: a Lead Bidspoke registered for the program (#4255). Live
+ *  while `expires_at` is in the future; kept after, as the record of when it was
+ *  recognised. */
+export interface ProgramLead {
+  /** The Lead's Salesforce id, first 15 characters (`leadIdKey`). */
+  lead_key: string;
+  /** The booking API caller that registered it. */
+  registered_by: string;
+  registered_at: string;
+  last_registered_at: string;
+  expires_at: string;
+}
+
+/** #4387, migration 0213: a place on a day's placeholder limit taken by a program
+ *  booking still in flight. Holds it for 15 minutes or until its booking's write lands. */
+export interface PlaceholderDayClaim {
+  /** A new booking's idempotency key, or a move's own key. */
+  claim_key: string;
+  /** The Eastern day of the call. */
+  call_day: string;
+  /** The booking being moved; null for a new booking. */
+  booking_id: string | null;
+  claimed_at: string;
+}
+
 /** #2090: one person whose Regal calls are not reported while Slate does not
  *  route to them. Every entry carries its reason, who added it and when. */
 export interface RegalCallIgnore {
@@ -1008,6 +1037,13 @@ export interface Booking {
    * 0208 adds refuses a call on the placeholder without it.
    */
   allow_double_book: boolean;
+  /**
+   * True when a program lead (#4255, `program_leads`) made this booking (#4387,
+   * migration 0213). Carried through every move by the row and never cleared, so the
+   * record outlives the lead's 30 day mark. Its program bookings on the placeholder are
+   * what the placeholder day limit counts (`placeholder_day_held`).
+   */
+  program_lead: boolean;
   /**
    * The person who placed this booking on the coordinator booking page (#4200),
    * whichever advisor it landed on; null for every booking a lead or a machine made.
@@ -1553,7 +1589,7 @@ export interface LeadTextingLine {
   replaced_at: string | null;
 }
 
-/** #4380, migration 0213: what the monitor lane's transfer queue probe measured on one
+/** #4380, migration 0214: what the monitor lane's transfer queue probe measured on one
  *  business day (the org's zone). Written only by `record_transfer_queue_reading`. */
 export interface TransferQueueDay {
   day: string;

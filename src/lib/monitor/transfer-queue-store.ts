@@ -1,6 +1,6 @@
 /**
  * The transfer queue probe's per business day tallies, `transfer_queue_days` (#4380,
- * migration 0213). The write is the one RPC, an atomic upsert, so overlapping ticks each
+ * migration 0214). The write is the one RPC, an atomic upsert, so overlapping ticks each
  * count once (assume it runs twice). Both THROW on failure: the probe never judges a day
  * it could not read, and the lane's step failing streak pages a read that stays broken.
  * Server only.

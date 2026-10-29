@@ -99,7 +99,7 @@ export async function readTransferQueue(
   return parseTransferQueue(res.status, res.headers.get("content-type"), body);
 }
 
-/** The two settings the offer reads (`booking_settings`, migration 0213). */
+/** The two settings the offer reads (`booking_settings`, migration 0214). */
 export interface TransferOfferSettings {
   /** Free advisors at or above which the page offers the transfer. */
   threshold: number;
@@ -107,7 +107,7 @@ export interface TransferOfferSettings {
   line: string;
 }
 
-/** The column defaults in migration 0213, for an org whose settings row does not exist yet. */
+/** The column defaults in migration 0214, for an org whose settings row does not exist yet. */
 export const TRANSFER_OFFER_DEFAULTS: TransferOfferSettings = { threshold: 3, line: "786-504-0671" };
 
 /** The bounds the settings form and the column's check share. */

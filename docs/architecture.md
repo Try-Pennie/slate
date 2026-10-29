@@ -394,7 +394,7 @@ Booking stays on screen and works the same in every state. The rules live in
 Slate records nothing about offers and cannot see whether a transfer happened. The
 monitor lane's `transfer_queue` step (`src/lib/monitor/transfer-queue-probe.ts`) reads the
 endpoint every tick while the org is open, counts each reading per business day in
-`transfer_queue_days` (migration 0213, kept 30 days), and pages
+`transfer_queue_days` (migration 0214, kept 30 days), and pages
 `transfer_queue_unreadable` after three failed ticks and `transfer_queue_never_free` when
 the last whole business day, read from open to close, never reached the threshold.
 

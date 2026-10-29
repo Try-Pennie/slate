@@ -4,7 +4,7 @@
 // Two settings decide when the coordinator page offers "Transfer now": how many advisors
 // must be free, and the line the customer is transferred to. Pinned: what the form
 // accepts, each refusal naming what to enter, and both refusals said together so one
-// save never hides the second; the bounds are the column check's (migration 0213), read
+// save never hides the second; the bounds are the column check's (migration 0214), read
 // from one place, so the form can never accept a value the database refuses.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -29,7 +29,7 @@ assert(!both.ok && both.error === `${TRANSFER_FORM_COPY.thresholdRefused} ${TRAN
 assert(TRANSFER_FORM_COPY.thresholdRefused.includes(`${TRANSFER_THRESHOLD_MIN} to ${TRANSFER_THRESHOLD_MAX}`), "the refusal names the real range");
 
 // The migration's check and default are the same numbers and the same line.
-const sql = readFileSync(join(import.meta.dirname, "..", "supabase", "migrations", "0213_transfer_offer.sql"), "utf8");
+const sql = readFileSync(join(import.meta.dirname, "..", "supabase", "migrations", "0214_transfer_offer.sql"), "utf8");
 assert(sql.includes(`check (transfer_offer_threshold between ${TRANSFER_THRESHOLD_MIN} and ${TRANSFER_THRESHOLD_MAX})`), "the column check is the form's range");
 assert(sql.includes(`transfer_offer_threshold integer not null default ${TRANSFER_OFFER_DEFAULTS.threshold}`), "the column default is the coded default threshold");
 assert(sql.includes(`transfer_line text not null default '${TRANSFER_OFFER_DEFAULTS.line}'`), "the column default is the coded default line");
