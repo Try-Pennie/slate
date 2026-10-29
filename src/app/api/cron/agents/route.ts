@@ -10,6 +10,7 @@ import { recordFailureStreak } from "@/lib/notify/streak";
 import { log } from "@/lib/log";
 import { laneFailure } from "@/lib/monitor/lane-failure-response";
 import { agentSyncFailureAlert } from "@/lib/monitor/cron-alert-copy";
+import { appUrl } from "@/lib/env";
 
 export const dynamic = "force-dynamic";
 
@@ -71,7 +72,7 @@ export async function GET(req: NextRequest) {
         await sendThrottledAlert(
           "agent_sync_failures",
           SYNC_ALERT_COOLDOWN_MS,
-          agentSyncFailureAlert(message.slice(0, 300)),
+          agentSyncFailureAlert(message.slice(0, 300), appUrl()),
         ).catch(logAlertSendFailure("agent_sync_failures"));
       }
     });

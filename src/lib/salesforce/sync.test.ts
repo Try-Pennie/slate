@@ -90,6 +90,30 @@ const store = vi.hoisted(() => {
     }
   }
 
+  /**
+   * `users_outside_email_is_coordinator` (0212), judged where Postgres judges it
+   * on a bulk write: against the PROPOSED INSERT tuple, before ON CONFLICT finds the
+   * stored row. That tuple holds the payload's columns over the column defaults, so
+   * a refresh naming neither `role` nor `deactivated_at` proposes an active agent,
+   * and an outside address there is refused even when the stored row is a departed
+   * agent or a coordinator the constraint allows. Measured against a real Postgres
+   * 16 on 2026-10-29; the same statement as a plain UPDATE passes. The fake's company
+   * domain is the one `googleHostedDomain` answers above.
+   */
+  function outsideEmailRefusal(payload: unknown): string | null {
+    const rows = (Array.isArray(payload) ? payload : [payload]) as Record<string, unknown>[];
+    const cols = payloadColumns(rows);
+    for (const row of rows) {
+      const proposed: Record<string, unknown> = { role: "agent", deactivated_at: null };
+      for (const col of cols) proposed[col] = row[col] === undefined ? null : row[col];
+      const domain = String(proposed.email ?? "").split("@").pop()?.toLowerCase();
+      if (proposed.role !== "coordinator" && proposed.deactivated_at == null && domain !== "x.com") {
+        return 'new row for relation "users" violates check constraint "users_outside_email_is_coordinator"';
+      }
+    }
+    return null;
+  }
+
   function applyUpdate(payload: unknown, filters: [string, string, unknown][]): Record<string, unknown>[] {
     const patch = payload as Record<string, unknown>;
     const written: Record<string, unknown>[] = [];
@@ -211,6 +235,8 @@ const store = vi.hoisted(() => {
             let result: { data: unknown; error: unknown } = { data: null, error: null };
             if (config.errorOn && state.op === config.errorOn) {
               result = { data: null, error: { message: `boom-${state.op}` } };
+            } else if (state.table === "users" && (state.op === "upsert" || state.op === "insert") && outsideEmailRefusal(state.payload)) {
+              result = { data: null, error: { message: outsideEmailRefusal(state.payload) } };
             } else if (state.op === "select") {
               // #2085: the routable write's BEFORE read, by id, answered from the
               // stored rows rather than a canned list, so its before and after agree.
@@ -368,6 +394,43 @@ describe("syncSalesforceAgents batching + fail-loud (#91)", () => {
     expect(result.outsideDomainSkipped).toBe(2);
     // The ordinary hire beside them still arrives: one outsider no longer fails it.
     expect(result.inserted).toBe(1);
+  });
+
+  // The 2026-10-29 page: a departed agent on an outside address, still active in
+  // Salesforce, failed every hourly refresh at users_outside_email_is_coordinator.
+  // Postgres judges a batched upsert's PROPOSED INSERT tuple, which carries the
+  // default role and no departure, so the stored row being allowed does not save
+  // it. A coordinator on their own address is the same case.
+  it("leaves an existing row on an outside address out of the refresh, so the rest still refresh", async () => {
+    store.seedUsers([
+      { id: "u1", email: "a@x.com", attributes: {}, bookable: false, deactivated_at: null, bookable_pending_since: null },
+      { id: "u8", email: "left@elsewhere.example", role: "agent", attributes: {}, bookable: false, deactivated_at: "2026-09-01T00:00:00Z", bookable_pending_since: null },
+      { id: "u9", email: "coord@partner.example", role: "coordinator", attributes: {}, bookable: false, deactivated_at: null, bookable_pending_since: null },
+    ]);
+    sf.fetchSfWithRetry.mockImplementation(async (url: string) => {
+      if (url.includes("oauth2/token")) {
+        return { ok: true, json: async () => ({ access_token: "tok", instance_url: "https://sf.example" }) };
+      }
+      const q = decodeURIComponent((url.split("q=")[1] ?? "").replace(/\+/g, " "));
+      if (q.includes("IsActive = true AND Email != null AND (")) {
+        return sfResponse([
+          { Email: "a@x.com", Name: "Agent A Renamed", HighDebt__c: true },
+          { Email: "left@elsewhere.example", Name: "Left", HighDebt__c: true },
+          { Email: "coord@partner.example", Name: "Coordinator", HighDebt__c: true },
+        ]);
+      }
+      return sfResponse([]);
+    });
+
+    const result = await syncSalesforceAgents();
+
+    const refreshed = store.calls
+      .filter((c) => c.op === "upsert" && c.table === "users")
+      .flatMap((c) => c.payload as { id: string }[])
+      .filter((r) => "attributes" in r);
+    expect(refreshed.map((r) => r.id)).toEqual(["u1"]);
+    expect(store.users.get("u1")?.name).toBe("Agent A Renamed");
+    expect(result.outsideDomainNotRefreshed).toBe(2);
   });
 
   it("refuses the run when the company domain is unknown, rather than inserting anybody", async () => {
@@ -589,6 +652,27 @@ describe("salesforce_user_id linking (#1587)", () => {
     expect(written[0]).toHaveProperty("email", "a@x.com");
     expect(result.salesforceIdsLinked).toBe(1);
     expect(result.salesforceIdsUnresolved).toBe(0);
+  });
+
+  // The second batched upsert on `users` meets users_outside_email_is_coordinator
+  // the same way the refresh does: a departed agent on an outside address gaining
+  // an id would refuse every other row's id with it.
+  it("links no id onto a row on an outside address, and still links everybody else", async () => {
+    arrange({
+      roster: [
+        { id: "u1", email: "a@x.com", manager_id: null, role: "agent", salesforce_user_id: null },
+        { id: "u9", email: "left@elsewhere.example", manager_id: null, role: "agent", salesforce_user_id: null, deactivated_at: "2026-09-01T00:00:00Z" },
+      ],
+      debtTeam: [
+        { Id: SF_A, Email: "a@x.com", Name: "Agent A", HighDebt__c: true },
+        { Id: SF_B, Email: "left@elsewhere.example", Name: "Left", HighDebt__c: true },
+      ],
+    });
+
+    const result = await syncSalesforceAgents();
+
+    expect(idWrites().map((r) => r.id)).toEqual(["u1"]);
+    expect(result.salesforceIdsLinked).toBe(1);
   });
 
   it("writes NOTHING on a second run over the same data (it runs hourly)", async () => {
