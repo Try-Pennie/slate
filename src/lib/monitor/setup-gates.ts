@@ -118,6 +118,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   offeredNobodyFree: SetupGate;
   bufferBreach: SetupGate;
   placeholderCalls: SetupGate;
+  transferQueue: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -244,5 +245,11 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // The bookings, the open pages and the call feed it reads itself. The placeholder
     // seat check consumes no setup read and is deliberately not gated.
     placeholderCalls: gate(readiness, ["buckets"]),
+    // #4380: the transfer queue probe reads the endpoint only while the org is open, and
+    // judges "never enough advisors free across the last whole business day", so it needs
+    // the org's week twice over and skips on it rather than guess: guessing open reads at
+    // night and judges a Sunday nobody worked, and guessing shut silences a dead Monday.
+    // Its threshold is a booking setting it reads itself, not a monitor setting.
+    transferQueue: gate(readiness, ["businessHours"]),
   };
 }

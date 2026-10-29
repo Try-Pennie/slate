@@ -6,7 +6,8 @@ import { CoordinatorBooking } from "@/components/coordinator/CoordinatorBooking"
 import { readDesignFixture } from "@/lib/admin/design-fixture-read";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { initialPageState } from "@/lib/coordinator/booking-page";
-import { coordinatorBookingFrame, type CoordinatorBookingDesignFixture } from "@/lib/coordinator/booking-page-fixture";
+import { coordinatorBookingFrame, type CoordinatorBookingDesignFixture, type CoordinatorBookingFrame } from "@/lib/coordinator/booking-page-fixture";
+import { callMeNowFrame, isCallMeNowFrame, type CallMeNowDesignFixture } from "@/lib/coordinator/call-me-now-fixture";
 
 export const metadata = { title: "Book a call" };
 
@@ -27,16 +28,17 @@ export const dynamic = "force-dynamic";
  *
  * `?frame=` draws one of the design's frames from its committed fixture, so the design
  * match score compares like with like; it answers only when the e2e run sets the flag and
- * the request is to this machine (`readDesignFixture`), and only after the gate.
+ * the request is to this machine (`readDesignFixture`), and only after the gate. The live
+ * transfer design (#4380, docs/design/coordinator-call-me-now.html) has frames of its own,
+ * drawn over the booking design's "Sam found" from both designs' fixtures.
  */
 export default async function CoordinatorPage({ searchParams }: { searchParams: Promise<{ frame?: string }> }) {
   const me = await coordinatorDeskUser();
   if (!me) redirect("/login");
   const sp = await searchParams;
 
-  const fixture = await readDesignFixture<CoordinatorBookingDesignFixture>(sp.frame, "coordinator-booking");
-  if (fixture && sp.frame) {
-    const f = coordinatorBookingFrame(fixture, sp.frame);
+  const f = await designFrame(sp.frame);
+  if (f) {
     return (
       <>
         {/* Outside <main>: the design's checks read main's words, and a script's text is words. */}
@@ -56,4 +58,13 @@ export default async function CoordinatorPage({ searchParams }: { searchParams: 
       <CoordinatorBooking initial={initialPageState()} reasons={reasons} />
     </PageShell>
   );
+}
+
+/** The design frame `?frame=` names, from the committed fixtures, or null to draw the real page. */
+async function designFrame(frame: string | undefined): Promise<CoordinatorBookingFrame | null> {
+  const booking = await readDesignFixture<CoordinatorBookingDesignFixture>(frame, "coordinator-booking");
+  if (!booking || !frame) return null;
+  if (!isCallMeNowFrame(frame)) return coordinatorBookingFrame(booking, frame);
+  const callMeNow = await readDesignFixture<CallMeNowDesignFixture>(frame, "coordinator-call-me-now");
+  return callMeNow ? callMeNowFrame(booking, callMeNow, frame) : null;
 }

@@ -9,7 +9,7 @@ import { render, screen, cleanup, fireEvent, act, waitFor } from "@testing-libra
 // dialog modal (Requirement 7.17), and draws the refused button grey (7.15). Every value
 // is invented.
 
-const actions = vi.hoisted(() => ({ lookupCoordinatorCustomer: vi.fn(), placeCoordinatorCall: vi.fn() }));
+const actions = vi.hoisted(() => ({ lookupCoordinatorCustomer: vi.fn(), placeCoordinatorCall: vi.fn(), checkCoordinatorTransfer: vi.fn() }));
 vi.mock("@/app/coordinator/actions", () => actions);
 
 import { CoordinatorBooking } from "./CoordinatorBooking";
@@ -62,6 +62,8 @@ const draw = (initial: PageState) => render(<CoordinatorBooking initial={initial
 beforeEach(() => {
   actions.lookupCoordinatorCustomer.mockReset();
   actions.placeCoordinatorCall.mockReset();
+  actions.checkCoordinatorTransfer.mockReset();
+  actions.checkCoordinatorTransfer.mockResolvedValue({ kind: "busy" });
 });
 afterEach(cleanup);
 
@@ -209,5 +211,100 @@ describe("#4331: the customer's current call time (settled 2026-10-28, Greyed, l
     const other = screen.getByRole("button", { name: "11:15am" }) as HTMLButtonElement;
     expect(other.disabled).toBe(false);
     expect(screen.queryAllByText("Current call")).toHaveLength(1);
+  });
+});
+
+describe("#4380: the live transfer offer (docs/design/coordinator-call-me-now.html)", () => {
+  const OFFER = { kind: "offer", line: "786-504-0671" };
+  const find = async () => {
+    actions.lookupCoordinatorCustomer.mockResolvedValue(serverAnswer);
+    draw(initialPageState());
+    fireEvent.change(screen.getByLabelText("Salesforce Lead"), { target: { value: ID } });
+    expect(await screen.findByText("Jordan Rivera")).toBeTruthy();
+  };
+
+  it("asks once the customer is found, and draws the card between the customer and the booking card (D1 to D3)", async () => {
+    actions.checkCoordinatorTransfer.mockResolvedValue(OFFER);
+    await find();
+    const heading = await screen.findByRole("heading", { name: "Advisors are free now" });
+    expect(actions.checkCoordinatorTransfer).toHaveBeenCalledTimes(1);
+    const card = heading.closest("section")!;
+    expect(card.textContent).toContain("Transfer Jordan to an advisor while they're on the line.");
+    expect(card.textContent).toContain("If it doesn't connect, book a time below.");
+    expect(screen.getAllByText("786-504-0671")).toHaveLength(1);
+    const customerCard = screen.getByRole("heading", { name: "Customer" }).closest("section")!;
+    const booking = document.getElementById("co-booking")!;
+    expect(customerCard.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(card.compareDocumentPosition(booking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("asks again on Transfer now, and says so plainly when advisors are no longer free, leaving booking as it was", async () => {
+    actions.checkCoordinatorTransfer.mockResolvedValueOnce(OFFER);
+    await find();
+    const press = await screen.findByRole("button", { name: "Transfer now" });
+    let answer: (v: unknown) => void = () => {};
+    actions.checkCoordinatorTransfer.mockReturnValueOnce(new Promise((r) => (answer = r)));
+    fireEvent.click(press);
+    expect(actions.checkCoordinatorTransfer).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Checking advisors")).toBeTruthy();
+    fireEvent.click(screen.getByText("Checking advisors").closest("button")!);
+    expect(actions.checkCoordinatorTransfer).toHaveBeenCalledTimes(2);
+    await act(async () => answer({ kind: "busy" }));
+    expect(screen.getByText("Not enough advisors are free now. Book a time below.", { selector: "p" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Advisors are free now" })).toBeNull();
+    expect(document.getElementById("co-booking")).toBeTruthy();
+  });
+
+  it("says to transfer now when the re-check still finds enough free", async () => {
+    actions.checkCoordinatorTransfer.mockResolvedValueOnce(OFFER).mockResolvedValueOnce(OFFER);
+    await find();
+    fireEvent.click(await screen.findByRole("button", { name: "Transfer now" }));
+    expect(await screen.findByText("Advisors are still free. Transfer Jordan now.", { selector: "p" })).toBeTruthy();
+  });
+
+  it("draws nothing when too few are free", async () => {
+    await find();
+    await waitFor(() => expect(actions.checkCoordinatorTransfer).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(screen.queryByRole("heading", { name: "Advisors are free now" })).toBeNull();
+    expect(screen.queryByText(/Live transfer/)).toBeNull();
+  });
+
+  it.each([
+    ["an unreadable count", () => actions.checkCoordinatorTransfer.mockResolvedValue({ kind: "unreadable", why: "count" })],
+    ["a refusal", () => actions.checkCoordinatorTransfer.mockResolvedValue({ kind: "refused", refusal: "rate-limited" })],
+    ["a thrown action", () => actions.checkCoordinatorTransfer.mockRejectedValue(new Error("network"))],
+  ])("draws the plain line, never the card, on %s", async (_label, arrange) => {
+    arrange();
+    await find();
+    expect(await screen.findByText("Live transfer can't be checked right now. Book a time below.", { selector: "p" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Transfer now" })).toBeNull();
+  });
+
+  it("after Book another call, the next customer is looked up and asked about afresh", async () => {
+    // The reducer starts every count over on Book another call, so the component's record of
+    // what it already sent must start over too, or the next customer's first lookup and
+    // transfer check (each number 1 again) read as already sent and are never asked.
+    const done = [
+      { type: "dayChosen", date: "2026-11-19" },
+      { type: "timeChosen", start: "2026-11-19T14:00:00.000-07:00" },
+      { type: "confirmPressed" },
+      { type: "placePressed", submissionId: "sub-1", at: NOW },
+      { type: "placeAnswered", seq: 1, outcome: { kind: "booked", on: "advisor", advisorName: "Ada Example", startsAt: "2026-11-19T21:00:00.000Z", sentence: "" } },
+    ] as PageEvent[];
+    draw(stateOf(newCustomer, done));
+    fireEvent.click(screen.getByRole("button", { name: "Book another call" }));
+    actions.lookupCoordinatorCustomer.mockResolvedValue(serverAnswer);
+    actions.checkCoordinatorTransfer.mockResolvedValue({ kind: "offer", line: "786-504-0671" });
+    fireEvent.change(screen.getByLabelText("Salesforce Lead"), { target: { value: ID } });
+    await waitFor(() => expect(actions.lookupCoordinatorCustomer).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("heading", { name: "Advisors are free now" })).toBeTruthy();
+    expect(actions.checkCoordinatorTransfer).toHaveBeenCalledTimes(1);
+  });
+
+  it("never asks for a state it was handed already checking, so a design frame calls nothing", async () => {
+    draw(stateOf(newCustomer));
+    await act(async () => {});
+    expect(actions.checkCoordinatorTransfer).not.toHaveBeenCalled();
   });
 });

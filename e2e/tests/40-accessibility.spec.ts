@@ -202,6 +202,8 @@ const COORDINATOR_FRAMES = [
   "d-other",
   "d-dialog-move",
   "d-done-move",
+  // #4380: the live transfer offer (docs/design/coordinator-call-me-now.html), over Sam found.
+  "f1",
 ];
 
 test("the coordinator booking page, at each moment the design settled", async ({ page }) => {
