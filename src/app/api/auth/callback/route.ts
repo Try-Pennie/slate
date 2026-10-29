@@ -36,20 +36,41 @@ import {
   THEME_COOKIE_MAX_AGE,
 } from "@/lib/theme/boot";
 import type { User } from "@/lib/db/types";
+import {
+  SIGN_IN_FROM_COOKIE,
+  signInPageFromCookie,
+  signInPathFor,
+  type SignInPage,
+} from "@/lib/auth/sign-in-page";
 
 export const dynamic = "force-dynamic";
 
 type Supabase = Awaited<ReturnType<typeof supabaseServer>>;
 
 /**
+ * Back to a sign in page with a code that page maps to plain copy: /login for staff, the
+ * partner page for a coordinator's Microsoft sign in (#4379), so the reason is read beside
+ * the button that person can use.
+ */
+function bounce(origin: string, page: SignInPage, code: string): NextResponse {
+  return NextResponse.redirect(`${origin}${signInPathFor(page)}?error=${code}`);
+}
+
+/**
  * End the session the code exchange just set, and send the person back to sign in
- * with a code the login page maps to plain copy. One helper for every refusal, so
+ * with a code the page maps to plain copy. One helper for every refusal, so
  * none of them can forget the sign out. `local` ends only THIS sign in's session,
  * never every session on the auth user (#3526).
  */
-async function refuse(supabase: Supabase, origin: string, code: string, scope?: "local"): Promise<NextResponse> {
+async function refuse(
+  supabase: Supabase,
+  origin: string,
+  code: string,
+  scope?: "local",
+  page: SignInPage = "staff",
+): Promise<NextResponse> {
   await (scope ? supabase.auth.signOut({ scope }) : supabase.auth.signOut());
-  return NextResponse.redirect(`${origin}/login?error=${code}`);
+  return bounce(origin, page, code);
 }
 
 /**
@@ -96,15 +117,20 @@ function completeSignIn(origin: string, slateUser: User): NextResponse {
  */
 export async function GET(req: NextRequest) {
   const origin = req.nextUrl.origin;
+  // #4379: which sign in page the redirect started from, by the mark that page set. Read
+  // only where nothing better can say: before the exchange, and for an auth user whose
+  // identities name both providers. Once the identities are known, they decide.
+  const startedOn = signInPageFromCookie(req.cookies.get(SIGN_IN_FROM_COOKIE)?.value);
   const code = req.nextUrl.searchParams.get("code");
   if (!code) {
-    return NextResponse.redirect(`${origin}/login?error=missing_code`);
+    // No code is also what a cancelled or refused consent comes back as.
+    return bounce(origin, startedOn, "missing_code");
   }
 
   const supabase = await supabaseServer();
   const { data, error } = await supabase.auth.exchangeCodeForSession(code);
   if (error || !data.session) {
-    return NextResponse.redirect(`${origin}/login?error=exchange_failed`);
+    return bounce(origin, startedOn, "exchange_failed");
   }
 
   const { user } = data.session;
@@ -124,7 +150,7 @@ export async function GET(req: NextRequest) {
   // which is why this is an error log and the message points at an admin.
   if (googleSubs.length > 0 && microsoftSubs.length > 0) {
     log.error("auth-callback", { msg: "sign in carried both a google and a microsoft account", auth_user_id: user.id });
-    return refuse(supabase, origin, "sign_in_unavailable", "local");
+    return refuse(supabase, origin, "sign_in_unavailable", "local", startedOn);
   }
 
   // Both halves fail CLOSED (#3083): an unconfigured domain refuses every
@@ -135,7 +161,8 @@ export async function GET(req: NextRequest) {
     hostedDomain = googleHostedDomain();
   } catch (err) {
     log.error("auth-callback", { msg: "sign-in domain not configured", auth_user_id: user.id }, err);
-    return refuse(supabase, origin, "sign_in_unavailable");
+    // A Microsoft sign in hears it on the partner page, as every other refusal of one does.
+    return refuse(supabase, origin, "sign_in_unavailable", undefined, microsoftSubs.length > 0 ? "partner" : "staff");
   }
 
   if (microsoftSubs.length > 0) {
@@ -241,7 +268,8 @@ export async function GET(req: NextRequest) {
  * A scheduling coordinator's Microsoft sign in (#4379). It only ever LINKS the row
  * Team access granted (`linkCoordinator`), never creates one, and every refusal ends
  * this sign in's session alone (`local`): on an auth user GoTrue linked by address a
- * global sign out would also end somebody else's.
+ * global sign out would also end somebody else's. Every refusal lands on the partner
+ * sign in page, whose one button is Microsoft, never on /login (#4379).
  *
  * No calendar is warmed: a coordinator's mailbox is their own company's, which
  * Pennie's Google delegation cannot read, and they take no calls.
@@ -264,17 +292,17 @@ async function microsoftSignIn(
   // signing in can fix: sign in is unavailable, and the log says why.
   if (input.emailVerified !== true) {
     log.error("auth-callback", { msg: "microsoft sign in carried an unverified address", auth_user_id: authUserId });
-    return refuse(supabase, origin, "sign_in_unavailable", "local");
+    return refuse(supabase, origin, "sign_in_unavailable", "local", "partner");
   }
   // Staff sign in with Google. A trypennie.com address through Microsoft is refused
   // with the same words the Google gate uses for the wrong account (#4379, step 5).
   if (isAllowedEmail(input.email, input.hostedDomain)) {
     log.warn("auth-callback", { msg: "refused a company address through microsoft", auth_user_id: authUserId });
-    return refuse(supabase, origin, "domain_not_allowed", "local");
+    return refuse(supabase, origin, "domain_not_allowed", "local", "partner");
   }
   if (input.microsoftSubs.length !== 1) {
     log.error("auth-callback", { msg: "sign in carried several microsoft accounts", auth_user_id: authUserId });
-    return refuse(supabase, origin, "sign_in_unavailable", "local");
+    return refuse(supabase, origin, "sign_in_unavailable", "local", "partner");
   }
 
   let slateUser: User;
@@ -283,24 +311,24 @@ async function microsoftSignIn(
   } catch (err) {
     if (err instanceof CoordinatorNotInvitedError) {
       log.warn("auth-callback", { msg: "refused a microsoft sign in no coordinator holds", auth_user_id: authUserId });
-      return refuse(supabase, origin, MICROSOFT_NOT_INVITED_LOGIN_ERROR, "local");
+      return refuse(supabase, origin, MICROSOFT_NOT_INVITED_LOGIN_ERROR, "local", "partner");
     }
     if (err instanceof DeactivatedAccountError) {
       log.warn("auth-callback", { msg: "refused a removed coordinator", auth_user_id: authUserId });
-      return refuse(supabase, origin, "account_deactivated", "local");
+      return refuse(supabase, origin, "account_deactivated", "local", "partner");
     }
     if (err instanceof PlaceholderAccountError) {
       log.warn("auth-callback", { msg: "refused a sign in on the placeholder advisor", auth_user_id: authUserId });
-      return refuse(supabase, origin, PLACEHOLDER_ACCOUNT_LOGIN_ERROR, "local");
+      return refuse(supabase, origin, PLACEHOLDER_ACCOUNT_LOGIN_ERROR, "local", "partner");
     }
     // A different person on a coordinator's address, or a second sign in on their
     // row: an error, because only a person can tell a new account from a takeover.
     if (err instanceof MicrosoftAccountMismatchError) {
       log.error("auth-callback", { msg: "refused a different microsoft account", auth_user_id: authUserId, user_id: err.userId });
-      return refuse(supabase, origin, MICROSOFT_ACCOUNT_CHANGED_LOGIN_ERROR, "local");
+      return refuse(supabase, origin, MICROSOFT_ACCOUNT_CHANGED_LOGIN_ERROR, "local", "partner");
     }
     log.error("auth-callback", { msg: "coordinator link refused", auth_user_id: authUserId }, err);
-    return refuse(supabase, origin, "provision_failed", "local");
+    return refuse(supabase, origin, "provision_failed", "local", "partner");
   }
   return completeSignIn(origin, slateUser);
 }

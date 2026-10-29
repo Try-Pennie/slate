@@ -35,6 +35,7 @@ export const ALERT_FAMILIES = [
   "a-merge-has-not-shipped-or-ci-cannot-run",
   "the-database-is-running-low-on-memory",
   "a-call-on-the-placeholder-advisor-is-at-risk",
+  "live-transfer-is-not-being-offered",
   "something-was-measured-and-is-only-worth-knowing",
 ] as const;
 
@@ -370,6 +371,10 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   placeholder_call_unserved: "a-call-on-the-placeholder-advisor-is-at-risk",
   placeholder_seat_failing: "a-call-on-the-placeholder-advisor-is-at-risk",
   placeholder_missing: "a-call-on-the-placeholder-advisor-is-at-risk",
+  // #4380. The coordinator page's live transfer offer: the transfer queue cannot be read,
+  // or never had enough advisors free all day. One procedure: the endpoint, then the queue.
+  transfer_queue_unreadable: "live-transfer-is-not-being-offered",
+  transfer_queue_never_free: "live-transfer-is-not-being-offered",
   salesforce_user_id_conflicts: "the-roster-or-routing-data-is-wrong",
   salesforce_manager_ambiguous: "the-roster-or-routing-data-is-wrong",
   salesforce_roster_divergence: "the-roster-or-routing-data-is-wrong",

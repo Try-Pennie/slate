@@ -1029,6 +1029,22 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "booking prune would remove it silently. The monitor lane re-judges it every 5 minutes.",
   },
   {
+    key: "transfer_queue_unreadable",
+    kind: "condition",
+    why:
+      "Pennie's transfer queue endpoint failed on three business hours checks in a row, so coordinators " +
+      "are not being offered a live transfer (#4380). It ends when a check reads it, which the monitor lane " +
+      "tries every 5 minutes while the org is open.",
+  },
+  {
+    key: "transfer_queue_never_free",
+    kind: "condition",
+    why:
+      "Across the whole last business day the transfer queue never had the threshold of advisors free, so " +
+      "no coordinator was offered a live transfer (#4380). It ends when a business hours check finds enough " +
+      "free, which the monitor lane measures every 5 minutes while the org is open.",
+  },
+  {
     key: "placeholder_seat_failing",
     kind: "condition",
     why:

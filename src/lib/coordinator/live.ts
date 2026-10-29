@@ -14,6 +14,8 @@ import { placeBookingForCoordinator } from "@/lib/booking/placed-booking-service
 import type { CustomerDeps, LookupDeps } from "@/lib/coordinator/customer";
 import { findCustomer } from "@/lib/coordinator/customer";
 import type { PlaceCallDeps } from "@/lib/coordinator/place-call";
+import { readTransferOfferSettings } from "@/lib/booking/settings";
+import { liveTransferQueueRead } from "@/lib/coordinator/transfer-queue-live";
 
 /**
  * One Salesforce token for every query one operation makes, fetched on first use: a
@@ -57,4 +59,9 @@ export function placeCallDeps(): PlaceCallDeps {
     rescheduleReasons: async () => (await loadReasonOptions()).reschedule.selectable,
     mintSubmissionId: () => crypto.randomUUID(),
   };
+}
+
+/** #4380: the live transfer check's two reads, the queue and the stored settings. */
+export function transferDeps() {
+  return { readQueue: liveTransferQueueRead, readSettings: readTransferOfferSettings };
 }

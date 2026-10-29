@@ -13,14 +13,15 @@
  *
  * Plan: https://claude.ai/artifact/XbByMLoaMrBufMr6Chmct1
  */
-import { coordinatorDeskUser } from "@/lib/auth";
+import { coordinatorDeskUser, requireCoordinatorDesk } from "@/lib/auth";
 import { allowRequest } from "@/lib/rate-limit";
-import { COORDINATOR_LOOKUP_RATE_RULES, COORDINATOR_PLACE_RATE_RULES } from "@/lib/rate-limit-core";
+import { COORDINATOR_LOOKUP_RATE_RULES, COORDINATOR_PLACE_RATE_RULES, COORDINATOR_TRANSFER_RATE_RULES } from "@/lib/rate-limit-core";
 import { log } from "@/lib/log";
 import { lookupCustomer, type CustomerLookup } from "@/lib/coordinator/customer";
 import { placeCall, refused, type PlaceCallOutcome, type PlaceCallRequest } from "@/lib/coordinator/place-call";
 import { refusalSentence, type CoordinatorRefusal } from "@/lib/coordinator/coordinator-copy";
-import { lookupDeps, placeCallDeps } from "@/lib/coordinator/live";
+import { lookupDeps, placeCallDeps, transferDeps } from "@/lib/coordinator/live";
+import { decideTransferOffer, type TransferOffer } from "@/lib/coordinator/transfer-queue";
 
 type Refused = { ok: false; refusal: CoordinatorRefusal; sentence: string };
 const refusedAnswer = (refusal: CoordinatorRefusal): Refused => ({ ok: false, refusal, sentence: refusalSentence(refusal) });
@@ -93,5 +94,52 @@ export async function placeCoordinatorCall(input: PlaceCallRequest): Promise<Pla
   } catch (err) {
     log.error("coordinator", { msg: "placing a call failed", user_id: me.id }, err);
     return refused("internal", submissionId);
+  }
+}
+
+export type CoordinatorTransferAnswer = TransferOffer | { kind: "refused"; refusal: "not-authorized" | "rate-limited" };
+
+/**
+ * May the coordinator transfer the customer on the line to an advisor now? (#4380.) Asked
+ * when the customer is found and again when Transfer now is pressed, since the count is
+ * approximate and reserves nothing.
+ *
+ * WHO: `requireCoordinatorDesk` (a coordinator, or an admin), checked here, never trusted
+ * to the page. WHOSE DATA: none of the customer's; it takes nothing from the browser. The
+ * queue is chosen on the endpoint's side, and the threshold and line are the stored
+ * settings, so the browser can neither pick a queue nor lower the bar. The agents'
+ * browsers never call the endpoint; this server does, with a short timeout and a strict
+ * parse (`transfer-queue.ts`), so a count it cannot read answers `unreadable`, never busy.
+ * Records nothing: Slate cannot see whether a transfer happened.
+ */
+// outcome-ok: every answer is a typed outcome the page draws
+export async function checkCoordinatorTransfer(): Promise<CoordinatorTransferAnswer> {
+  let me: Awaited<ReturnType<typeof requireCoordinatorDesk>>;
+  try {
+    me = await requireCoordinatorDesk();
+  } catch {
+    return { kind: "refused", refusal: "not-authorized" };
+  }
+  if (!(await allowRequest({ kind: "opaque", key: `coordinator:${me.id}` }, COORDINATOR_TRANSFER_RATE_RULES))) {
+    return { kind: "refused", refusal: "rate-limited" };
+  }
+  try {
+    const deps = transferDeps();
+    const [reading, settings] = await Promise.all([deps.readQueue(), deps.readSettings()]);
+    const offer = decideTransferOffer(reading, settings);
+    if (offer.kind === "unreadable") {
+      log.warn("coordinator", {
+        msg: "live transfer not checkable",
+        why: offer.why,
+        ...(reading.ok ? {} : { reason: reading.why, detail: reading.detail }),
+        user_id: me.id,
+      });
+    } else {
+      log.info("coordinator", { msg: "live transfer checked", offer: offer.kind, free: reading.ok ? reading.free : null, user_id: me.id });
+    }
+    return offer;
+  } catch (err) {
+    log.error("coordinator", { msg: "live transfer check failed", user_id: me.id }, err);
+    return { kind: "unreadable", why: "count" };
   }
 }

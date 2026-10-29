@@ -39,7 +39,7 @@ import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
-import { readBookingHorizonDays, readPlaceholderBookingEnabled } from "@/lib/booking/settings";
+import { readBookingHorizonDays, readPlaceholderBookingEnabled, readTransferOfferSettings } from "@/lib/booking/settings";
 import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
 import { recordFailureStreak, clearFailureStreak, trackConsecutiveStreak } from "@/lib/notify/streak";
 import { runPlaceholderCallCheck, PLACEHOLDER_CALL_ALERT_PREFIX } from "@/lib/monitor/placeholder-calls";
@@ -50,6 +50,14 @@ import {
   loadCallFeedNewestReceivedMs,
 } from "@/lib/monitor/placeholder-calls-store";
 import { runReminderOwedCheck, REMINDER_OWED_ALERT_PREFIX } from "@/lib/monitor/reminder-owed";
+import {
+  runTransferQueueProbe,
+  TRANSFER_QUEUE_FAILING_TICKS,
+  TRANSFER_QUEUE_STREAK_KEY,
+  TRANSFER_QUEUE_STREAK_WINDOW_S,
+} from "@/lib/monitor/transfer-queue-probe";
+import { loadTransferQueueDays, recordTransferQueueReading } from "@/lib/monitor/transfer-queue-store";
+import { liveTransferQueueRead } from "@/lib/coordinator/transfer-queue-live";
 import { loadOwedBookings, loadOwedEmails } from "@/lib/monitor/reminder-owed-store";
 import {
   runPlaceholderSeatCheck,
@@ -3222,6 +3230,62 @@ export async function GET(req: NextRequest) {
               auto_reply_unchecked: placeholderSeat.autoReplyUnchecked.join(","),
               paged: placeholderSeat.paged,
             }
+          : {}),
+      });
+    }
+
+    // --- The live transfer queue (#4380). The coordinator page offers "Transfer now" only
+    // when Pennie's transfer queue endpoint says enough advisors are free, and fails quiet
+    // by design (a plain line, booking as usual), so this is what speaks. In the org's
+    // hours it reads the endpoint as the page does, counts the reading against its business
+    // day, and pages when the endpoint fails on consecutive ticks, or when across the whole
+    // last business day no reading reached the threshold. Gated on the org's week, which
+    // decides both when it reads and which day is the last whole one. A failed read of the
+    // stored days or the settings throws, so this step's failing streak pages it. ---
+    const transferQueue = await steps.run("transfer_queue", null, async (step) => {
+      if (!gates.transferQueue.run || !businessHours) {
+        log.warn("monitor", { msg: "transfer queue probe skipped", why: gates.transferQueue.run ? "no business hours" : gates.transferQueue.why });
+        return step.unmeasured(null);
+      }
+      return runTransferQueueProbe({
+        hours: { zone: businessHours.zone, rules: businessHours.rules, exceptions: businessHours.exceptions },
+        nowMs: now,
+        readQueue: liveTransferQueueRead,
+        readSettings: readTransferOfferSettings,
+        recordReading: recordTransferQueueReading,
+        loadDays: loadTransferQueueDays,
+        bumpStreak: () => trackConsecutiveStreak(TRANSFER_QUEUE_STREAK_KEY, TRANSFER_QUEUE_STREAK_WINDOW_S, TRANSFER_QUEUE_FAILING_TICKS),
+        clearStreak: () => clearFailureStreak(TRANSFER_QUEUE_STREAK_KEY),
+        // alert-key: transfer_queue_unreadable
+        // alert-key: transfer_queue_never_free
+        // alert-text-ok: our own copy from transfer-queue-probe.ts, built from the failure KIND,
+        // a business day and counts; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: transfer_queue_unreadable
+        // alert-key: transfer_queue_never_free
+        // all-clear-proof: scripts/test-transfer-queue-probe.ts pins that a failed reading, a
+        // shut day, a day the probe did not read from open to close and a failed read of the
+        // days clear nothing, and that only a reading that succeeds, or one at or above the
+        // threshold, is worded as a recovery.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+      }).then((result) => {
+        if (result.settingsUnreadable) throw new Error("transfer queue probe: the live transfer settings are unreadable");
+        return result;
+      });
+    });
+    if (transferQueue) {
+      log.info("monitor", {
+        msg: "transfer queue",
+        probe: transferQueue.probe.status,
+        ...(transferQueue.probe.status === "read"
+          ? { free: transferQueue.probe.free, threshold: transferQueue.probe.threshold, reached: transferQueue.probe.reached }
+          : {}),
+        ...(transferQueue.probe.status === "failed" ? { why: transferQueue.probe.why, paged: transferQueue.probe.paged } : {}),
+        judgement: transferQueue.judgement.status,
+        ...(transferQueue.judgement.status === "unmeasured" ? { judgement_why: transferQueue.judgement.why } : {}),
+        ...(transferQueue.judgement.status === "never-free"
+          ? { day: transferQueue.judgement.day, readings: transferQueue.judgement.readings, most_free: transferQueue.judgement.mostFree }
           : {}),
       });
     }

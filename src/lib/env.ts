@@ -210,6 +210,15 @@ const BOOKING_API_KEYS: Record<BookingApiCaller, Record<KeySlot, () => string>> 
 export const bookingApiKeyFor = (caller: BookingApiCaller, slot: KeySlot): string =>
   BOOKING_API_KEYS[caller][slot]();
 
+// Bidspoke's key for POST /api/program-leads (#4388), where it registers each accepted
+// lead's Salesforce Lead id. Named like the booking keys but deliberately NOT one of
+// them: it is in no `BOOKING_API_CALLERS` key set, so it opens no booking route, the
+// cancel above all, and that route reads no other key
+// (`scripts/test-program-lead-key-scope.ts`). Empty = the route refuses every call
+// with a 503.
+export const programLeadApiKey = (): string => process.env.BOOKING_API_KEY_BIDSPOKE ?? "";
+export const programLeadApiKey2 = (): string => process.env.BOOKING_API_KEY_BIDSPOKE_2 ?? "";
+
 // Marcia's booking MCP endpoint (#3543). The two slots of the secret Marcia signs her
 // lead tokens with (decision 19's two slot rotation, the same move as the booking API
 // keys: fill the empty slot, point Marcia at it, empty the old one), and the secret

@@ -75,6 +75,7 @@ export const SAVE_OUTCOMES = [
   "org-default-hours",
   "placeholder-off",
   "placeholder-on",
+  "transfer-offer",
   "prerender-off",
   "prerender-on",
   "regal-ignore-added",
@@ -140,6 +141,8 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // lands from the next one. What each state means is drawn by the switch itself (L605).
   "placeholder-on": "Saved. From the next booking, a coordinator can put a call nobody is free for on Marcia.",
   "placeholder-off": "Saved. From the next booking, a coordinator who tries to book a call nobody is free for is refused.",
+  // #4380: read on every transfer check, so it lands from the next customer found.
+  "transfer-offer": "Live transfer saved. It applies from the next customer a coordinator finds.",
   // #3706: which way it went and when it lands, like the frame lock above. What each
   // state means for a lead is drawn once, by the switch beneath this notice (L605).
   "prerender-on": `Saved. Within ${EMBED_PRERENDER_LANDS_SECONDS} seconds, partner pages that ask will load the booker with the page.`,

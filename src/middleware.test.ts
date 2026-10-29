@@ -124,6 +124,19 @@ describe("the enforced script policy (#2575)", () => {
     expect(directive(lead.headers.get("content-security-policy"), "connect-src")).toBe("connect-src 'self'");
   });
 
+  it("treats the partner sign in page like /login: Supabase reachable, never framed (#4379)", async () => {
+    // It builds the same Supabase browser client to start the Microsoft redirect.
+    const res = await middleware(new NextRequest("https://slate.test/partner/sign-in"));
+    const policy = res.headers.get("content-security-policy");
+    expect(directive(policy, "connect-src")).toBe("connect-src 'self' https://project.supabase.co");
+    expect(directive(policy, "frame-ancestors")).toBe("frame-ancestors 'none'");
+    expect(nonceOf(policy)).toBeTruthy();
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+    // Only that page: the rest of /partner is not a sign in page and gets no such allowance.
+    const other = await middleware(new NextRequest("https://slate.test/partner/elsewhere"));
+    expect(directive(other.headers.get("content-security-policy"), "connect-src")).toBe("connect-src 'self'");
+  });
+
   it("keeps the policy on a staff response the session refresh replaced", async () => {
     // A cookie refresh REASSIGNS the response. Headers stamped before that would
     // be lost, leaving a signed in page with no policy and no framing rule.
@@ -284,6 +297,14 @@ describe("staff session age limits (#3084)", () => {
 
   it("never redirects the sign in page to itself", async () => {
     const res = await middleware(staffRequest("/login", signedIn(SESSION_TIME_BOX_MS * 2, SESSION_IDLE_MS * 2)));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("location")).toBeNull();
+  });
+
+  it("never sends somebody on the partner sign in page away to /login either (#4379)", async () => {
+    const res = await middleware(
+      staffRequest("/partner/sign-in", signedIn(SESSION_TIME_BOX_MS * 2, SESSION_IDLE_MS * 2)),
+    );
     expect(res.status).toBe(200);
     expect(res.headers.get("location")).toBeNull();
   });

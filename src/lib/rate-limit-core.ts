@@ -258,6 +258,15 @@ export const COORDINATOR_PLACE_RATE_RULES: RateLimitRule[] = [
   { prefix: "coord-place:m", windowSeconds: 60, max: 10 },
   { prefix: "coord-place:h", windowSeconds: 3600, max: 120 },
 ];
+/**
+ * #4380: the live transfer check, asked once when a customer is found and once per press
+ * of Transfer now. It costs one request to Pennie's transfer queue endpoint and one
+ * settings read, so these bound a stuck page rather than ration anybody genuine.
+ */
+export const COORDINATOR_TRANSFER_RATE_RULES: RateLimitRule[] = [
+  { prefix: "coord-transfer:m", windowSeconds: 60, max: 30 },
+  { prefix: "coord-transfer:h", windowSeconds: 3600, max: 600 },
+];
 
 /**
  * Every DB limiter rule above, in one list, so the prune below covers each one by
@@ -286,6 +295,7 @@ const DB_RATE_LIMIT_RULE_SETS: readonly RateLimitRule[][] = [
   CALL_ME_NOW_HOURLY_RATE_RULES,
   COORDINATOR_LOOKUP_RATE_RULES,
   COORDINATOR_PLACE_RATE_RULES,
+  COORDINATOR_TRANSFER_RATE_RULES,
 ];
 
 /**

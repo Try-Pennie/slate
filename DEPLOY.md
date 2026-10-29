@@ -100,6 +100,8 @@ wrangler secret put BOOKING_API_KEY_CANARY  # required for the smoke canary (#28
 # wrangler secret put BOOKING_API_KEY_CANARY_2  # optional; the canary's rotation slot, set only when rotating.
 wrangler secret put BOOKING_API_KEY_MARCIA  # optional; Marcia's own booking API key (#2940), held by the Marcia 5.0 Pipedream workflow as its slate_api_key step prop. It opens POST /api/bookings/cancel (and its DELETE twin) and NOTHING else: every other route refuses it 401. Logs and the rate ceiling name the caller "marcia". Empty = Marcia's cancels are refused 401 and no other caller is affected.
 # wrangler secret put BOOKING_API_KEY_MARCIA_2  # optional; Marcia's rotation slot, set only when rotating.
+wrangler secret put BOOKING_API_KEY_BIDSPOKE  # optional; Bidspoke's key (#4388), held by Bidspoke's lead intake, which calls POST /api/program-leads to register each accepted lead before its first text. Named like the booking keys but NOT one: it is in no booking caller key set, opens that route and NOTHING else, and that route takes no other key (scripts/test-program-lead-key-scope.ts). Empty = the route answers 503 NOT_CONFIGURED and no program lead is recognised.
+# wrangler secret put BOOKING_API_KEY_BIDSPOKE_2  # optional; Bidspoke's rotation slot (#3110), set only when rotating. See "Rotating a credential".
 # wrangler secret put MARCIA_TOKEN_KEY_A  # optional; SET 2026-10-20 (#3541): the secret Marcia signs her HS256 lead tokens with, shared with Marcia's signer and held by no other Worker. At least 32 characters; the public fixture key in src/lib/mcp-booking/machine-token-fixtures.json is refused as a key. Empty in both slots = every lead token is refused (token_keys_unconfigured) and each refusal pages marcia_token_refused:token_keys_unconfigured.
 # wrangler secret put MARCIA_TOKEN_KEY_B  # optional, not set: the rotation slot. Rotate by filling the empty slot, moving Marcia's signer to it, then emptying the old one; either slot verifies.
 # openssl rand -hex 32 | wrangler secret put MCP_BOOKING_GATEWAY_SECRET  # optional; SET 2026-10-20 (#3541): the secret McpBookingGateway puts on its in process request to /api/internal/mcp-booking/*, which that route compares before anything else. Never leaves this Worker. Empty = the gateway hands each Marcia call on with no secret, and the route refuses it (gateway_unconfigured) and pages marcia_gateway_refused.
@@ -707,10 +709,23 @@ Removing a coordinator deletes their auth user. The monitor's hourly
 `auth.mfa_amr_claims`, since production writes no auth audit log to the database) and on an
 outside account no active coordinator holds.
 
+**Coordinators sign in at `https://slate.trypennie.app/partner/sign-in`**, a page of their
+own with one button, **Continue with Microsoft**, and no Google option
+(`docs/design/partner-sign-in.html`). The staff page, `/login`, stays Google only and shows no
+Microsoft option, so send coordinators this address, not `/login`. A refused Microsoft
+sign in (not invited, a different Microsoft account, a Pennie address, removed) comes back
+to this page with its own sentence. The one exception is a sign in that holds both a Google
+and a Microsoft account, which goes back to whichever page it started from. A coordinator who opens `/coordinator`
+signed out, or whose session reaches its age limit, is still sent to `/login`, because an
+admin uses that page too; give them the partner address again.
+
 **Rollout order, which must not change:** apply 0212 with `supabase db push` before the
 merge; deploy and confirm the code is live; only then switch Azure on in the dashboard
 (Authentication, Sign In / Providers, Azure, with the Entra app's client id and secret and
-the `xms_edov` and `email` optional claims, so Supabase marks the address verified).
+the `xms_edov` and `email` optional claims, so Supabase marks the address verified). Then
+check it from `https://slate.trypennie.app/partner/sign-in`: Continue with Microsoft must reach
+Microsoft's own sign in screen. Until Azure is on, the button lands on a bare Supabase error
+saying the provider is not enabled, so do not send coordinators the address before the switch.
 **Rollback is switching Azure off.** The Azure app's client secret expires; its renewal
 reminder is on the Phase 0 card for #4379.
 
@@ -1290,7 +1305,8 @@ holder leaving, or on a schedule if one is ever set; nothing here runs on a time
 ### Keys with a `_2` slot: zero downtime
 
 `CRON_SECRET`, `REASSIGN_API_KEY`, `DUPLICATE_CANCEL_API_KEY`, `OFFBOARDING_API_KEY`,
-`BOOKABLE_API_KEY`, `REGAL_INBOUND_KEY` and `UPTIME_HEARTBEAT_KEY` are each checked
+`BOOKABLE_API_KEY`, `REGAL_INBOUND_KEY`, `UPTIME_HEARTBEAT_KEY` and
+`BOOKING_API_KEY_BIDSPOKE` are each checked
 against the key AND its `_2` slot, either of which authenticates (the booking API
 keys' pattern, #2645). The primary alone decides whether the endpoint is configured,
 so an unset `_2` is inert. `scripts/test-bearer-rotation-slots.ts` refuses a bearer
@@ -1319,6 +1335,7 @@ refused with a 401 from step 5 on. Who else holds each one:
 | `BOOKABLE_API_KEY` | the roster and onboarding automation; NOT SET in production today (see 2b) | promotions 401 |
 | `REGAL_INBOUND_KEY` | Regal, Settings > Integrations, the reporting webhook's `Authorization` header | Regal does not retry, so every call event in the gap is lost and the call feed monitor pages. A delivery repeated across the change is harmless: both tables are unique on Regal's event id, so it lands as one row (`scripts/test-regal-call-store-idempotent.ts`) |
 | `UPTIME_HEARTBEAT_KEY` | noodge, as `SLATE_UPTIME_HEARTBEAT_KEY` when it applies `monitors/slate.sql` | both uptime heartbeats go stale and the lane watchdog pages within the hour; the health answers themselves are unaffected |
+| `BOOKING_API_KEY_BIDSPOKE` | Bidspoke's lead intake, which registers program leads (#4388) | registrations 401, so new program leads are shown the ordinary times only |
 
 ### `GOOGLE_CHANNEL_TOKEN`: a previous slot, for a window
 

@@ -28,6 +28,7 @@ import {
   readPublicBookingPaused,
   readDemotionRerouteEnabled,
   readPlaceholderBookingEnabled,
+  readTransferOfferSettings,
   readPublicBookingPauseState,
   HORIZON_DEFAULT,
   HORIZON_MIN,
@@ -394,5 +395,35 @@ describe("readPlaceholderBookingEnabled", () => {
   it("answers null (unreadable), never true and never a throw, when the read ERRORS", async () => {
     maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
     await expect(readPlaceholderBookingEnabled()).resolves.toBeNull();
+  });
+});
+
+// #4380: the two live transfer settings. An unreadable read must never be served as the
+// defaults: the page would offer a transfer on a threshold nobody read (L10).
+describe("readTransferOfferSettings", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+  });
+
+  it("reads the stored threshold and line", async () => {
+    maybeSingle.mockResolvedValue({ data: { transfer_offer_threshold: 5, transfer_line: "212-555-0100" }, error: null });
+    await expect(readTransferOfferSettings()).resolves.toEqual({ threshold: 5, line: "212-555-0100" });
+  });
+
+  it("reads a missing settings row as the column defaults, a real answer", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readTransferOfferSettings()).resolves.toEqual({ threshold: 3, line: "786-504-0671" });
+  });
+
+  it("answers null, never the defaults and never a throw, when the read errors", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
+    await expect(readTransferOfferSettings()).resolves.toBeNull();
+  });
+
+  it("answers null for a stored value outside the shape the column check holds", async () => {
+    maybeSingle.mockResolvedValue({ data: { transfer_offer_threshold: 0, transfer_line: "786-504-0671" }, error: null });
+    await expect(readTransferOfferSettings()).resolves.toBeNull();
+    maybeSingle.mockResolvedValue({ data: { transfer_offer_threshold: 3, transfer_line: "7865040671" }, error: null });
+    await expect(readTransferOfferSettings()).resolves.toBeNull();
   });
 });

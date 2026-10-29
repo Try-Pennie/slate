@@ -97,6 +97,9 @@ export const PRODUCTION_ONLY_SECRETS = [
   // #2940: Marcia's cancel only key. The load run never cancels as Marcia.
   "BOOKING_API_KEY_MARCIA",
   "BOOKING_API_KEY_MARCIA_2",
+  // #4388: Bidspoke's key for registering program leads. The load run never registers
+  // one, and a load test Worker holding it was handed production's.
+  "BOOKING_API_KEY_BIDSPOKE",
   // #3543: Marcia's lead token keys and her booking gateway's secret. The load run
   // never books as Marcia, and a deployment holding them would verify real tokens.
   "MARCIA_TOKEN_KEY_A",
@@ -137,6 +140,7 @@ export const PRODUCTION_ONLY_SECRETS = [
     "BOOKABLE_API_KEY",
     "REGAL_INBOUND_KEY",
     "UPTIME_HEARTBEAT_KEY",
+    "BOOKING_API_KEY_BIDSPOKE",
   ].map((primary) => `${primary}_2`),
 ] as const;
 

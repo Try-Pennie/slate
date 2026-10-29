@@ -5,10 +5,12 @@ import { cardCls } from "@/components/ui/styles";
 import { AdminPageHeader } from "@/components/admin/AdminPageHeader";
 import { PlaceholderBookingSwitch } from "@/components/admin/PlaceholderBookingSwitch";
 import { CoordinatorList } from "@/components/admin/CoordinatorList";
+import { TransferOfferSettings } from "@/components/admin/TransferOfferSettings";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { SettingsSaveNotice } from "@/app/admin/settings/SettingsSaveNotice";
 import { savedOutcome, savedSentence } from "@/lib/admin/save-outcomes";
-import { readPlaceholderBookingEnabled } from "@/lib/booking/settings";
+import { readPlaceholderBookingEnabled, readTransferOfferSettings } from "@/lib/booking/settings";
+import type { TransferOfferSettings as TransferSettings } from "@/lib/coordinator/transfer-queue";
 import { loadCoordinators } from "@/lib/admin/coordinators-load";
 import type { CoordinatorsRead } from "@/lib/admin/coordinators";
 import { COORDINATOR_BOOKING_COPY as COPY } from "@/lib/admin/coordinator-booking-copy";
@@ -62,12 +64,13 @@ export default async function CoordinatorBookingPage({
 
   // Each its own read, and each failure its own state: an unreadable switch is null, never
   // drawn as off, and an unreadable list is a failure, never nobody (L10, L530).
-  const [on, read] = await Promise.all([readPlaceholderBookingEnabled(), loadCoordinators(me.org_id)]);
+  const [on, read, transfer] = await Promise.all([readPlaceholderBookingEnabled(), loadCoordinators(me.org_id), readTransferOfferSettings()]);
   const saved = savedSentence(savedOutcome(sp.ok));
   return (
     <View
       on={on}
       read={read}
+      transfer={{ settings: transfer }}
       notice={
         <>
           {saved && <SettingsSaveNotice ok saved={saved} error={sp.error} />}
@@ -84,9 +87,15 @@ function View({
   notice,
   initiallyAsking,
   initiallyRemoving,
+  transfer,
 }: {
   on: boolean | null;
   read: CoordinatorsRead;
+  /**
+   * #4380: the live transfer settings, or absent in the coordinator admin design's frames,
+   * which were settled before the setting existed and do not draw it.
+   */
+  transfer?: { settings: TransferSettings | null };
   notice?: React.ReactNode;
   initiallyAsking?: boolean;
   initiallyRemoving?: string | null;
@@ -106,6 +115,11 @@ function View({
         <div className="mt-6 border-t border-border pt-4">
           <CoordinatorList read={read} initiallyRemoving={initiallyRemoving} />
         </div>
+        {transfer && (
+          <div className="mt-6 border-t border-border pt-4">
+            <TransferOfferSettings settings={transfer.settings} />
+          </div>
+        )}
       </section>
     </>
   );

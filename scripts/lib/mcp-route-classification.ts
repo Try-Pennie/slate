@@ -52,6 +52,10 @@ export const ROUTE_EXEMPTIONS: RouteExemption[] = [
     reason: "Regal's double booking journeys cancelling an earlier duplicate on their own key (#2369), never a lead or a model.",
   },
   {
+    path: "/api/program-leads",
+    reason: "Bidspoke's lead intake registering an accepted lead as a program lead on its own key (#4388), never a lead or a model.",
+  },
+  {
     path: "/api/bookings/reassign",
     reason: "The upstream contact stickiness automation forcing a booking onto its owning advisor on its own key (#9), never a lead or a model.",
   },
