@@ -168,9 +168,10 @@ export function oooCoverageStopAlert(requestId: string, reason: string): string 
 }
 
 /**
- * One approved time off whose calendar event no longer covers it (#3360), as the
- * page names it. `coverage` is the judge's own verdict (`event-coverage.ts`), so the
- * words can never describe a different disagreement than the one measured.
+ * One approved time off whose calendar event no longer covers it (#3360). `coverage`
+ * is the judge's own verdict (`event-coverage.ts`), so the DMs that describe the
+ * disagreement (`mismatch-notice-copy.ts`) can never name a different one than the
+ * one measured. The alerts channel page names the open hours of a shortened event only.
  */
 export interface OooEventMismatch {
   requestId: string;
@@ -188,32 +189,42 @@ export interface OooEventMismatch {
     | { kind: "not-blocking"; unmeasured: { startMs: number; endMs: number } | null };
 }
 
-const NOT_BLOCKING_WHY = "(it was deleted, cancelled, marked free or moved)";
+/**
+ * The hours a shortened event leaves open, in the request's zone, joined with "and".
+ * Shared by the alerts channel page and the agent's and manager's DMs
+ * (`mismatch-notice-copy.ts`), so both name the same hours the same way.
+ */
+export function openSpansText(
+  spans: { startMs: number; endMs: number }[],
+  tzId: string,
+  tzLabel: string | undefined,
+): string {
+  return spans
+    .map((s) => formatWhenLine(new Date(s.startMs).toISOString(), new Date(s.endMs).toISOString(), tzId, tzLabel))
+    .join(" and ");
+}
 
-function mismatchLine(f: OooEventMismatch, appBaseUrl: string): string {
+/**
+ * One request's block on the page: the approved window, then the link alone on the
+ * last line, in Dan's layout (2026-10-29). Only a shortened event says how the
+ * calendar differs (the hours it leaves open); a missing or partly checked one does
+ * not, because Dan cut that sentence. `reason` is the request's own escalation
+ * sentence when the requests on one page reached it differently, and follows the
+ * open hours.
+ */
+function mismatchBlock(f: OooEventMismatch, appBaseUrl: string, reason: string | null): string {
   const label = f.displayTzLabel ?? undefined;
   const approved = formatWhenLine(f.startsAt, f.endsAt, f.displayTzId, label);
-  const calendar =
-    f.coverage.kind === "not-blocking"
-      ? f.coverage.unmeasured === null
-        ? `The calendar shows no busy time off event inside that window ${NOT_BLOCKING_WHY}.`
-        : `The calendar shows no busy time off event for ${formatWhenLine(
-            f.startsAt,
-            new Date(f.coverage.unmeasured.startMs).toISOString(),
-            f.displayTzId,
-            label,
-          )} ${NOT_BLOCKING_WHY}; the rest of the window is too far ahead to check yet.`
-      : `The calendar event leaves ${f.coverage.spans
-          .map((s) =>
-            formatWhenLine(
-              new Date(s.startMs).toISOString(),
-              new Date(s.endMs).toISOString(),
-              f.displayTzId,
-              label,
-            ),
-          )
-          .join(" and ")} open.`;
-  return `Approved: ${approved}. ${calendar} ${appBaseUrl}/admin/ooo?request=${f.requestId}`;
+  // Dan (2026-10-29): a shortened event alone keeps one line, naming the hours it
+  // leaves open, with no full stop. A missing or partly checked one says nothing more.
+  const open =
+    f.coverage.kind === "uncovered" ? `Calendar leaves ${openSpansText(f.coverage.spans, f.displayTzId, label)} open` : null;
+  return [
+    `Approved: ${approved}`,
+    ...(open === null ? [] : [open]),
+    ...(reason === null ? [] : [reason]),
+    `${appBaseUrl}/admin/ooo?request=${f.requestId}`,
+  ].join("\n");
 }
 
 /**
@@ -281,8 +292,9 @@ export function oooEventMismatchAlert(
   appBaseUrl: string,
   /**
    * Why each request reached the alerts channel: one reason for every request, or one
-   * per request in `found`'s order. When the requests differ, each line carries its
-   * own and the opening sentence states none of them, so no request is described by
+   * per request in `found`'s order. When the requests differ, each request's block
+   * carries its own on a line of its own, and the opening sentence states none of
+   * them, so no request is described by
    * another's history.
    */
   escalation: OooEventMismatchEscalation | OooEventMismatchEscalation[],
@@ -296,19 +308,20 @@ export function oooEventMismatchAlert(
   const why = shared
     ? escalationSentence(agentName, shared)
     : `Each request reached this channel for its own reason, given on its line.`;
-  return (
+  // Dan's wording (2026-10-29), word for word: pinned by
+  // scripts/test-ooo-mismatch-notice-copy.ts.
+  return [
     `${agentName}'s Google Calendar no longer matches ` +
-    `${one ? "an approved time off" : `${found.length} approved time off requests`}, ` +
-    `and only a person can say which is right. ${why} ` +
-    `Slate is still blocking the whole approved ` +
-    `window, so no lead can be booked into it meanwhile. Make the two agree: if those ` +
-    `hours are being worked, change the request in My time off (it goes back to the ` +
-    `manager to approve); if they are not, put the calendar event back to the approved ` +
-    `times.\n` +
-    found
-      .map((f, i) => mismatchLine(f, appBaseUrl) + (shared ? "" : ` ${escalationSentence(agentName, reasons[i]!)}`))
-      .join("\n")
-  );
+      `${one ? "an approved time off" : `${found.length} approved time off requests`}. ` +
+      `${why} Slate is still blocking the originally approved window, so no lead can be ` +
+      `booked into it.`,
+    `Action required: Make the two agree: if those hours are being worked, change the ` +
+      `request in My time off (it goes back to the manager to approve); if they are not, ` +
+      `put the calendar event back to the approved times.`,
+    ...found.map((f, i) =>
+      mismatchBlock(f, appBaseUrl, shared ? null : escalationSentence(agentName, reasons[i]!)),
+    ),
+  ].join("\n\n");
 }
 
 /**

@@ -3,7 +3,7 @@
 import { DateTime } from "luxon";
 import { formatClockTime } from "../date/parse.ts";
 import { formatWhenLine, normalizeTzLabel } from "./core.ts";
-import type { OooEventMismatch } from "./alert-copy.ts";
+import { openSpansText, type OooEventMismatch } from "./alert-copy.ts";
 
 /**
  * The Slack messages an agent and their manager read when an approved time off and
@@ -28,12 +28,7 @@ function whenOf(f: Pick<OooEventMismatch, "startsAt" | "endsAt" | "displayTzId" 
 function calendarSays(f: OooEventMismatch, whose: string): string {
   const label = f.displayTzLabel ?? undefined;
   if (f.coverage.kind === "uncovered") {
-    const open = f.coverage.spans
-      .map((s) =>
-        formatWhenLine(new Date(s.startMs).toISOString(), new Date(s.endMs).toISOString(), f.displayTzId, label),
-      )
-      .join(" and ");
-    return `${whose} calendar leaves ${open} open.`;
+    return `${whose} calendar leaves ${openSpansText(f.coverage.spans, f.displayTzId, label)} open.`;
   }
   if (f.coverage.unmeasured !== null) {
     const checked = formatWhenLine(f.startsAt, new Date(f.coverage.unmeasured.startMs).toISOString(), f.displayTzId, label);

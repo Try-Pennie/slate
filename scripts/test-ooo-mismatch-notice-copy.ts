@@ -177,19 +177,90 @@ eq(seenAgent.size, cases.length, "every reason reads differently to the agent (L
 }
 {
   // Two requests that reached the channel for different reasons: neither reason is
-  // stated for both, each line carries its own.
+  // stated for both, each request's block carries its own.
   const other = { ...shortened, requestId: "req_a41" };
   const t = oooEventMismatchAlert("Heather McLellen", [shortened, other], APP, [
     { agent: "told", manager: "told" },
     { agent: "told", manager: "none" },
   ]);
   clean(t, "a page with mixed reasons");
-  const lines = t.split("\n");
-  const l1 = lines.find((l) => l.includes("req_9f2")) ?? "";
-  const l2 = lines.find((l) => l.includes("req_a41")) ?? "";
-  assert(/both told/i.test(l1) && !/no manager of record/i.test(l1), `the first request's line carries its own reason (${l1})`);
-  assert(/no manager of record/i.test(l2) && !/both told/i.test(l2), `the second request's line carries its own reason (${l2})`);
-  assert(!/both told/i.test(lines[0] ?? ""), "and the opening sentence states neither reason for every request");
+  // Each request is its own block (Approved, its reason, then the link alone on the
+  // last line), separated by a blank line.
+  const blocks = t.split("\n\n");
+  const l1 = blocks.find((b) => b.includes("req_9f2")) ?? "";
+  const l2 = blocks.find((b) => b.includes("req_a41")) ?? "";
+  assert(/both told/i.test(l1) && !/no manager of record/i.test(l1), `the first request's block carries its own reason (${l1})`);
+  assert(/no manager of record/i.test(l2) && !/both told/i.test(l2), `the second request's block carries its own reason (${l2})`);
+  assert(l1.split("\n").at(-1) === `${APP}/admin/ooo?request=req_9f2`, "and its link sits alone on the block's last line");
+  assert(!/both told/i.test(blocks[0] ?? ""), "and the opening sentence states neither reason for every request");
+  // Dan (2026-10-29): a shortened event's open hours come first, then the reason, then the link.
+  eq(
+    l1,
+    "Approved: Wed, Oct 7 2026 from 12:00am - 11:59pm MT\n" +
+      "Calendar leaves Wed, Oct 7 2026 from 12:00am - 11:30am MT open\n" +
+      "Heather McLellen and their manager were both told on Slack and neither has fixed it.\n" +
+      `${APP}/admin/ooo?request=req_9f2`,
+    "a shortened request's block reads open hours, then its reason, then its link",
+  );
+}
+{
+  // Dan (2026-10-29): only a SHORTENED event keeps a line, naming the open hours, with
+  // no full stop, between the Approved line and the link.
+  const t = oooEventMismatchAlert("Heather McLellen", [shortened], "https://slate.trypennie.app", {
+    agent: "told",
+    manager: "told",
+  });
+  assert(
+    t.endsWith(
+      "\n\nApproved: Wed, Oct 7 2026 from 12:00am - 11:59pm MT\n" +
+        "Calendar leaves Wed, Oct 7 2026 from 12:00am - 11:30am MT open\n" +
+        "https://slate.trypennie.app/admin/ooo?request=req_9f2",
+    ),
+    `a shortened event's block names the open hours exactly as Dan worded it (${t.split("\n\n").at(-1)})`,
+  );
+  const two = oooEventMismatchAlert(
+    "Heather McLellen",
+    [{ ...shortened, coverage: { kind: "uncovered", spans: [
+      { startMs: Date.parse("2026-10-07T06:00:00.000Z"), endMs: Date.parse("2026-10-07T17:30:00.000Z") },
+      { startMs: Date.parse("2026-10-07T22:00:00.000Z"), endMs: Date.parse("2026-10-08T05:59:00.000Z") },
+    ] } }],
+    APP,
+    { agent: "told", manager: "told" },
+  );
+  assert(
+    two.includes("\nCalendar leaves Wed, Oct 7 2026 from 12:00am - 11:30am MT and Wed, Oct 7 2026 from 4:00pm - 11:59pm MT open\n"),
+    `two open spans are both named on the one line (${two.split("\n\n").at(-1)})`,
+  );
+  const goneText = oooEventMismatchAlert("Heather McLellen", [gone], APP, { agent: "told", manager: "told" });
+  assert(!/Calendar leaves/.test(goneText), "a missing event carries no open hours line");
+}
+{
+  // Dan's own wording (2026-10-29), pinned word for word against the page that posted
+  // for Amanda Ferguson that day: an all day request whose event was gone, and both
+  // the agent and her manager told. The calendar reason sentence is deliberately
+  // gone, there is a blank line before "Action required:" and before "Approved:",
+  // the Approved line carries no full stop, and the link sits alone on the last line.
+  const amanda: OooEventMismatch = {
+    requestId: "788d0b74-973a-4f64-a32f-169f1849af4b",
+    startsAt: "2026-10-29T06:00:00.000Z",
+    endsAt: "2026-10-30T05:59:00.000Z",
+    displayTzId: "America/Denver",
+    displayTzLabel: "MT",
+    coverage: { kind: "not-blocking", unmeasured: null },
+  };
+  eq(
+    oooEventMismatchAlert("Amanda Ferguson", [amanda], "https://slate.trypennie.app", { agent: "told", manager: "told" }),
+    "Amanda Ferguson's Google Calendar no longer matches an approved time off. Amanda Ferguson and their manager " +
+      "were both told on Slack and neither has fixed it. Slate is still blocking the originally approved window, " +
+      "so no lead can be booked into it.\n" +
+      "\n" +
+      "Action required: Make the two agree: if those hours are being worked, change the request in My time off " +
+      "(it goes back to the manager to approve); if they are not, put the calendar event back to the approved times.\n" +
+      "\n" +
+      "Approved: Thu, Oct 29 2026 from 12:00am - 11:59pm MT\n" +
+      "https://slate.trypennie.app/admin/ooo?request=788d0b74-973a-4f64-a32f-169f1849af4b",
+    "the alerts channel page reads exactly as Dan worded it",
+  );
 }
 
 finish();
