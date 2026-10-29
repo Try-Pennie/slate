@@ -172,6 +172,18 @@ export const CRON_ROUTES: Record<string, string | string[]> = {
   "13,43 * * * *": "/api/cron/capacity-fill",
 };
 
+/** The every minute trigger. Cloudflare has stopped delivering it on its own while every
+ *  other schedule fired (2026-10-26, 2026-10-27, 2026-10-29), so its lanes have a backstop. */
+export const MINUTE_CRON = "* * * * *";
+
+/**
+ * The trigger whose tick also starts any every minute lane that has not claimed a tick in
+ * three minutes (worker/lane-backstop.ts, 2026-10-29). Five minutes because it is the most
+ * frequent other trigger: a skipped minute trigger then costs at most about five minutes of
+ * those lanes, never the 14 it cost on 2026-10-29.
+ */
+export const BACKSTOP_CRON = "*/5 * * * *";
+
 /** Every route a cron expression drives (empty array when unmapped). */
 export function routesForCron(cron: string): string[] {
   const value = CRON_ROUTES[cron];

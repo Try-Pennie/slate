@@ -58,6 +58,42 @@ import { log } from "@/lib/log";
 import { CALCOM_HEARTBEAT_LANES, loadCalcomRetiredCached, withoutRetiredCalcomLanes } from "@/lib/calcom/retirement";
 import { parseStampMs } from "@/lib/date/stamp";
 import { CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
+import {
+  MINUTE_LANE_PATHS,
+  TRIGGER_READING_WINDOW_MS,
+  minuteTriggerReading,
+  readRecentLaneClaims,
+  type LaneClaimQuery,
+  type MinuteTriggerReading,
+} from "@/lib/monitor/minute-lane-claims";
+import { laneFieldName } from "@/lib/monitor/lane-timing";
+
+/** The heartbeat lanes that run on the every minute trigger: its routes, plus the reroute
+ *  hold sweep, which runs inside selfheal and stamps its own heartbeat. */
+const MINUTE_TRIGGER_LANES: ReadonlySet<string> = new Set([
+  ...MINUTE_LANE_PATHS.map((p) => laneFieldName(p)),
+  "reroute-hold-sweep",
+]);
+
+/**
+ * Whether Cloudflare is delivering the every minute trigger, for the lanes page
+ * (2026-10-29). Read only when a quiet lane is on that trigger, like the status page, so a
+ * healthy tick costs nothing. A failed read is `unknown`, which claims nothing either way:
+ * the page then says what it said before this existed.
+ */
+async function readMinuteTrigger(stale: StaleLane[], now: number): Promise<MinuteTriggerReading> {
+  if (!stale.some((l) => MINUTE_TRIGGER_LANES.has(l.lane))) return { kind: "unknown" };
+  try {
+    const { rows, truncated } = await readRecentLaneClaims(
+      supabaseAdmin().from("lane_runs") as unknown as LaneClaimQuery,
+      new Date(now - TRIGGER_READING_WINDOW_MS).toISOString(),
+    );
+    return minuteTriggerReading(rows, now, { truncated });
+  } catch (err) {
+    log.error("lane-watchdog", { msg: "lane_runs could not be read, so the page says nothing about the minute trigger" }, err);
+    return { kind: "unknown" };
+  }
+}
 
 /** Per lane, so one dead lane can't throttle away the first alert for another. */
 const staleLaneAlertKey = (lane: string) => `cron_lane_stale:${lane}`;
@@ -277,13 +313,14 @@ export async function alertOnStaleLanes(): Promise<LaneWatchdogOutcome> {
       return at !== null && at !== undefined && now - at <= bound;
     });
     const cloudflare = await readCloudflareCronStatus();
+    const minuteTrigger = await readMinuteTrigger(stale, now);
     // A publish that has never landed is in this list under its grace window, and is not "stopped".
     const poolGroupingStopped = poolGroupingStale.some((l) => Number.isFinite(l.ageMs));
     // alert-key: cron_lanes_stale
     await sendThrottledAlert(
       CORE_LANES_ALERT_KEY,
       STALE_LANE_COOLDOWN_MS,
-      coreLanesAlertText({ stale, othersRunning: fresh, poolGroupingStopped, cloudflare }),
+      coreLanesAlertText({ stale, othersRunning: fresh, poolGroupingStopped, cloudflare, minuteTrigger }),
       // The pool grouping is a subject too: its own page waits on this one (ALERT_FOLDS),
       // so its stopping after this page posted must read as a change and post at once.
       { subjects: [...stale.map((l) => l.lane), ...(poolGroupingStopped ? ["pool-grouping"] : [])] },

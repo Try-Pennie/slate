@@ -12,6 +12,10 @@
  */
 import { describeGap, laneQuietClause, stoppedTogether, type StaleLane } from "@/lib/monitor/health";
 import type { CloudflareCronStatus } from "@/lib/monitor/cloudflare-status";
+import { DateTime } from "luxon";
+import { formatClockTime } from "@/lib/date/parse";
+import { MINUTE_LANE_PATHS, TRIGGER_READING_WINDOW_MS, type MinuteTriggerReading } from "@/lib/monitor/minute-lane-claims";
+import { laneFieldName } from "@/lib/monitor/lane-timing";
 import {
   AVAILABILITY_TRUTH_VERDICT_LANE,
   FAILURE_RATE_VERDICT_LANE,
@@ -70,6 +74,38 @@ export interface CoreLanesPage {
   poolGroupingStopped: boolean;
   /** Cloudflare's status page, as read this tick. */
   cloudflare: CloudflareCronStatus;
+  /**
+   * Whether Cloudflare is delivering the every minute trigger, read off `lane_runs`
+   * (2026-10-29). Absent or `unknown` claims nothing either way.
+   */
+  minuteTrigger?: MinuteTriggerReading;
+}
+
+/** The zone every time of day in this copy is given in. */
+const COPY_ZONE = "America/New_York";
+
+/** "4:51am ET", in the one spelling every surface uses (formatClockTime). */
+function timeEt(ms: number): string {
+  return `${formatClockTime(DateTime.fromMillis(ms, { zone: COPY_ZONE })) ?? "an unreadable time"} ET`;
+}
+
+const MINUTE_LANE_NAMES = new Set(MINUTE_LANE_PATHS.map(laneFieldName));
+
+/**
+ * The sentence saying Cloudflare stopped delivering the every minute trigger, or null
+ * when this tick measured no such thing. Said only when a quiet lane is on that trigger
+ * (the reroute hold sweep runs inside selfheal, so it counts), and only off a reading
+ * that found no delivery (L11): a read that failed or was cut short says nothing.
+ */
+function minuteTriggerSentence(page: CoreLanesPage): string | null {
+  const reading = page.minuteTrigger;
+  if (!reading || reading.kind !== "silent") return null;
+  const onTrigger = page.stale.some((l) => MINUTE_LANE_NAMES.has(l.lane) || l.lane === "reroute-hold-sweep");
+  if (!onTrigger) return null;
+  if (reading.sinceMs === null) {
+    return `Cloudflare has delivered no every-minute tick in the last ${Math.round(TRIGGER_READING_WINDOW_MS / 3_600_000)} hours.`;
+  }
+  return `Cloudflare has delivered no every-minute tick since ${timeEt(reading.sinceMs)}.`;
 }
 
 /**
@@ -109,8 +145,14 @@ export function coreLanesAlertText(page: CoreLanesPage): string {
       sentences.push(`The last-run record for ${spoken(unreadable)} cannot be read, so it is treated as stopped.`);
     }
   }
-  if (page.othersRunning && stoppedTogether(stale)) {
-    // Within a minute (`stoppedTogether`). Shortened at Dan's ask, 2026-10-26.
+  const undelivered = minuteTriggerSentence(page);
+  if (undelivered) {
+    // 2026-10-29: measured, so it replaces the guess below. Cloudflare's to fix; the
+    // runbook says the lanes resume on their own.
+    sentences.push(undelivered);
+  } else if (page.othersRunning && stoppedTogether(stale)) {
+    // Within a minute (`stoppedTogether`). Shortened at Dan's ask, 2026-10-26. Kept for
+    // ticks that arrived and runs that failed, and for a reading that could not tell.
     sentences.push(`They stopped together while other lanes kept running: a schedule or deploy problem, not one lane.`);
   }
   if (page.cloudflare.kind === "incident") {
@@ -126,7 +168,8 @@ export function coreLanesAlertText(page: CoreLanesPage): string {
   if (stale.some((l) => l.lane === "sync")) {
     // The stale calendar sync page waits on this one (ALERT_FOLDS), so this says its
     // consequence once, here, in place of a second page.
-    sentences.push(`With sync stopped, advisors' calendars are not being refreshed, so the times offered can drift from them.`);
+    // Dan's wording, 2026-10-29.
+    sentences.push(`Advisors' calendars aren't syncing, so offered times may be out of date.`);
   }
   if (page.poolGroupingStopped) {
     sentences.push(
@@ -137,6 +180,29 @@ export function coreLanesAlertText(page: CoreLanesPage): string {
   }
   sentences.push(`What to check for each lane is in the alerts runbook, under "${STALE_LANE_RUNBOOK_SECTION}".`);
   return sentences.join(" ");
+}
+
+/** alert-key: minute_backstop_unreadable */
+export const MINUTE_BACKSTOP_UNREADABLE_KEY = "minute_backstop_unreadable";
+
+/**
+ * The every minute backstop could not read `lane_runs` (2026-10-29), so the five minute
+ * tick started no lane on its behalf. Nothing is down because of it: it is a missing safety
+ * net, the one that covers Cloudflare skipping the every minute trigger. Our own words
+ * only: the error is on the route's log line (#1135).
+ */
+export function minuteBackstopUnreadableText(): string {
+  return (
+    `The backstop for the every-minute cron lanes cannot read when they last ran, so it ` +
+    `is not starting them if Cloudflare skips that schedule. The lanes themselves are not ` +
+    `affected while Cloudflare keeps delivering it. What to check is in the alerts runbook, ` +
+    `under "${STALE_LANE_RUNBOOK_SECTION}". Repeats once a day while it lasts, and says when it clears.`
+  );
+}
+
+/** All clear for the backstop: a read that was actually measured. */
+export function minuteBackstopRecoveryText(): string {
+  return `The backstop for the every-minute cron lanes can read when they last ran again, so it will start them if Cloudflare skips that schedule.`;
 }
 
 /** All-clear for the core lanes' page: every core lane has stamped inside its bound. */

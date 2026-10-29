@@ -50,6 +50,7 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // A lane, a schedule, or a detector has stopped producing.
   cron_lane_stale: "a-lane-or-schedule-has-gone-quiet",
   cron_lanes_stale: "a-lane-or-schedule-has-gone-quiet",
+  minute_backstop_unreadable: "a-lane-or-schedule-has-gone-quiet",
   // #3801. The booking canary failing against production: a lead may be seeing a
   // broken or slow booker, which is that family's first question.
   smoke_canary_failed: "the-booker-is-offering-nothing-or-too-little",

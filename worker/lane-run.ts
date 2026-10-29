@@ -323,6 +323,23 @@ export async function runLane(
   return { run: { path, ms: (answeredAt ?? deps.now()) - startedAt, ok, ...route }, failure };
 }
 
+/**
+ * Ask an app route that is not a lane, the way a lane is sent: placed over the self binding
+ * when there is one, in process otherwise, under the same fallback rules (#3693). For a READ
+ * the dispatcher needs the answer to (the every minute backstop's check, worker/lane-backstop.ts),
+ * which should run near the database like the lanes rather than in this invocation. Throws
+ * what the dispatch throws; the caller decides what a failure means.
+ */
+export async function askApp(
+  path: string,
+  tick: LaneTick,
+  deps: LaneRunDeps,
+): Promise<{ res: Response; via: "placed" | "in_process" }> {
+  const route: LaneRoute = { via: "in_process", placement: null, fallback: null };
+  const res = await dispatchLane(path, tick, deps, route);
+  return { res, via: route.via };
+}
+
 /** The path a lane took, as the dispatch decided it. */
 interface LaneRoute {
   via: "placed" | "in_process";

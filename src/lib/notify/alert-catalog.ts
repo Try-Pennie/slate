@@ -122,6 +122,14 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "and stop together; it ends when every one of them stamps a heartbeat inside its bound again.",
   },
   {
+    key: "minute_backstop_unreadable",
+    kind: "condition",
+    why:
+      "The five minute tick's backstop for the every minute lanes cannot read lane_runs, so it would not start them if " +
+      "Cloudflare skipped that trigger (2026-10-29); it stays true until the read answers, and the next measured read " +
+      "is the healthy result that ends it.",
+  },
+  {
     key: "cron_lane_stale:*",
     kind: "condition",
     suffix: "bounded",
