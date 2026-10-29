@@ -23,7 +23,7 @@ import {
 // The happy path is asserted in the same file, because a handler that redirected
 // everyone to the error page would satisfy the refusal assertions on its own.
 
-const provision = vi.hoisted(() => ({ provisionUser: vi.fn() }));
+const provision = vi.hoisted(() => ({ provisionUser: vi.fn(), linkCoordinator: vi.fn() }));
 const google = vi.hoisted(() => ({ ensureWatches: vi.fn(async () => "ok") }));
 const env = vi.hoisted(() => ({ googleHostedDomain: vi.fn((): string => "trypennie.com") }));
 const signOut = vi.hoisted(() => vi.fn(async (_opts?: unknown) => {}));
@@ -61,6 +61,13 @@ import { GoogleAccountMismatchError, SeveralGoogleAccountsError } from "@/lib/au
 import { SEVERAL_GOOGLE_ACCOUNTS_LOGIN_ERROR } from "@/lib/auth/google-identity-copy";
 import { PlaceholderAccountError } from "@/lib/auth/active-session";
 import { PLACEHOLDER_ACCOUNT_LOGIN_ERROR } from "@/lib/auth/landing";
+import { DeactivatedAccountError } from "@/lib/auth/active-session";
+import {
+  CoordinatorNotInvitedError,
+  MICROSOFT_ACCOUNT_CHANGED_LOGIN_ERROR,
+  MICROSOFT_NOT_INVITED_LOGIN_ERROR,
+  MicrosoftAccountMismatchError,
+} from "@/lib/auth/microsoft-identity";
 
 const SESSION = {
   session: {
@@ -104,6 +111,8 @@ beforeEach(() => {
   env.googleHostedDomain.mockReset();
   env.googleHostedDomain.mockReturnValue("trypennie.com");
   provision.provisionUser.mockReset();
+  provision.linkCoordinator.mockReset();
+  google.ensureWatches.mockClear();
   dispatch.sendThrottledAlert.mockReset();
   signOut.mockReset();
   logged.errors.length = 0;
@@ -428,5 +437,159 @@ describe("auth callback for a coordinator, and for the placeholder advisor (#420
     );
     expect(signOut).toHaveBeenCalledTimes(1);
     expect(google.ensureWatches).not.toHaveBeenCalled();
+  });
+});
+
+// #4379: an invited coordinator signs in with their own company Microsoft account. The
+// exchange is routed by the identities GoTrue keeps on the auth user (never by anything
+// the browser sent), a Microsoft sign in only ever LINKS an existing coordinator row,
+// and a refused one leaves no session behind. Each refusal sits beside the same sign in
+// admitted (L159).
+describe("auth callback for a coordinator's Microsoft sign in (#4379)", () => {
+  const NOW = Date.UTC(2026, 9, 29, 15, 0, 0);
+  const COORD_EMAIL = "dana.coordinator@partner.example";
+
+  function microsoftSession(
+    over: { email?: string; meta?: Record<string, unknown>; identities?: { provider: string; identity_data?: Record<string, unknown> }[] } = {},
+  ) {
+    return {
+      data: {
+        session: {
+          user: {
+            id: "auth-ms-1",
+            email: over.email ?? COORD_EMAIL,
+            user_metadata: { email_verified: true, full_name: "Dana Coordinator", ...over.meta },
+            identities: over.identities ?? [{ provider: "azure", identity_data: { sub: "ms-sub-1" } }],
+          },
+        },
+      },
+      error: null,
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    exchangeCodeForSession.mockResolvedValue(microsoftSession());
+    provision.linkCoordinator.mockResolvedValue({ id: "coord-1", role: "coordinator", theme_preference: "dark" });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("links the coordinator and lands them on the coordinator page with the same stamps as Google", async () => {
+    const res = await GET(request());
+
+    expect(provision.linkCoordinator).toHaveBeenCalledWith({
+      authUserId: "auth-ms-1",
+      email: COORD_EMAIL,
+      microsoftSub: "ms-sub-1",
+    });
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/coordinator");
+    expect(signOut).not.toHaveBeenCalled();
+    for (const name of [SESSION_STARTED_COOKIE, SESSION_SEEN_COOKIE]) {
+      expect(res.cookies.get(name)?.value, name).toBe(String(NOW));
+      expect(res.cookies.get(name)?.httpOnly, name).toBe(true);
+    }
+    expect(res.cookies.get("slate-theme")?.value).toBe("dark");
+    // A coordinator's calendar is not Pennie's to read: nothing is warmed for them.
+    expect(google.ensureWatches).not.toHaveBeenCalled();
+  });
+
+  it("refuses a trypennie.com address through Microsoft, ending only this session", async () => {
+    exchangeCodeForSession.mockResolvedValue(microsoftSession({ email: "someone@trypennie.com" }));
+
+    const res = await GET(request());
+
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=domain_not_allowed");
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(provision.linkCoordinator).not.toHaveBeenCalled();
+    expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
+  });
+
+  it("refuses an address Microsoft has not verified, before anything is linked", async () => {
+    for (const claim of [undefined, false, "true"]) {
+      signOut.mockReset();
+      exchangeCodeForSession.mockResolvedValue(microsoftSession({ meta: { email_verified: claim } }));
+      const res = await GET(request());
+      expect(res.headers.get("location"), String(claim)).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+      expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    }
+    expect(provision.linkCoordinator).not.toHaveBeenCalled();
+    expect(logged.errors).toContain("auth-callback microsoft sign in carried an unverified address");
+  });
+
+  it("refuses every Microsoft sign in when the company domain is not configured", async () => {
+    env.googleHostedDomain.mockImplementation(() => {
+      throw new Error("GOOGLE_HOSTED_DOMAIN is not set");
+    });
+    const res = await GET(request());
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+    expect(provision.linkCoordinator).not.toHaveBeenCalled();
+  });
+
+  it("refuses an auth user holding a Google and a Microsoft account, whichever it signed in with", async () => {
+    for (const email of ["someone@trypennie.com", COORD_EMAIL]) {
+      signOut.mockReset();
+      exchangeCodeForSession.mockResolvedValue(
+        microsoftSession({
+          email,
+          identities: [
+            { provider: "google", identity_data: { sub: "g-1" } },
+            { provider: "azure", identity_data: { sub: "ms-sub-1" } },
+          ],
+        }),
+      );
+      const res = await GET(request());
+      expect(res.headers.get("location"), email).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+      expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    }
+    expect(provision.linkCoordinator).not.toHaveBeenCalled();
+    expect(provision.provisionUser).not.toHaveBeenCalled();
+    expect(logged.errors).toContain("auth-callback sign in carried both a google and a microsoft account");
+  });
+
+  it("refuses two Microsoft accounts on one sign in", async () => {
+    exchangeCodeForSession.mockResolvedValue(
+      microsoftSession({
+        identities: [
+          { provider: "azure", identity_data: { sub: "ms-a" } },
+          { provider: "azure", identity_data: { sub: "ms-b" } },
+        ],
+      }),
+    );
+    const res = await GET(request());
+    expect(res.headers.get("location")).toBe("https://slate.trypennie.app/login?error=sign_in_unavailable");
+    expect(provision.linkCoordinator).not.toHaveBeenCalled();
+  });
+
+  // Each settled refusal gets its own message, and none leaves a session behind.
+  it.each([
+    ["an address nobody invited", new CoordinatorNotInvitedError(), MICROSOFT_NOT_INVITED_LOGIN_ERROR],
+    ["a removed coordinator", new DeactivatedAccountError(), "account_deactivated"],
+    ["the placeholder advisor's address", new PlaceholderAccountError(), PLACEHOLDER_ACCOUNT_LOGIN_ERROR],
+    [
+      "a different Microsoft account",
+      new MicrosoftAccountMismatchError({ userId: "coord-1", why: "a different Microsoft account" }),
+      MICROSOFT_ACCOUNT_CHANGED_LOGIN_ERROR,
+    ],
+    ["a link that could not be written", new Error("read failed [link coordinator]: timeout"), "provision_failed"],
+  ])("refuses %s, ends this session, and says so in its own words", async (_what, err, code) => {
+    provision.linkCoordinator.mockRejectedValue(err);
+    const res = await GET(request());
+    expect(res.headers.get("location")).toBe(`https://slate.trypennie.app/login?error=${code}`);
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(signOut).toHaveBeenCalledWith({ scope: "local" });
+    expect(res.cookies.get(SESSION_STARTED_COOKIE)).toBeUndefined();
+    expect(res.headers.get("location")).not.toMatch(/timeout|read failed/);
+  });
+
+  it("still routes a Google sign in to provisioning, never to the coordinator link", async () => {
+    exchangeCodeForSession.mockResolvedValue({ data: SESSION, error: null });
+    provision.provisionUser.mockResolvedValue({ id: "user-1", role: "agent", theme_preference: "system" });
+    await GET(request());
+    expect(provision.provisionUser).toHaveBeenCalledTimes(1);
+    expect(provision.linkCoordinator).not.toHaveBeenCalled();
   });
 });
