@@ -17,7 +17,8 @@ import { LAST_SIGN_IN_PAGE_COOKIE, signInPathForBrowser } from "@/lib/auth/sign-
  * Signs out of Supabase (revokes the refresh token + clears the auth cookies),
  * then clears Slate's own session cookies (the "view as" cookie and the theme
  * cookie, so neither follows the next person on a shared machine) and lands on
- * /login.
+ * the sign in page this browser last signed in on: /login, or the partner page
+ * after a coordinator's Microsoft sign in (#4398).
  *
  * Fail loud, but never strand the user: auth-js `_signOut` early-returns BEFORE
  * removing the local session when the server-side revoke errors (a 5xx / network

@@ -5,7 +5,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // FAILED Supabase revoke, still clear the local Supabase auth cookies itself:
 // auth-js early-returns before removing them when the network revoke errors
 // (GoTrueClient _signOut), so a lost/shared machine would otherwise keep a live
-// session. Then land on /login.
+// session. Then land on /login, or on the partner sign in page when the browser's
+// `slate_last_sign_in_page` record says partner (#4398).
 
 const signOutMock = vi.fn(async () => ({ error: null as { message: string } | null }));
 vi.mock("@/lib/supabase/server", () => ({
