@@ -14,8 +14,8 @@
  * stopping at Medium and never reaching an advisor who also carries Low (#2842).
  * There are six Ultra advisors, so an Ultra lead taken by Very High or High is the
  * rule working, and a page per booking reporting it is the alert nobody reads by
- * the second week (L36). The number is PUBLISHED here rather than judged, and the
- * copy says outright that no action is being asked for.
+ * the second week (L36). The number is PUBLISHED here rather than judged; the
+ * dispatcher's info lead says no action is being asked for, so the copy does not.
  *
  * What is genuinely wrong for these leads, every allowed tier full, is a different
  * event with its own signal (#2841), so this never pages and never double counts it.
@@ -108,22 +108,22 @@ export function topTierCascadeVerdict(w: TopTierCascadeWindow): TopTierCascadeVe
   return { kind: "report", tiers: pairs.filter((p) => p.booked > 0) };
 }
 
-/** What the notice says: the numbers, then the rule, then permission not to act. */
+/**
+ * What the notice says: the two counts, then the one sign worth acting on. Read by
+ * sales managers in a few seconds, so it does NOT explain the routing rule (sales ops
+ * set it and know it) and does NOT say no action is needed: the dispatcher's info
+ * lead (`SEVERITY_LEADS.whisper`, severity-lead.ts) already opens the post with that,
+ * and saying it twice is what got the old wording called "Terrible" (2026-10-28).
+ * The noun sits once, on the heading, so each count is a bare "x of y".
+ */
 export function topTierCascadeNoticeText(
   v: Extract<TopTierCascadeVerdict, { kind: "report" }>,
   windowHours: number,
 ): string {
-  const lines = v.tiers.map((t) => {
-    // The noun agrees with the TOTAL: "1 of 1 booking", "3 of 8 bookings".
-    const noun = t.booked === 1 ? "booking" : "bookings";
-    return `${TIER_LABEL[t.tier]}: ${t.cascaded} of ${t.booked} ${noun} went to a lower tier`;
-  });
-  return (
-    `Top tier cascade, last ${windowHours}h. ${lines.join("; ")}. ` +
-    `This is the routing rule sales ops set on 2026-09-28: an Ultra High or Very High lead ` +
-    `with nothing in their own tier inside the booking window is offered the tiers below, as ` +
-    `far as Medium and never an advisor who also carries Low, rather than a time days out. ` +
-    `No action is needed for a share that holds steady. A share that keeps climbing week on ` +
-    `week means the top tier pools are small for the leads they are getting.`
-  );
+  const counts = v.tiers.map((t) => `${TIER_LABEL[t.tier]}: ${t.cascaded} of ${t.booked}`);
+  return [
+    `Top tier bookings that went to a lower tier advisor in the last ${windowHours} hours:`,
+    ...counts,
+    `If more of them go to a lower tier week over week, the top tiers don't have enough advisors for the leads coming in.`,
+  ].join("\n");
 }

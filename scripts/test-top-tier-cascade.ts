@@ -5,12 +5,14 @@
 import {
   CASCADE_CODES_BELOW,
   TOP_TIER_CASCADE_COOLDOWN_MS,
+  TOP_TIER_CASCADE_NOTICE_KEY,
   TOP_TIER_CASCADE_WINDOW_HOURS,
   TOP_TIER_CODES,
   topTierCascadeNoticeText,
   topTierCascadeVerdict,
   type TopTierCascadeWindow,
 } from "../src/lib/monitor/top-tier-cascade.ts";
+import { withSeverityLead } from "../src/lib/notify/severity-lead.ts";
 import { tierLadder } from "../src/lib/routing/tiers.ts";
 import { assert, eq, finish } from "./lib/harness.ts";
 
@@ -53,24 +55,61 @@ eq(
 eq(topTierCascadeVerdict(w({ ultraBooked: Number.NaN })).kind, "unmeasured", "an unreadable count is unmeasured");
 eq(topTierCascadeVerdict(w({ ultraBooked: 3, ultraCascaded: -1 })).kind, "unmeasured", "a negative count is unmeasured");
 
+// The night of 2026-10-28 (#2843 reworded): Ultra High 31 booked and none cascaded,
+// Very High 28 booked and one cascaded. That is a report, because one lead left
+// their tier, and the same day with no cascade at all would have said nothing.
+const oct28 = w({ ultraBooked: 31, ultraCascaded: 0, veryHighBooked: 28, veryHighCascaded: 1 });
+eq(topTierCascadeVerdict(oct28).kind, "report", "one cascade across both tiers is reported");
+eq(
+  topTierCascadeVerdict({ ...oct28, veryHighCascaded: 0 }).kind,
+  "quiet",
+  "the same day with no cascade stays quiet",
+);
+eq(
+  topTierCascadeVerdict({ ...oct28, veryHighBooked: Number.POSITIVE_INFINITY }).kind,
+  "unmeasured",
+  "the same day with one count unreadable posts nothing",
+);
+
 // --- the notice ---
+const reportText = (win: TopTierCascadeWindow): string => {
+  const v = topTierCascadeVerdict(win);
+  assert(v.kind === "report", `fixture reports (got ${v.kind})`);
+  return topTierCascadeNoticeText(v as Extract<typeof v, { kind: "report" }>, win.windowHours);
+};
 {
-  const v = topTierCascadeVerdict(w({ ultraBooked: 8, ultraCascaded: 3, veryHighBooked: 1, veryHighCascaded: 1 }));
-  assert(v.kind === "report", "fixture reports");
-  const text = topTierCascadeNoticeText(v as Extract<typeof v, { kind: "report" }>, 24);
-  assert(text.includes("Ultra High: 3 of 8 bookings went to a lower tier"), `plural reads right (got ${text})`);
-  assert(text.includes("Very High: 1 of 1 booking went to a lower tier"), `singular reads right (got ${text})`);
-  assert(/Medium/.test(text) && /Low/.test(text), "it states the rule it is reporting on");
-  assert(/No action is needed/.test(text), "it says no action is being asked for");
+  // The whole message is pinned: Dan asked for words a sales manager reads in five
+  // seconds, the two counts and one line on when to act (2026-10-28, "Reword.
+  // Terrible"). A substring test is how the old sentence about the routing rule
+  // and the second "no action needed" stayed in.
+  eq(
+    reportText(oct28),
+    "Top tier bookings that went to a lower tier advisor in the last 24 hours:\n" +
+      "Ultra High: 0 of 31\n" +
+      "Very High: 1 of 28\n" +
+      "If more of them go to a lower tier week over week, the top tiers don't have enough advisors for the leads coming in.",
+    "the 2026-10-28 day reads as worded",
+  );
+}
+{
+  // As posted, the dispatcher's info lead says there is nothing to do now, and the
+  // notice must not say it a second time.
+  const posted = withSeverityLead(reportText(oct28), TOP_TIER_CASCADE_NOTICE_KEY, "info");
+  eq((posted.match(/no action/gi) ?? []).length, 1, `"no action" is said once, by the lead (got ${posted})`);
+  assert(!/2026-09-28|sales ops|Medium/.test(posted), "it does not explain the routing rule back to the people who set it");
+}
+{
+  const text = reportText(w({ ultraBooked: 8, ultraCascaded: 3, veryHighBooked: 1, veryHighCascaded: 1 }));
+  assert(text.includes("\nUltra High: 3 of 8\n"), `Ultra High count on its own line (got ${text})`);
+  assert(text.includes("\nVery High: 1 of 1\n"), `Very High count on its own line (got ${text})`);
   assert(!/^Slate/.test(text), "it does not open with Slate");
   assert(!/[\u2014\u2013]/.test(text), "no dashes as punctuation");
 }
 {
   // A tier with no bookings is left out rather than printed as "0 of 0".
-  const v = topTierCascadeVerdict(w({ veryHighBooked: 5, veryHighCascaded: 2 }));
-  const text = topTierCascadeNoticeText(v as Extract<typeof v, { kind: "report" }>, 24);
+  const text = reportText(w({ veryHighBooked: 5, veryHighCascaded: 2 }));
   assert(!/Ultra High:/.test(text), `a tier nobody booked is not mentioned (got ${text})`);
-  assert(text.includes("Very High: 2 of 5 bookings"), "the tier with bookings is");
+  assert(text.includes("\nVery High: 2 of 5\n"), `the tier with bookings is (got ${text})`);
 }
 
 // Pinned to the window, so two reports never describe the same bookings.

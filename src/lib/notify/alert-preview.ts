@@ -6352,6 +6352,13 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     text: topTierCascadeReportPreview({ ultraBooked: 8, ultraCascaded: 3, veryHighBooked: 1, veryHighCascaded: 1 }),
   },
   {
+    // The numbers the notice posted on 2026-10-28, the night its wording was redone.
+    key: "top_tier_cascade_rate",
+    state: "one tier cascaded, the other booked and held",
+    channel: "info",
+    text: topTierCascadeReportPreview({ ultraBooked: 31, ultraCascaded: 0, veryHighBooked: 28, veryHighCascaded: 1 }),
+  },
+  {
     key: "top_tier_cascade_rate",
     state: "only Very High was booked",
     channel: "info",
