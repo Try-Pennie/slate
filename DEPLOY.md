@@ -709,9 +709,10 @@ outside account no active coordinator holds.
 **Coordinators sign in at `https://slate.trypennie.app/partner/sign-in`**, a page of their
 own with one button, **Continue with Microsoft**, and no Google option
 (`docs/design/partner-sign-in.html`). The staff page, `/login`, stays Google only and shows no
-Microsoft option, so send coordinators this address, not `/login`. Every refusal of a
-Microsoft sign in (not invited, a different Microsoft account, a Pennie address, removed)
-comes back to this page with its own sentence. A coordinator who opens `/coordinator`
+Microsoft option, so send coordinators this address, not `/login`. A refused Microsoft
+sign in (not invited, a different Microsoft account, a Pennie address, removed) comes back
+to this page with its own sentence. The one exception is a sign in that holds both a Google
+and a Microsoft account, which goes back to whichever page it started from. A coordinator who opens `/coordinator`
 signed out, or whose session reaches its age limit, is still sent to `/login`, because an
 admin uses that page too; give them the partner address again.
 
