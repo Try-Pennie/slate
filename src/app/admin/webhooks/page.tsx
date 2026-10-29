@@ -8,6 +8,7 @@ import {
   type CredentialSource,
 } from "@/lib/webhooks/credentials";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { readPrimaryWebhookEndpoint } from "@/lib/webhooks/primary-endpoint";
 import {
   replayFailedWebhooks,
   resendWebhookDelivery,
@@ -85,12 +86,8 @@ export default async function WebhooksPage({
   if (!canEditOrgSettings(me.role)) return <AdminDenied need="an admin" />;
 
   const db = supabaseAdmin();
-  const webhookRes = await db
-    .from("webhook_endpoints")
-    .select("id, url, format")
-    .eq("org_id", me.org_id)
-    .limit(1)
-    .maybeSingle();
+  // #4381: the org's primary (oldest) endpoint, the one this page's form edits.
+  const webhookRes = await readPrimaryWebhookEndpoint(db, me.org_id, "id, url, format");
   // #3091: the credentials are Worker secrets and their old columns are never
   // read, so this page holds no key or secret it could render by accident. Each
   // secret is turned into PRESENCE here.

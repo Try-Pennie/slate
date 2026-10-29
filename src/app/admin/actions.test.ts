@@ -253,6 +253,8 @@ const from = vi.hoisted(() =>
       maybeSingle: vi.fn(readOne),
       single: vi.fn(readOne),
       limit: vi.fn(() => q),
+      // The primary webhook endpoint read orders by age (#4381).
+      order: vi.fn(() => q),
       // A LIST read is awaited straight off the chain with no terminal, so the
       // builder itself has to be thenable. Without this the awaited value is the
       // builder, `unwrap` sees no error and no data, and a failed read arrives as
