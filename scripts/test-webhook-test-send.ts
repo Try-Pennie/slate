@@ -121,17 +121,17 @@ assert(
 // builds its request from the same string, so there is nothing for the collision
 // rule to protect and refusing would leave a dead control.
 assert(
-  why("https://webhook.site/x", "not a url") === "",
+  why("https://webhook.site/x", ["not a url"]) === "",
   "an unreadable configured URL does not break the target check",
 );
 // It must not throw, and it must still apply every OTHER rule: a fallback that
 // skipped the whole check would let a private address through on the same input.
 assert(
-  why("https://10.0.0.1/x", "not a url") !== "",
+  why("https://10.0.0.1/x", ["not a url"]) !== "",
   "an unreadable configured URL does not switch off the address rules",
 );
 assert(
-  why("http://webhook.site/x", "not a url") !== "",
+  why("http://webhook.site/x", ["not a url"]) !== "",
   "an unreadable configured URL does not switch off the scheme rule",
 );
 
