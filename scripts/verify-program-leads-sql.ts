@@ -55,7 +55,7 @@ const nextId = () => `40000000-0000-4000-8000-${String(++seq).padStart(12, "0")}
 function user(cols: { placeholder?: boolean; test?: boolean } = {}): string {
   const id = nextId().replace(/^4/, "5");
   sql(`insert into users (id, org_id, email, role, is_placeholder, is_test)
-       values ('${id}', '${ORG}', '${id}@example.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false});`);
+       values ('${id}', '${ORG}', '${id}@trypennie.com', 'agent', ${cols.placeholder ?? false}, ${cols.test ?? false});`);
   return id;
 }
 
