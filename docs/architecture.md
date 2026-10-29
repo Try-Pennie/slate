@@ -332,6 +332,19 @@ is still booked, and a confirmed move to one still moves.
    `applyLifecycleByUserId`, so the session gate refuses them at once). It is
    deliberately on no page holding settings leads meet, such as Hours: drawn there it
    read as though leads could book Marcia (docs/design/coordinator-admin.html, D3).
+6. **Program leads book it themselves (#4391).** A program lead (#4255) whose texted
+   link carried a verified token books through `program-lead-booking.ts`: a time the
+   bucket's cache serves goes through the normal create (marked `program_lead`), and
+   only a refusal for want of a free advisor falls to the placeholder; a time the cache
+   does not serve goes straight there, so nothing refused is recorded for it. The
+   placeholder half checks the start, then claims the call's Eastern day
+   (`claim_placeholder_day`, 0213, a test bucket never claims), then reserves, invites
+   and commits, so a lead over `placeholder_day_limit` is never invited. The same rules
+   move a program lead's call, from the lead facing reschedule route only: that route is
+   the one exception to #4203 besides the coordinator, and
+   `scripts/test-onto-placeholder-callers.ts` holds every name that carries it to the
+   files that own it. A lead is never told the call is with Marcia
+   (`namesAdvisorToLead`, `resolveAdvisorName`).
 
 **Its busy time.** Each call writes its busy block at create like any booking, and the
 pool exit backstop prunes it on the next self heal tick, because the placeholder has left
