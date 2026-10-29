@@ -1399,6 +1399,59 @@ no super admin to hand, is it `/db-apply`:
 
 ---
 
+## Live transfer is not being offered
+
+Keys: `transfer_queue_unreadable`, `transfer_queue_never_free`.
+
+When a coordinator finds a customer, the coordinator page asks Pennie's transfer queue
+endpoint (`https://queues.trypennie.app/boomsource-inbound-transfer`, a Pennie worker that
+reads Regal's queue API for a queue chosen on the worker's side) how many advisors are free.
+At or above the threshold on `/admin/coordinator-booking` (Live transfer) the page offers
+"Transfer now" with the transfer line, and asks again when it is pressed. Below it the page
+shows nothing; when the count cannot be read it says live transfer can't be checked. Either
+way booking works as it always has, which is why these two pages exist: from the
+coordinator's screen a broken endpoint and a busy afternoon look the same. The monitor
+lane's `transfer_queue` step reads the endpoint every 5 minutes while the org is open and
+counts each reading in `transfer_queue_days`. How the path works:
+`src/lib/coordinator/transfer-queue.ts` and `src/lib/monitor/transfer-queue-probe.ts`.
+
+**`transfer_queue_unreadable`** says three checks in a row (fifteen minutes) could not
+read the endpoint, and the page names how: no answer within 3 seconds, a failed
+connection, an error status, something other than JSON, or JSON without a whole
+`availableAgents`.
+
+1. Ask it yourself: `curl -s -i https://queues.trypennie.app/boomsource-inbound-transfer`.
+   It should answer `200 application/json` with `queue`, `queueId` and `availableAgents`.
+2. An error status or no answer is the worker or Regal's queue API: whoever owns the
+   queues worker (in Pennie's Cloudflare account) is the person to tell. A changed shape
+   (a renamed field, a count as text) is the worker having changed what it sends; Slate
+   refuses it on purpose rather than read it as zero, so the fix is to agree the shape and
+   change one side.
+3. Meanwhile coordinators book a time as usual, so this is not urgent for customers. It
+   clears itself on the first check that reads the endpoint.
+
+**`transfer_queue_never_free`** says that across the last whole business day, read by the
+probe from open to close, no check had the threshold of advisors free, so no coordinator
+was offered a transfer. The page names the day, the most seen free and the threshold.
+
+1. If advisors really were free, check who is in the transfer queue in Regal and whether
+   they are marked available there: the count is Regal's.
+2. If the threshold is too high for how the queue is staffed, change it on
+   `/admin/coordinator-booking` (Live transfer, super admin). It applies from the next
+   customer a coordinator finds.
+3. It clears on the first business hours check with enough advisors free. A day the probe
+   did not read from open to close (a deploy gap, the endpoint failing all morning) is
+   judged unmeasured and pages nothing; `transfer_queue_unreadable` will have paged for
+   the second.
+4. What it cannot see: whether any transfer was made or connected. Slate records nothing
+   about offers, only what the queue said.
+
+If instead `monitor_step_failing:transfer_queue` is what paged, the probe could not read
+`transfer_queue_days` or the live transfer settings (`booking_settings`): the database,
+not the queue. Follow the quiet lane family above.
+
+---
+
 ## Something was measured and is only worth knowing
 
 Keys: `rate_limit_blocked:*`, `ooo_agent_dm`, `ooo_approvals_digest`,

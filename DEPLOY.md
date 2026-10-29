@@ -708,10 +708,23 @@ Removing a coordinator deletes their auth user. The monitor's hourly
 `auth.mfa_amr_claims`, since production writes no auth audit log to the database) and on an
 outside account no active coordinator holds.
 
+**Coordinators sign in at `https://slate.trypennie.app/partner/sign-in`**, a page of their
+own with one button, **Continue with Microsoft**, and no Google option
+(`docs/design/partner-sign-in.html`). The staff page, `/login`, stays Google only and shows no
+Microsoft option, so send coordinators this address, not `/login`. A refused Microsoft
+sign in (not invited, a different Microsoft account, a Pennie address, removed) comes back
+to this page with its own sentence. The one exception is a sign in that holds both a Google
+and a Microsoft account, which goes back to whichever page it started from. A coordinator who opens `/coordinator`
+signed out, or whose session reaches its age limit, is still sent to `/login`, because an
+admin uses that page too; give them the partner address again.
+
 **Rollout order, which must not change:** apply 0212 with `supabase db push` before the
 merge; deploy and confirm the code is live; only then switch Azure on in the dashboard
 (Authentication, Sign In / Providers, Azure, with the Entra app's client id and secret and
-the `xms_edov` and `email` optional claims, so Supabase marks the address verified).
+the `xms_edov` and `email` optional claims, so Supabase marks the address verified). Then
+check it from `https://slate.trypennie.app/partner/sign-in`: Continue with Microsoft must reach
+Microsoft's own sign in screen. Until Azure is on, the button lands on a bare Supabase error
+saying the provider is not enabled, so do not send coordinators the address before the switch.
 **Rollback is switching Azure off.** The Azure app's client secret expires; its renewal
 reminder is on the Phase 0 card for #4379.
 

@@ -301,6 +301,7 @@ src/app/advisor-photo  the public, content addressed advisor photo route
 src/app/me             agent self-serve (hours, calendar, OOO)
 src/app/coordinator    the scheduling coordinators' booking page: its server functions, role checked (#4205)
 src/app/login          Google SSO
+src/app/partner        the partner sign in page: invited coordinators, Microsoft only (#4379)
 worker/                Cloudflare Worker entry (index.ts) + cron dispatch (cron-routes.ts) + the log tail Worker (log-tail/, config wrangler.log-tail.jsonc)
 scripts/               node-native tests (test-*.ts) + migration / env / doc drift guards
 public/widget.js       embed SDK (inline + popup)

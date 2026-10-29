@@ -16,9 +16,16 @@ const auth = vi.hoisted(() => ({ currentUser: vi.fn() }));
 const redirect = vi.hoisted(() => vi.fn((url: string) => { throw new Error(`NEXT_REDIRECT:${url}`); }));
 const notFound = vi.hoisted(() => vi.fn(() => { throw new Error("NEXT_NOT_FOUND"); }));
 const hdrs = vi.hoisted(() => ({ host: "slate.trypennie.app" }));
-const settings = vi.hoisted(() => ({ readPlaceholderBookingEnabled: vi.fn(async (): Promise<boolean | null> => false) }));
+const settings = vi.hoisted(() => ({
+  readPlaceholderBookingEnabled: vi.fn(async (): Promise<boolean | null> => false),
+  readTransferOfferSettings: vi.fn(async (): Promise<{ threshold: number; line: string } | null> => ({ threshold: 3, line: "786-504-0671" })),
+}));
 const coordinators = vi.hoisted(() => ({ loadCoordinators: vi.fn() }));
-const actions = vi.hoisted(() => ({ setPlaceholderBookingEnabled: vi.fn(async () => {}), removeCoordinator: vi.fn(async () => {}) }));
+const actions = vi.hoisted(() => ({
+  setPlaceholderBookingEnabled: vi.fn(async () => {}),
+  removeCoordinator: vi.fn(async () => {}),
+  setTransferOfferSettings: vi.fn(async () => {}),
+}));
 
 vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect, notFound, useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
@@ -55,6 +62,7 @@ beforeEach(() => {
   delete process.env.SLATE_DESIGN_FIXTURES;
   auth.currentUser.mockResolvedValue(user("super_admin"));
   settings.readPlaceholderBookingEnabled.mockResolvedValue(false);
+  settings.readTransferOfferSettings.mockResolvedValue({ threshold: 3, line: "786-504-0671" });
   coordinators.loadCoordinators.mockResolvedValue({ ok: true, rows: ROWS });
 });
 
@@ -277,5 +285,37 @@ describe("the design's frames (?frame=)", () => {
 
     auth.currentUser.mockResolvedValue(user("admin"));
     expect(await fails(renderPage({ frame: "f-off" }))).toBe("NEXT_NOT_FOUND");
+  });
+});
+
+// #4380: when the coordinator page offers a live transfer, and to which line. A super admin sets
+// both here, beside the coordinators' other setting; an unreadable read says so and offers no
+// form, rather than drawing the defaults as though they were stored.
+describe("the live transfer settings (#4380)", () => {
+  const box = () => screen.getByRole("heading", { level: 3, name: "Live transfer" }).parentElement!;
+
+  it("draws the stored threshold and line in a form that saves through the action", async () => {
+    settings.readTransferOfferSettings.mockResolvedValue({ threshold: 5, line: "212-555-0100" });
+    await renderPage();
+    expect(settings.readTransferOfferSettings).toHaveBeenCalledTimes(1);
+    const b = box();
+    expect((within(b).getByLabelText("Advisors free before a transfer is offered") as HTMLInputElement).value).toBe("5");
+    expect((within(b).getByLabelText("Transfer line") as HTMLInputElement).value).toBe("212-555-0100");
+    expect(within(b).getByRole("button", { name: "Save live transfer" })).toBeTruthy();
+  });
+
+  it("unreadable: says so and offers no form, never the defaults", async () => {
+    settings.readTransferOfferSettings.mockResolvedValue(null);
+    await renderPage();
+    const b = box();
+    expect(b.textContent).toContain("Could not read the live transfer settings.");
+    expect(within(b).queryByRole("textbox")).toBeNull();
+    expect(within(b).queryAllByRole("button")).toEqual([]);
+  });
+
+  it("is read by nobody but a super admin", async () => {
+    auth.currentUser.mockResolvedValue(user("admin"));
+    expect(await fails(renderPage())).toBe("NEXT_NOT_FOUND");
+    expect(settings.readTransferOfferSettings).not.toHaveBeenCalled();
   });
 });

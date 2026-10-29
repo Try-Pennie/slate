@@ -110,6 +110,13 @@ for (const theme of THEMES) {
     await context.addCookies([{ name: "slate-theme", value: theme, url: E2E_APP_ORIGIN }]);
     await scan(page, "/login", theme);
   });
+
+  // #4379: the partner page, with a refusal showing, since its link is the one control here
+  // that /login does not have.
+  test(`the partner sign in page (${theme})`, async ({ page, context }) => {
+    await context.addCookies([{ name: "slate-theme", value: theme, url: E2E_APP_ORIGIN }]);
+    await scan(page, "/partner/sign-in?error=domain_not_allowed", theme, "/partner/sign-in");
+  });
 }
 
 // --- the staff pages ----------------------------------------------------------------
@@ -195,6 +202,8 @@ const COORDINATOR_FRAMES = [
   "d-other",
   "d-dialog-move",
   "d-done-move",
+  // #4380: the live transfer offer (docs/design/coordinator-call-me-now.html), over Sam found.
+  "f1",
 ];
 
 test("the coordinator booking page, at each moment the design settled", async ({ page }) => {

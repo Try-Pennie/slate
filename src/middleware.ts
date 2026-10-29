@@ -18,6 +18,7 @@ import {
   type SessionAgeRefusal,
 } from "@/lib/auth/session-age";
 import { log } from "@/lib/log";
+import { isSignInPath } from "@/lib/auth/sign-in-page";
 import {
   buildContentSecurityPolicy,
   cspNonce,
@@ -39,7 +40,9 @@ import {
 /** The staff surfaces: a session to refresh, and framing to forbid. */
 function isStaffPath(pathname: string): boolean {
   return (
-    pathname === "/login" ||
+    // Both sign in pages (#4379): /login, and the partner page where invited coordinators
+    // sign in with Microsoft. Each builds the Supabase browser client.
+    isSignInPath(pathname) ||
     pathname === "/admin" ||
     pathname === "/me" ||
     pathname.startsWith("/admin/") ||
@@ -106,8 +109,8 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
     // its frame) may be framed only by Slate and the allow list. Unlocked, as before.
     frameAncestors: sameOriginFrameable ? ["'self'"] : frameLocked ? frameAncestorSources() : undefined,
     scriptHashes,
-    // The sign in page builds a Supabase browser client, which talks to the
-    // project's own origin. Only the staff pages have one.
+    // The sign in pages build a Supabase browser client, which talks to the
+    // project's own origin. Only the staff paths have one.
     connectSources: staff ? [new URL(publicSupabaseUrl()).origin] : [],
   });
 
@@ -123,10 +126,10 @@ export async function middleware(request: NextRequest, event?: NextFetchEvent) {
   // staff request. Judged before the refresh, so an expired session is not refreshed
   // one last time. Only for a request that carries a session at all, so somebody who
   // never signed in meets the ordinary sign in rather than "you were signed out"; and
-  // never on /login itself, which is where a refused session is sent.
+  // never on a sign in page itself, which is where a refused session is sent.
   const sessionPresent =
     staff &&
-    request.nextUrl.pathname !== "/login" &&
+    !isSignInPath(request.nextUrl.pathname) &&
     hasSupabaseSessionCookie(request.cookies.getAll().map((c) => c.name));
   const nowMs = Date.now();
   if (sessionPresent) {

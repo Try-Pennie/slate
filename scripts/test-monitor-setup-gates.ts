@@ -37,6 +37,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.offeredNobodyFree.run, "a healthy tick runs the served versus confirm check");
   assert(g.bufferBreach.run, "a healthy tick runs the buffer breach check");
   assert(g.placeholderCalls.run, "a healthy tick runs the unserved placeholder call check");
+  assert(g.transferQueue.run, "a healthy tick runs the transfer queue probe");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -107,6 +108,10 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     // buckets' drill calls out, and nothing else.
     const placeholder = c.name !== "buckets";
     eq(g.placeholderCalls.run, placeholder, `${c.name} unreadable: unserved placeholder call check runs = ${placeholder}`);
+    // #4380: the transfer queue probe reads only in the org's hours and judges the last
+    // whole business day, so the org's week is the one read that stands it down.
+    const transfer = c.name !== "businessHours";
+    eq(g.transferQueue.run, transfer, `${c.name} unreadable: transfer queue probe runs = ${transfer}`);
   }
 }
 
@@ -239,6 +244,8 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     bufferBreach: true,
     // #4206: no switch, only the coded daily repeat.
     placeholderCalls: true,
+    // #4380: no switch, only the coded daily repeat; its threshold is a booking setting.
+    transferQueue: true,
     // An armed switch (and, for the volume alarm, the floors) decides whether each
     // of these pages, so none may judge on a guessed one.
     availabilityTruth: false,

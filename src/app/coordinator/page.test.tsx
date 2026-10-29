@@ -23,7 +23,7 @@ vi.mock("@/lib/auth", () => auth);
 vi.mock("next/navigation", () => ({ redirect, notFound }));
 vi.mock("@/lib/admin/design-fixture-read", () => fixtureRead);
 vi.mock("@/lib/booking/reason-options", () => reasonOptions);
-vi.mock("@/app/coordinator/actions", () => ({ lookupCoordinatorCustomer: vi.fn(), placeCoordinatorCall: vi.fn() }));
+vi.mock("@/app/coordinator/actions", () => ({ lookupCoordinatorCustomer: vi.fn(), placeCoordinatorCall: vi.fn(), checkCoordinatorTransfer: vi.fn() }));
 
 import CoordinatorPage from "./page";
 import { canUseCoordinatorDesk, ROLES } from "@/lib/auth/roles";
@@ -61,6 +61,18 @@ describe("who reaches /coordinator (#4205)", () => {
   it("asks for a design frame only after the gate", async () => {
     await expect(CoordinatorPage(params({ frame: "f-locked" }))).rejects.toThrow("NEXT_REDIRECT:/login");
     expect(fixtureRead.readDesignFixture).not.toHaveBeenCalled();
+  });
+
+  it("draws the live transfer design's frame from its two committed fixtures (#4380)", async () => {
+    auth.coordinatorDeskUser.mockResolvedValue({ id: "c1", role: "coordinator", is_test: false });
+    const { readFileSync } = await import("node:fs");
+    fixtureRead.readDesignFixture.mockImplementation((async (_frame: string, name: string) =>
+      JSON.parse(readFileSync(`${process.cwd()}/docs/design/fixtures/${name}.json`, "utf8"))) as never);
+    render(await CoordinatorPage(params({ frame: "f1" })));
+    expect(screen.getByRole("heading", { name: "Advisors are free now" })).toBeTruthy();
+    expect(screen.getByText("786-504-0671")).toBeTruthy();
+    expect(screen.getByText("Sam Okafor")).toBeTruthy();
+    expect(fixtureRead.readDesignFixture.mock.calls.map((c) => (c as unknown[])[1]).sort()).toEqual(["coordinator-booking", "coordinator-call-me-now"]);
   });
 
   it("is open to coordinators and admins only, decided in one table", () => {
