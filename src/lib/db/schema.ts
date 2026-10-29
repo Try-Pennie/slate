@@ -385,7 +385,7 @@ export interface Database {
       /** #4379 (migration 0212): sign ins Supabase Auth recorded since `p_since`, by the
        *  provider each named, with the addresses that signed in, and how many audit entries
        *  of any kind were written in the window. Read by the monitor lane, which judges it in
-       *  `src/lib/monitor/auth-login-methods.ts`. One jsonb value, a row per provider. */
+       *  `src/lib/monitor/auth-unexpected-sign-ins.ts`. One jsonb value, a row per provider. */
       auth_logins_by_provider: {
         Args: { p_since: string };
         Returns: unknown;

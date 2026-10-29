@@ -16,8 +16,8 @@
 //     admit somebody the app then signs out after their account already exists.
 //
 // This reads the files. It cannot prove GoTrue honours the hook; that is
-// `pnpm verify:auth-domain-hook`, which runs the real auth server against the
-// migration in Docker and signs up both an outside and a Workspace address.
+// `pnpm verify:auth-domain-hook`, which runs the real auth server against
+// every migration replayed in Docker, proving each provider and roster case (#4379).
 //
 // Run: node --experimental-strip-types scripts/test-auth-domain-hook.ts
 import { readFileSync, readdirSync } from "node:fs";
@@ -42,7 +42,7 @@ const config = readFileSync(join(ROOT, "supabase", "config.toml"), "utf8");
 const wrangler = readFileSync(join(ROOT, "wrangler.jsonc"), "utf8");
 const migration = HOOK_FILE ? readFileSync(join(MIGRATIONS, HOOK_FILE), "utf8") : "";
 
-assert(Boolean(HOOK_FILE), `exactly one migration defines the auth domain gate hook (${"refusal" in found ? found.refusal : HOOK_FILE})`);
+assert(Boolean(HOOK_FILE), `a migration defines the auth domain gate hook, and the last such is the one checked (${"refusal" in found ? found.refusal : HOOK_FILE})`);
 
 // --- the finder: the LAST definition is the one that ships ---------------------
 {

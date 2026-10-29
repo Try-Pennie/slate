@@ -40,7 +40,7 @@
 -- 4. auth_logins_by_provider: every sign in Supabase Auth recorded since a moment, by the
 --    provider it named, read from auth.audit_log_entries for the monitor lane, which pages
 --    on a sign in by any method other than Google or Microsoft (src/lib/monitor/
---    auth-login-methods.ts). It also returns how many entries of ANY kind were written in
+--    auth-unexpected-sign-ins.ts). It also returns how many entries of ANY kind were written in
 --    the window, so "nobody signed in another way" can be told from "nothing is being
 --    written to the audit log at all" (L98). SECURITY DEFINER for the same reason as the
 --    hook, pinned, EXECUTE taken back from the web roles; service_role keeps it.
