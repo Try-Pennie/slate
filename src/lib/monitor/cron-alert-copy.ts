@@ -6,9 +6,19 @@
  * each has a matching all-clear that a person reads in the same channel.
  */
 
-/** The hourly Salesforce roster sync is failing on consecutive runs. */
-export function agentSyncFailureAlert(message: string): string {
-  return `The hourly Salesforce agent sync failed on consecutive runs (${message}). Agent teams and the roster may be stale until it succeeds or someone runs Sync from the admin page.`;
+/**
+ * The hourly Salesforce roster sync is failing on consecutive runs.
+ *
+ * Links the Agent roster page, where the sync button is (2026-10-29). The button runs
+ * this same job, so it is offered for after the cause is gone, never as a retry: on the
+ * day this changed the job itself was refusing, and pressing it could only fail again.
+ */
+export function agentSyncFailureAlert(message: string, appBaseUrl: string): string {
+  return (
+    `The hourly Salesforce agent sync failed on consecutive runs (${message}). ` +
+    `Agent teams and new hires will not update until it succeeds. Once the cause is fixed, ` +
+    `press Sync from Salesforce and Twilio on <${appBaseUrl}/admin/agents|Agent roster> to catch up without waiting for the hour.`
+  );
 }
 
 /**

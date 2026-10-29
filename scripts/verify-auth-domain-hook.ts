@@ -244,6 +244,25 @@ try {
     null,
     "a departed agent on an outside address is allowed, the shape production holds",
   );
+  // The 2026-10-29 page. The hourly sync refreshes a held row as a batched upsert on id
+  // naming only id, org_id, email and the refreshed columns, and Postgres judges the CHECK
+  // on the PROPOSED INSERT tuple, whose role and deactivated_at are the column defaults,
+  // before ON CONFLICT finds the stored row. So that same departed row is refused there,
+  // while a plain UPDATE of it passes. `upsertableByAddress` (src/lib/salesforce/sync.ts)
+  // rests on this; were Postgres ever to judge the stored row instead, it could go.
+  assert(
+    /users_outside_email_is_coordinator/.test(
+      sqlError(
+        `insert into users (id, org_id, email, name) select id, org_id, email, 'Refreshed' from users where email = 'departed.agent@halo-lab.example' on conflict (id) do update set name = excluded.name;`,
+      ) ?? "",
+    ),
+    "a batched upsert refreshing that departed outside row is refused, the shape the sync wrote",
+  );
+  eq(
+    sqlError(`update users set name = 'Refreshed' where email = 'departed.agent@halo-lab.example';`),
+    null,
+    "control: a plain update of that departed outside row is allowed",
+  );
   assert(
     /users_outside_email_is_coordinator/.test(
       sqlError(`update users set deactivated_at = null where email = 'departed.agent@halo-lab.example';`) ?? "",
