@@ -313,10 +313,11 @@ UPDATE bookings SET kind = 'routed' WHERE kind IS NULL AND created_at < '2026-09
 ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS program_lead BOOLEAN;
 
 -- The ALTER leaves every row already here null, and a row is exported again only when
--- it changes. False is right for all of them: when this shipped (2026-10-30) the one
--- program booking Supabase held was a cancelled test call, so no cursor rewind is
--- needed. Idempotent, and harmless after the export deploys, which writes the flag
--- on every row it touches.
+-- it changes. False is right for every one of them but one: when this shipped
+-- (2026-10-30) the only program booking Supabase held was a cancelled call on the
+-- test bucket, which reads false here until it next changes. One test row was not
+-- worth a cursor rewind, which re-exports the whole table. Idempotent, and harmless
+-- after the export deploys, which writes the flag on every row it touches.
 UPDATE bookings SET program_lead = FALSE WHERE program_lead IS NULL;
 
 -- ----------------------------------------------------------------------------
