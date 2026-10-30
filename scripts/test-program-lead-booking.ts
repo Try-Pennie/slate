@@ -238,7 +238,7 @@ async function run() {
     assert(err instanceof PlaceholderDayFullError && err.callDay === "2026-06-09", `a full day refuses with its own error (${served ? "after a lost race" : "straight"})`);
     assert(!(err instanceof SlotUnavailableError), "never the time just taken refusal");
     assert(calls.placed.length === 0, "and no reservation or invite is made");
-    assert(calls.limitRefused.length === 1 && calls.limitRefused[0] === "2026-06-09", `and the refusal is counted once, by the call's day (got ${JSON.stringify(calls.limitRefused)})`);
+    assert(calls.limitRefused.length === 1 && calls.limitRefused[0] === "2026-06-09", `and the refusal is counted once, handed the call's day for its log (bump_program_lead_outcome counts it on the day it happened) (got ${JSON.stringify(calls.limitRefused)})`);
   }
   {
     const { deps, calls } = makeBookDeps({ served: false });
