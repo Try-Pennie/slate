@@ -61,13 +61,16 @@ export async function claimPlaceholderDay(day: string, claimKey: string, booking
 }
 
 /**
- * SEAM, pending migration 0215 (#4390): one limit refusal on a call day. Once 0215 is on
- * main this calls `bump_program_lead_outcome('limit_refused')` after the response, as
- * #4390's times fallback count does. Until then the refusal is logged under its own tag,
- * `program-lead-day-full`, by `program-lead-booking.ts` where it is refused, and this
- * records nothing more. Never throws.
+ * Count one full day refusal (`bump_program_lead_outcome('limit_refused')`, migration
+ * 0215), on today's Eastern day as the function counts, beside #4390's `times_fallback`.
+ * THROWS on a refused or failed call, so it is never read as counted; the caller
+ * (`program-lead-booking.ts`) logs that and still answers the full day. `_callDay` is the
+ * day of the CALL, which the caller logs; the count itself is by the day it happened.
  */
-export function countLimitRefusalPending0215(_callDay: string): void {}
+export async function countLimitRefusal(_callDay: string): Promise<void> {
+  const { error } = await supabaseAdmin().rpc("bump_program_lead_outcome", { p_kind: "limit_refused" });
+  if (error) throw new Error(`bump_program_lead_outcome failed: ${error.message}`);
+}
 
 /**
  * Errors the normal create or the ordinary move already paged for, so the wrapper below
@@ -105,7 +108,7 @@ export function bookProgramLeadLive(input: CreateBookingInput, lineFacts?: Confi
       horizonDays: readBookingHorizonDays,
       findPlaceholder: findPlaceholderAdvisor,
       claimPlaceholderDay,
-      countLimitRefusal: countLimitRefusalPending0215,
+      countLimitRefusal,
       createBooking: (i) => remember(() => createBooking(i, lineFacts)),
       findBookingByIdempotencyKey: (key) => deps.findBookingByIdempotencyKey(key),
       manageUrl: (token) => orchestration.manageUrlFor(deps.appBaseUrl(), token),
@@ -152,7 +155,7 @@ export function moveProgramLeadLive(input: {
         horizonDays: readBookingHorizonDays,
         findPlaceholder: findPlaceholderAdvisor,
         claimPlaceholderDay,
-        countLimitRefusal: countLimitRefusalPending0215,
+        countLimitRefusal,
         reschedule: ({ ontoPlaceholder }) =>
           remember(() =>
             ontoPlaceholder

@@ -90,6 +90,8 @@ interface Opts {
   placeholder?: User | null;
   horizon?: number | null;
   bucket?: Bucket;
+  /** The limit refusal count fails (`bump_program_lead_outcome`, 0215). */
+  countThrows?: boolean;
 }
 
 function makeBookDeps(o: Opts = {}) {
@@ -138,8 +140,9 @@ function makeBookDeps(o: Opts = {}) {
       if (o.claim === "throws") throw new Error("rpc down");
       return o.claim === undefined ? true : o.claim;
     },
-    countLimitRefusal: (day) => {
+    countLimitRefusal: async (day) => {
       calls.limitRefused.push(day);
+      if (o.countThrows) throw new Error("bump_program_lead_outcome failed: rpc down");
     },
     createPlaceholderBooking: async (i) => {
       steps.push("placeholder-create");
@@ -241,6 +244,22 @@ async function run() {
     const { deps, calls } = makeBookDeps({ served: false });
     await bookProgramLead(input, deps);
     assert(calls.limitRefused.length === 0, "control: a granted claim counts no refusal");
+  }
+  // A count that fails is logged and never changes what the lead is told.
+  {
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args.map(String).join(" "));
+    };
+    try {
+      const { deps, calls } = makeBookDeps({ served: false, claim: false, countThrows: true });
+      const err = await refusal(() => bookProgramLead(input, deps));
+      assert(err instanceof PlaceholderDayFullError && calls.limitRefused.length === 1, `a failed count still answers the full day (got ${String(err)})`);
+      assert(errors.some((l) => l.includes("program-lead-day-full") && l.includes("could not be counted")), `and the failed count is logged as an error (got ${JSON.stringify(errors)})`);
+    } finally {
+      console.error = original;
+    }
   }
   // The claim itself failing is the retryable outage, never a booking or a full day.
   {

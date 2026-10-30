@@ -107,10 +107,11 @@ interface PlaceholderDeps {
   /** `claim_placeholder_day`: true when a place was granted. THROWS when it could not be asked. */
   claimPlaceholderDay(day: string, claimKey: string, bookingId: string | null): Promise<boolean>;
   /**
-   * Count one limit refusal against the call's Eastern day. Never throws and is never
-   * awaited by the answer: a count that failed must not change what the lead is told.
+   * Count one limit refusal (`bump_program_lead_outcome('limit_refused')`, 0215). MAY
+   * throw: the caller logs a failure and still answers the full day, since a count that
+   * failed must never change what the lead is told.
    */
-  countLimitRefusal(callDay: string): void;
+  countLimitRefusal(callDay: string): Promise<void>;
 }
 
 export interface ProgramLeadBookingDeps extends PlaceholderDeps {
@@ -209,7 +210,12 @@ async function claimDay(
   if (!granted) {
     // Its own tag, so the refusals are countable before #4392 counts them per day.
     log.info("program-lead-day-full", { msg: "a program lead met a full placeholder day", call_day: day, bucket_code: bucket.code, ...(bookingId ? { booking_id: bookingId } : {}) });
-    deps.countLimitRefusal(day);
+    try {
+      await deps.countLimitRefusal(day);
+    } catch (err) {
+      // The one failure nothing else sees: the refusal happened and was not counted.
+      log.error("program-lead-day-full", { msg: "a full placeholder day refusal could not be counted", call_day: day }, err);
+    }
     throw new PlaceholderDayFullError(day);
   }
 }
