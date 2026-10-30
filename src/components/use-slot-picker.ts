@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { testPassHeaders, testPassRefusalSentence } from "@/lib/embed/test-pass-header";
 import { agentLinkRefusalSentence } from "@/lib/agent-link/refusal-sentence";
 import { rescheduleTimesRefusalSentence } from "@/lib/booking/reschedule-times-refusal";
+import { programLeadHeaders, programLeadTimesUrl } from "@/lib/booking/program-lead-header";
 
 import { useFetchList } from "@/components/AsyncList";
 import {
@@ -72,6 +73,7 @@ export function useSlotPicker({
   leadZone,
   slotsOverride = null,
   testPass = null,
+  programLeadToken = null,
 }: {
   /** The availability URL, or null to load nothing (an unopened panel, or a
    *  month entirely beyond the booking horizon: both settle as `no-days`
@@ -106,13 +108,25 @@ export function useSlotPicker({
    * staff session.
    */
   testPass?: string | null;
+  /**
+   * A program lead's token (#4390), sent as a header so the address never carries it,
+   * with the lead's zone added to the address so the placeholder's starts are judged in
+   * it and a change of zone reads again. Null for every other lead, whose read is sent
+   * exactly as it always was.
+   */
+  programLeadToken?: string | null;
 }): SlotPicker {
-  // Memoised on the pass, since the headers object is part of the fetch's deps and
-  // a new object each render would refetch for ever.
-  const headers = useMemo(() => testPassHeaders(testPass), [testPass]);
+  // Memoised on the pass and the token, since the headers object is part of the fetch's
+  // deps and a new object each render would refetch for ever.
+  const headers = useMemo(() => {
+    const pass = testPassHeaders(testPass);
+    const program = programLeadHeaders(programLeadToken);
+    return pass || program ? { ...pass, ...program } : undefined;
+  }, [testPass, programLeadToken]);
+  const readUrl = url === null ? null : programLeadTimesUrl(url, programLeadToken, leadZone);
   const { items: fetched, loading: fetching, error, retry, payload, errorPayload } = useFetchList(
-    url,
-    url !== null,
+    readUrl,
+    readUrl !== null,
     extractSlots,
     headers,
   );

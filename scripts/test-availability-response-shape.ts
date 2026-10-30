@@ -24,6 +24,12 @@
 // the free check can be judged a lost race. A freshness fact, not routing, and never
 // rendered.
 //
+// `placeholderStarts` arrived with #4390: on a program lead's read only (the token in its
+// header), the served starts only the placeholder advisor offers, so the confirm can tell
+// them from the real slots. Never rendered, and ABSENT from every other response: the key
+// is undefined there, which JSON leaves out, so an ordinary lead's body is byte for byte
+// what it was (the golden below is unchanged).
+//
 // `shownTier` arrived with #3495: the tier whose times are on show, which the booker
 // hands back with its confirm so the confirm records it instead of reading the cache
 // for it. Dan, 2026-10-07, on #259: "I don't want the lead to see it. I don't care if
@@ -53,7 +59,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 // The frozen contract. Keys are exact and ordered by level; the embed reads all
 // of these and nothing else.
 const GOLDEN_SHAPE = {
-  top: ["bucket", "emptyBecause", "eventType", "orgName", "shownTier", "slots", "slotsComputedAt"],
+  top: ["bucket", "emptyBecause", "eventType", "orgName", "placeholderStarts", "shownTier", "slots", "slotsComputedAt"],
   bucket: ["code"],
   eventType: ["description", "durationMin", "name"],
 };
@@ -137,6 +143,8 @@ function buildResponseBody(result: typeof fakeResult, nowMs: number) {
     shownTier: result.routing.booked_tier,
     // #3797: when the list was computed, for the booker to hand back.
     slotsComputedAt: result.computedAt ?? null,
+    // #4390: undefined for an ordinary lead, so the serialized body leaves it out.
+    placeholderStarts: undefined as string[] | undefined,
   };
 }
 
@@ -163,7 +171,8 @@ const body = buildResponseBody(fakeResult, NOW_MS);
 eq(JSON.stringify(body), JSON.stringify(GOLDEN_RESPONSE), "response body matches the frozen golden snapshot");
 
 // Field set/shape, asserted level by level so an add/remove/rename is named.
-eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, shownTier, slots, slotsComputedAt");
+eq(Object.keys(body).sort().join(","), GOLDEN_SHAPE.top.join(","), "top-level keys are exactly bucket, emptyBecause, eventType, orgName, placeholderStarts, shownTier, slots, slotsComputedAt");
+assert(!JSON.stringify(body).includes("placeholderStarts"), "an ordinary lead's serialized body carries no placeholderStarts at all");
 // A response WITH times must never carry a reason for emptiness: the booker keys
 // its copy off this, and a stale "closed" beside a list of times would be absurd.
 eq(body.emptyBecause, null, "a populated response says nothing about why it might be empty");

@@ -16,6 +16,7 @@ import {
   PROGRAM_LEAD_TOKEN_TTL_MS,
   mintProgramLeadToken,
   readProgramLeadToken,
+  readProgramLeadTokenAsIssued,
 } from "../src/lib/booking/program-lead-token.ts";
 import { fieldsSignature, fieldsSignatureMatches } from "../src/lib/signed-fields.ts";
 import { mintTestPass, verifyTestPass } from "../src/lib/embed/test-pass.ts";
@@ -157,6 +158,27 @@ function reading(token: string | null, ask: Ask = {}) {
   eq(reading(t.value, { bookingId: null }), "other-booking", "a move token cannot make a new booking");
   eq(reading(t.value, { bookingId: BOOKING, salesforceId: OTHER_LEAD }), "other-lead", "a move token presented for another lead is refused");
   eq(reading(t.value, { bookingId: BOOKING, nowMs: NOW + PROGRAM_LEAD_TOKEN_TTL_MS }), "expired", "a move token expires too");
+}
+
+{
+  // #4390: the times read names no lead and no booking, so a token is judged as issued:
+  // its signature, its secret and its expiry, for whichever lead and scope it carries.
+  const asIssued = (token: string | null, ask: { secret?: string; nowMs?: number } = {}) => {
+    const r = readProgramLeadTokenAsIssued(token, { secret: ask.secret ?? SECRET, nowMs: ask.nowMs ?? NOW });
+    return r.ok ? r.facts.purpose : r.reason;
+  };
+  const fresh = mintProgramLeadToken({ salesforceId: LEAD_18, bookingId: null, secret: SECRET, nowMs: NOW });
+  const move = mintProgramLeadToken({ salesforceId: LEAD_18, bookingId: BOOKING, secret: SECRET, nowMs: NOW });
+  eq(asIssued(fresh.value), "new", "a new booking's token reads as issued");
+  eq(asIssued(move.value), "move", "and so does a move token, for the booking it names");
+  eq(asIssued(fresh.value, { nowMs: fresh.expiresAtMs }), "expired", "an expired token is refused");
+  eq(asIssued(fresh.value, { secret: "j".repeat(64) }), "forged", "a token signed with another secret is refused");
+  eq(asIssued(fresh.value, { secret: "" }), "secret-unset", "with no secret nothing reads, so the caller can count it");
+  const [, scope, exp, sig] = fresh.value.split(".");
+  eq(asIssued(`${OTHER_LEAD}.${scope}.${exp}.${sig}`), "forged", "a token relabelled for another lead is refused");
+  eq(asIssued(`${LEAD_15}.${BOOKING}.${exp}.${sig}`), "forged", "a new booking's token relabelled as a move is refused");
+  eq(asIssued(null), "missing", "no token is missing");
+  eq(asIssued("x.y"), "malformed", "a short value is malformed");
 }
 
 {

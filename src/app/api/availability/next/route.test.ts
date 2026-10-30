@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // #1329 / #1339: the first bookable days past a closure, computed on demand.
 //
@@ -41,12 +41,23 @@ vi.mock("@/lib/booking/settings", () => settings);
 vi.mock("@/lib/availability/slot-cache", () => slotCache);
 vi.mock("@/lib/notify/dispatch", () => ({ sendThrottledAlert: vi.fn(async () => {}) }));
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
+// #4390: a program lead's times. The rules are pinned by scripts/test-program-lead-times.ts;
+// the tests at the foot of this file prove the route's part.
+const programTimes = vi.hoisted(() => ({
+  programLeadTimesLive: vi.fn(async (input: { realSlots: string[] }) => ({
+    slots: input.realSlots,
+    placeholderStarts: [] as string[],
+    outcome: "program" as string,
+  })),
+}));
+vi.mock("@/lib/booking/program-lead-times-live", () => programTimes);
 
 import { NextRequest } from "next/server";
 import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
 import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { log } from "@/lib/log";
+import { PROGRAM_LEAD_HEADER } from "@/lib/booking/program-lead-header";
 import { GET } from "./route";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
@@ -208,5 +219,67 @@ describe("GET /api/availability/next (#1329, #1339)", () => {
     expect(res.status).toBe(500);
     // No internals in the body.
     expect(JSON.stringify(await res.json())).not.toMatch(/google is down/);
+  });
+});
+
+// #4390: the look further ahead past a closure, for a program lead. The placeholder's
+// starts are offered beside whatever real times the walk finds, from the day after the
+// ordinary search stopped, and the answer keeps the first days offered as it always has.
+describe("GET /api/availability/next for a program lead (#4390)", () => {
+  const NOW = Date.parse("2026-06-08T12:00:00.000Z"); // Monday 08:00 Eastern
+  const TOKEN = "00Q5f00000AbCdE.new.9999999999999.abc";
+  const EVENT = { duration_min: 20, slot_interval_min: 30, min_notice_min: 0 };
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    hours.loadBusinessHoursCached.mockResolvedValue({
+      zone: "America/New_York",
+      rules: [1, 2, 3, 4, 5].map((weekday) => ({ weekday, start_minute: 540, end_minute: 1080 })),
+      source: "stored" as const,
+    });
+    settings.loadBookingHorizonDays.mockResolvedValue(2);
+    // A closure: the walk finds no real times anywhere.
+    service.getBucketSlots.mockResolvedValue({ bucket: { code: "411", is_test: false }, eventType: EVENT, orgName: "Pennie", slots: [] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function next(query = "", token: string | null = TOKEN) {
+    const headers = new Headers();
+    if (token) headers.set(PROGRAM_LEAD_HEADER, token);
+    return GET(new NextRequest(`http://localhost/api/availability/next?bucket=411${query}`, { headers }));
+  }
+
+  it("never asks for an ordinary lead", async () => {
+    const body = await (await next("", null)).json();
+    expect(programTimes.programLeadTimesLive).not.toHaveBeenCalled();
+    expect(body.slots).toEqual([]);
+  });
+
+  it("asks for the placeholder's starts from the day after the ordinary search stopped, with the zone", async () => {
+    await next("&leadZone=America%2FChicago");
+    // The ordinary search covers 2 + 2 calendar days from Monday: through Thursday.
+    expect(programTimes.programLeadTimesLive).toHaveBeenCalledWith({
+      token: TOKEN,
+      leadZone: "America/Chicago",
+      realSlots: [],
+      eventType: EVENT,
+      fromMs: Date.parse("2026-06-12T04:00:00.000Z"),
+    });
+  });
+
+  it("serves the merged times, keeping only the first days offered", async () => {
+    const friday = "2026-06-12T13:00:00.000Z";
+    const monday = "2026-06-15T13:00:00.000Z";
+    const tuesday = "2026-06-16T13:00:00.000Z";
+    programTimes.programLeadTimesLive.mockResolvedValueOnce({
+      slots: [friday, monday, tuesday],
+      placeholderStarts: [friday, monday, tuesday],
+      outcome: "program",
+    });
+    const body = await (await next()).json();
+    expect(body.slots).toEqual([friday, monday]);
   });
 });

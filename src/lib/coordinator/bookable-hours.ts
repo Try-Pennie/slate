@@ -10,10 +10,17 @@
  * buttons offered and the times accepted cannot disagree (L370); each window is judged
  * in its own zone and never intersected by hand. The hours are scanned a minute at a
  * time over the customer's local day, which is 23 or 25 hours on a clock change day.
+ *
+ * The same predicate offers a program lead the placeholder's starts beside the real slots
+ * (#4390, `program-lead-times.ts`), extended for that path with the event type's minimum
+ * notice (the cutoff the real slots are filtered by, `noticeCutoffMs`) and its slot
+ * interval, so a placeholder start sits on the real slots' grid and meets every rule a
+ * real slot meets (`scripts/test-program-lead-times.ts` holds the two side by side). The
+ * coordinator page passes neither and is unchanged.
  * Pure (relative imports), so `scripts/test-coordinator-lookup.ts` runs it.
  */
 import { DateTime } from "luxon";
-import { isOrgOpen, type BusinessHoursRules } from "../availability/compute.ts";
+import { isOrgOpen, noticeCutoffMs, type BusinessHoursRules } from "../availability/compute.ts";
 import { withinLeadCallingWindow } from "../booking/lead-calling-window.ts";
 import { lastHorizonDay, withinHorizon } from "../booking/placed-booking.ts";
 
@@ -28,7 +35,7 @@ export type BookableHours =
   | { ok: true; date: string; windows: StartWindow[] }
   | { ok: false; reason: "date-unreadable" | "hours-unreadable" | "horizon-unreadable" };
 
-/** One day of the page's day row: the customer's local date and every bookable quarter hour start on it. */
+/** One day of the page's day row: the customer's local date and every bookable start on it (a quarter hour apart unless `stepMin` says otherwise). */
 export interface OfferedDay {
   date: string;
   /** In the customer's zone (ISO with offset), in order. Empty: the day shows Closed. */
@@ -44,15 +51,28 @@ export interface StartRules {
   durationMin: number;
   nowMs: number;
   horizonDays: number;
+  /**
+   * The event type's minimum notice (#4390): a start before `noticeCutoffMs` is not
+   * offered, as a real slot before it is not. Absent on the coordinator page, which may
+   * book any time after now.
+   */
+  minNoticeMin?: number;
+  /**
+   * Minutes between the starts `offeredDays` offers (#4390): the event type's slot
+   * interval on the program lead path, so its starts sit on the real slots' grid. Absent,
+   * a quarter hour: the coordinator page's buttons.
+   */
+  stepMin?: number;
 }
 
 const MINUTE = 60_000;
-const QUARTER_HOUR = 15 * MINUTE;
+const QUARTER_HOUR_MIN = 15;
 
 /** THE rule for one start instant, shared by the hours and the buttons. */
 function isBookableStart(rules: StartRules, t: number): boolean {
   return (
     t > rules.nowMs &&
+    (rules.minNoticeMin === undefined || t >= noticeCutoffMs(rules.nowMs, rules.minNoticeMin)) &&
     isOrgOpen(rules.hours, t, t + rules.durationMin * MINUTE) &&
     withinLeadCallingWindow(new Date(t).toISOString(), rules.zone) &&
     withinHorizon(rules.hours, t, rules.nowMs, rules.horizonDays)
@@ -90,7 +110,7 @@ export function bookableHoursOn(
 /**
  * The page's day row (#4205): the customer's days from their today through the last day
  * Slate offers (`lastHorizonDay`, counted as `withinHorizon` counts open days), each with
- * every quarter hour start `isBookableStart` accepts. A day inside that span with none is
+ * every start `isBookableStart` accepts, a quarter hour apart or `stepMin` apart. A day inside that span with none is
  * kept, so the page can show it Closed; days after the last one with a start are dropped.
  * A US customer is never a calendar day ahead of Pennie's clock, so a customer day past
  * the org's last offered day holds nothing; one more is scanned for safety.
@@ -100,6 +120,8 @@ export function offeredDays(input: StartRules): OfferedDay[] {
   if (last === null) return [];
   const stop = DateTime.fromISO(last, { zone: input.zone }).plus({ days: 1 }).toISODate() ?? last;
   const out: OfferedDay[] = [];
+  // Never under a minute: a zero or negative interval read from a row would never end the scan.
+  const stepMs = Math.max(1, input.stepMin ?? QUARTER_HOUR_MIN) * MINUTE;
   let day = DateTime.fromMillis(input.nowMs, { zone: input.zone }).startOf("day");
   // Bounded like the horizon walk itself.
   for (let i = 0; i < 366; i++, day = day.plus({ days: 1 })) {
@@ -107,7 +129,7 @@ export function offeredDays(input: StartRules): OfferedDay[] {
     if (date === null || date > stop) break;
     const endMs = day.plus({ days: 1 }).toMillis();
     const starts: string[] = [];
-    for (let t = day.toMillis(); t < endMs; t += QUARTER_HOUR) {
+    for (let t = day.toMillis(); t < endMs; t += stepMs) {
       if (isBookableStart(input, t)) starts.push(local(t, input.zone));
     }
     out.push({ date, starts });

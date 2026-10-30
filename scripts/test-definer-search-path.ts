@@ -277,6 +277,9 @@ const EXPECTED_PINNED = [
   "bookings_refuse_held_agent",
   "bookings_release_reroute_hold",
   "bump_booking_api_outcome",
+  // #4390: counts a program lead outcome on today's Eastern day, an atomic upsert.
+  // Security INVOKER, plain SQL; now() and the time zone cast are pg_catalog built ins.
+  "bump_program_lead_outcome",
   // #2369: decides whether a named booking is really a duplicate and, when it is,
   // cancels it and enqueues its outbox row in ONE transaction.
   "cancel_duplicate_booking",
