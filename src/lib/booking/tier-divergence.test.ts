@@ -238,6 +238,7 @@ function makeDeps(): BookingDeps & CommitFreshParts {
     findActiveBookingsStartingAt: async () => [] as Booking[],
     findActiveBookingsByStrongIds: async () => [],
     loadAgentDisplayName: async () => null,
+    programLeadMoveTokenFor: () => null,
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
     getAgentByEmail: async () => null,
     loadPastBookingIdsToComplete: async () => [],

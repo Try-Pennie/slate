@@ -31,6 +31,8 @@ import {
   createBooking,
   ExistingCallError,
   ExistingCallCheckUnavailableError,
+  findExistingCallForIdentity,
+  personIdentityOf,
   type ExistingCall,
 } from "../src/lib/booking/orchestration.ts";
 import { createAsserter, makeDeps, makeBooking, input } from "./lib/booking-fakes.ts";
@@ -227,6 +229,38 @@ async function run() {
     assert(
       r.declined?.disclose === true && r.declined.manageToken === "tok-old",
       "email AND phone together is enough to name the call and hand over its token",
+    );
+  }
+
+  // --- #4415: the confirm hands a program lead's call its move token, as the landing does ---
+  // A program lead told at confirm that they already have a call opens the same Move panel
+  // the landing's notice opens, so it must carry the same token, or that panel offers only
+  // real times. Both read the one grader with the deps' own minter: neither caller passes it.
+  {
+    const programCall = makeBooking({
+      id: "bk-prog",
+      salesforce_id: "sf1",
+      manage_token: "tok-prog",
+      assigned_user_id: "a",
+      program_lead: true,
+    });
+    const r = await attempt({ personBookings: [programCall], agentNames: { a: "Aisha Bello" } });
+    assert(
+      r.declined?.disclose === true && r.declined.programLeadMoveToken === "move-token-for-bk-prog",
+      `the confirm's existing call answer carries a program lead's move token (got ${r.declined?.disclose ? r.declined.programLeadMoveToken : "undisclosed"})`,
+    );
+    const landing = makeDeps({ personBookings: [programCall], agentNames: { a: "Aisha Bello" } });
+    const landed = await findExistingCallForIdentity(personIdentityOf(bookerInput), landing.deps, { isTest: false });
+    assert(
+      JSON.stringify(landed) === JSON.stringify(r.declined),
+      "the confirm path and the landing path hand the Move panel the same call",
+    );
+    const ordinary = await attempt({
+      personBookings: [makeBooking({ id: "bk-plain", salesforce_id: "sf1", manage_token: "tok-plain", assigned_user_id: "a" })],
+    });
+    assert(
+      ordinary.declined?.disclose === true && ordinary.declined.programLeadMoveToken === null,
+      "control: an ordinary lead's existing call carries no move token",
     );
   }
 
