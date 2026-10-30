@@ -10,7 +10,8 @@ import { programLeadTimes, type ProgramLeadTimes, type ProgramLeadTimesDeps } fr
 /**
  * The live wiring of a program lead's times (#4390): the rules are `program-lead-times.ts`;
  * this binds them to the token secret, `booking_settings`, the cached week, the horizon,
- * `placeholder_day_counts` (0213) and `bump_program_lead_outcome` (0215). Server only.
+ * `placeholder_day_counts` (0213), or for a move `placeholder_day_held` per day with the
+ * moving booking left out (#4414), and `bump_program_lead_outcome` (0215). Server only.
  *
  * A fallback is logged by its reason, never with the token, and COUNTED; a count that
  * fails is logged as an error of its own, since it is the one failure nothing else sees.
