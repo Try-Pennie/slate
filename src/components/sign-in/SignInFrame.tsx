@@ -1,13 +1,14 @@
 import type { ReactNode } from "react";
-import { SIGN_IN_PANEL_COPY } from "@/lib/auth/sign-in-copy";
+import type { SignInPanelWords } from "@/lib/auth/sign-in-copy";
 
 /**
  * The page both sign in pages are drawn in (#4379): the photograph panel and the card on
  * the beige ground. `/login` has always looked like this; the partner sign in page is drawn
  * in the same frame (docs/design/partner-sign-in.html), so the frame lives here once and
- * each page fills only the card.
+ * each page fills the card and names its panel's words. The words are required, never a
+ * default: each page speaks to its own reader (#4399, docs/design/partner-sign-in.html, D4, D5).
  */
-export function SignInFrame({ children }: { children: ReactNode }) {
+export function SignInFrame({ panel, children }: { panel: SignInPanelWords; children: ReactNode }) {
   return (
     <main className="grid min-h-dvh flex-1 grid-rows-[auto_1fr] bg-bg lg:grid-cols-2 lg:grid-rows-1">
       <section className="relative hidden flex-col gap-6 overflow-hidden bg-pennie-navy p-8 sm:flex lg:justify-between lg:p-12">
@@ -32,10 +33,10 @@ export function SignInFrame({ children }: { children: ReactNode }) {
         />
         <div className="relative z-10 max-w-md">
           <p className="pn-h2 hidden text-pennie-beige lg:block">
-            {SIGN_IN_PANEL_COPY.welcome}
+            {panel.headline}
           </p>
           <p className="text-lg leading-relaxed text-pennie-beige/80 lg:mt-4 lg:text-xl">
-            {SIGN_IN_PANEL_COPY.line}
+            {panel.line}
           </p>
         </div>
       </section>
