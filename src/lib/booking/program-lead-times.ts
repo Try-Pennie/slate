@@ -121,16 +121,23 @@ export const PROGRAM_TIMES_FALLBACKS = [
 export type ProgramTimesFallback = (typeof PROGRAM_TIMES_FALLBACKS)[number];
 
 export interface ProgramLeadTimesDeps {
-  /** The token judged as issued (`readProgramLeadTokenAsIssued`). Never logs the token. */
-  readToken(token: string): { ok: true } | { ok: false; reason: ProgramLeadTokenRefusal };
+  /**
+   * The token judged as issued (`readProgramLeadTokenAsIssued`). Never logs the token.
+   * `movingBookingId` is the booking a MOVE token names, null for a new booking's (#4414).
+   */
+  readToken(token: string): { ok: true; movingBookingId: string | null } | { ok: false; reason: ProgramLeadTokenRefusal };
   /** The go live switch and the day limit in one read, or null when it failed. */
   readSettings(): Promise<{ enabled: boolean; dayLimit: number } | null>;
   /** Pennie's week. THROWS on an unreadable one. */
   loadHours(): Promise<BusinessHoursRules>;
   /** The booking horizon in open days, or null when it could not be read. */
   readHorizonDays(): Promise<number | null>;
-  /** The held count per Eastern day from `fromDay` to `toDay` inclusive. THROWS on failure. */
-  readDayCounts(fromDay: string, toDay: string): Promise<Map<string, number>>;
+  /**
+   * The held count per Eastern day from `fromDay` to `toDay` inclusive, leaving out
+   * `excludeBookingId` when a move is being read (#4414): the moving booking never counts
+   * against its own move, the same rule `claim_placeholder_day` applies. THROWS on failure.
+   */
+  readDayCounts(fromDay: string, toDay: string, excludeBookingId: string | null): Promise<Map<string, number>>;
   /** Count one fallback on today's Eastern day. May throw; a failure here never fails the times. */
   countFallback(reason: ProgramTimesFallback): Promise<void>;
   now(): number;
@@ -210,7 +217,7 @@ export async function programLeadTimes(
   const toDay = placeholderCallDay(Date.parse(starts[starts.length - 1]!));
   let heldByDay: Map<string, number>;
   try {
-    heldByDay = await deps.readDayCounts(fromDay, toDay);
+    heldByDay = await deps.readDayCounts(fromDay, toDay, token.movingBookingId);
   } catch {
     return fallback("counts-unreadable");
   }
