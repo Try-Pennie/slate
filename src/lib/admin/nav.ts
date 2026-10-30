@@ -123,6 +123,9 @@ export const ADMIN_NAV: AdminNavGroup[] = [
       // the coordinators themselves. Super admin only (D2 in docs/design/coordinator-admin.html),
       // after Look up a booking, which is opened more often (D1).
       { href: "/admin/coordinator-booking", label: "Coordinator booking", gate: "super_admin" },
+      // #4392: program leads' last 14 days and the placeholder day limit. Admins only (Dan,
+      // 2026-10-29), so the entry is gated "admin" like the page, which answers not found below.
+      { href: "/admin/program-leads", label: "Program leads", gate: "admin" },
       { href: "/admin/booker-copy", label: "Booker copy", gate: "admin" },
       // #4299: the emails a lead gets before the call. Managers read them; admins edit.
       { href: "/admin/reminder-emails", label: "Reminder emails", gate: "manager" },
