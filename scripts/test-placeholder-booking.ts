@@ -156,9 +156,7 @@ async function run() {
   {
     const onIt = onPlaceholder({ id: "bk-p", salesforce_id: "sf1", program_lead: true } as Partial<Booking>);
     const { deps } = makeDeps({ personBookings: [onIt], agentNames: { p: "Marcia" } });
-    const call = await findExistingCallForIdentity({ externalId: null, salesforceId: "sf1", email: null, phone: null }, deps, { isTest: false }, {
-      moveTokenFor: (b) => (b.program_lead ? `move-token-for-${b.id}` : null),
-    });
+    const call = await findExistingCallForIdentity({ externalId: null, salesforceId: "sf1", email: null, phone: null }, deps, { isTest: false });
     assert(call?.disclose === true && call.advisorName === null, `a call on the placeholder names no advisor (got ${call?.disclose ? call.advisorName : "undisclosed"})`);
     assert(call?.disclose === true && call.programLeadMoveToken === "move-token-for-bk-p", "and carries the move token for a program lead's call");
     const routed = makeBooking({ id: "bk-r", salesforce_id: "sf1" });

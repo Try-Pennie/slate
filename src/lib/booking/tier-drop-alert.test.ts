@@ -244,6 +244,7 @@ function makeTierDropDeps(requested = "511", lower = "411"): BookingDeps & Commi
     findActiveBookingsStartingAt: async () => [] as Booking[],
     findActiveBookingsByStrongIds: async () => [],
     loadAgentDisplayName: async () => null,
+    programLeadMoveTokenFor: () => null,
     queryBookings: async () => ({ rows: [] as Booking[], buckets: [] as Bucket[] }),
     getAgentByEmail: async () => null,
     loadPastBookingIdsToComplete: async () => [],

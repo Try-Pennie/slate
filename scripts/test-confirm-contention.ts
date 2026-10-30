@@ -106,7 +106,7 @@ const BURST = 100;
  *  the last arrival (1.8s) plus a whole budget and its cleanup allowance (14s). */
 const BACKGROUND_UNTIL_MS = 20_000;
 /** Not I/O, so they stay synchronous in the wrapped deps. */
-const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "newBookingId", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl", "lineGroupOf"]);
+const SYNCHRONOUS = new Set(["newManageToken", "newIdempotencyKey", "newBookingId", "pageRaceBoundHit", "deferSend", "deadlineTimer", "appBaseUrl", "lineGroupOf", "programLeadMoveTokenFor"]);
 
 type Outcome = "created" | "SLOT_TAKEN" | "503" | string;
 interface Run {

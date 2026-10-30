@@ -1309,6 +1309,9 @@ export function makeDeps(opts: FakeOpts) {
       if (opts.agentNameThrows) throw new Error("users read down");
       return (userId && opts.agentNames?.[userId]) || null;
     },
+    // #4415: a stand in for the signed token, named after the booking so a test can tell
+    // whose call it was minted for. Ordinary bookings get none, as the real minter does.
+    programLeadMoveTokenFor: (b: Booking) => (b.program_lead ? `move-token-for-${b.id}` : null),
     queryBookings: async (filter) => {
       calls.queryBookings.push(filter);
       return opts.listResult ?? { rows: [], buckets: [] };
