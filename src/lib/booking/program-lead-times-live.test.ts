@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // #4390: the live wiring of a program lead's times. The rules (the shared start predicate,
 // the day limit, every fallback) are pinned by scripts/test-program-lead-times.ts; this
 // proves the reads and the count reach the real store the way the rules assume: the day
-// counts through placeholder_day_counts, the fallback through bump_program_lead_outcome,
+// counts through placeholder_day_counts (a move's per day through placeholder_day_held with
+// the moving booking left out, #4414), the fallback through bump_program_lead_outcome,
 // and a fallback is logged with its reason, never the token.
 
 const rpc = vi.hoisted(() => vi.fn());

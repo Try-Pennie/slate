@@ -10,7 +10,8 @@
  * placeholder start meets every rule a real slot meets and sits on the same grid
  * (`scripts/test-program-lead-times.ts` holds the two side by side).
  *
- * A day whose held count (`placeholder_day_counts`, migration 0213) is at
+ * A day whose held count (`placeholder_day_counts`, migration 0213; for a move,
+ * `placeholder_day_held` with the moving booking left out, #4414) is at
  * `booking_settings.placeholder_day_limit` shows real slots only. The day is the Eastern
  * day of the CALL (`placeholderCallDay`), the day the SQL counts by.
  *
