@@ -40,16 +40,27 @@ export default async function PartnerSignInPage({
   const fixture = await readDesignFixture<unknown>(sp.frame, "partner-sign-in");
   const frame = fixture && sp.frame && Object.hasOwn(DESIGN_FRAMES, sp.frame) ? DESIGN_FRAMES[sp.frame]! : null;
   const refusal = partnerSignInRefusal(sp.error);
+  // The staff line (D6) steps aside while a refusal already points at the staff page, so the
+  // way there is said once (the Pennie address refusal carries its own link).
+  const showStaffWay = refusal?.link?.href !== COPY.staffWay.link.href;
 
   return (
     <>
       {/* Outside <main>: the design's checks read main's words, and a script's text is words. */}
       {frame && <StandaloneTheme theme={frame.theme} />}
-      <SignInFrame>
+      <SignInFrame panel={COPY.panel}>
         <h1 className="pn-h3">{COPY.heading}</h1>
         <p className="mt-2 text-sm text-fg-muted">{COPY.line}</p>
         {refusal && <SignInErrorBanner message={refusal.message} link={refusal.link} />}
         <OAuthSignInButton provider={MICROSOFT_PROVIDER} />
+        {showStaffWay && (
+          <p className="mt-6 text-xs text-fg-muted">
+            {COPY.staffWay.lead}
+            <a href={COPY.staffWay.link.href} className="underline">
+              {COPY.staffWay.link.label}
+            </a>
+          </p>
+        )}
       </SignInFrame>
     </>
   );

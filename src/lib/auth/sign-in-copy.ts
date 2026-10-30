@@ -1,21 +1,27 @@
+import {
+  SESSION_IDLE_DAYS,
+  SESSION_TIME_BOX_DAYS,
+  sessionRefusalLoginError,
+  type SessionAgeRefusal,
+} from "./session-age.ts";
+
 /**
  * The words both sign in pages share (#4379): the staff page, `/login`, and the partner
- * page, `/partner/sign-in`, draw the same photograph panel and the same sign in button,
- * so they read the same sentences from here rather than two copies drifting apart.
+ * page, `/partner/sign-in`, draw the same sign in button and explain an ended session alike
+ * (#4409), so they read those sentences from here rather than two copies drifting apart.
  *
- * The panel's words are the staff page's as they were; the partner page shows them too,
- * because its settled design draws the card inside the existing login page frame
- * (docs/design/partner-sign-in.html, "idioms"). Each page's own heading, line and refusal
- * sentences live with that page: `partner-sign-in-copy.ts` for the partner page.
+ * Each page's own heading, line, photograph panel words (#4399) and remaining refusal
+ * sentences live with that page: `partner-sign-in-copy.ts` for the partner page, inline
+ * for `/login`.
  *
- * Pure, no imports.
+ * Pure; its one import is the session limits the session sentences name.
  */
 
-/** The photograph panel beside the card. */
-export const SIGN_IN_PANEL_COPY = {
-  welcome: "Welcome back.",
-  line: "Manage your availability and let the right calls find you.",
-} as const;
+/** What a photograph panel says: a headline, and the line under it. Each page has its own. */
+export interface SignInPanelWords {
+  headline: string;
+  line: string;
+}
 
 /** The sign in button, in each of its states (#626, #631). */
 export const SIGN_IN_BUTTON_COPY = {
@@ -45,3 +51,28 @@ export const SIGN_IN_INCOMPLETE_MESSAGE = "That sign-in didn't complete. Please 
  */
 export const SIGN_IN_SETUP_RETRY_MESSAGE =
   "We couldn't finish setting up your account just now. Please try signing in again.";
+
+/**
+ * #3084: a sign in that reached its age limit. Each says which limit, because "you were
+ * signed out" alone reads as something having gone wrong. Keyed by reason, so a new reason
+ * cannot compile without its sentence.
+ */
+const SESSION_ENDED_SENTENCES: Readonly<Record<SessionAgeRefusal, string>> = {
+  "time-box": `You were signed out because it has been ${SESSION_TIME_BOX_DAYS} days since you signed in. Please sign in again.`,
+  idle: `You were signed out because Slate was not used on this device for ${SESSION_IDLE_DAYS} days. Please sign in again.`,
+  unstamped: "You were signed out. Please sign in again.",
+};
+
+/**
+ * The same sentences keyed by the `?error=` code a refused session lands on a sign in page
+ * with (`sessionRefusalLoginError`). Both pages show them word for word (#4409, Dan,
+ * 2026-10-29): a coordinator lands on `/partner/sign-in` (#4412), staff on `/login`.
+ */
+export const SESSION_ENDED_MESSAGES: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    (Object.keys(SESSION_ENDED_SENTENCES) as SessionAgeRefusal[]).map((reason) => [
+      sessionRefusalLoginError(reason),
+      SESSION_ENDED_SENTENCES[reason],
+    ]),
+  ),
+);
