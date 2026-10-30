@@ -74,6 +74,11 @@ export const MIRROR_TABLES: TableSpec[] = [
       // source: its ALTER in docs/snowflake-setup.sql runs in Snowsight BEFORE this
       // deploys.
       v("kind"),
+      // #4397: whether the booking came through the partner program (#4387, migration
+      // 0213), so warehouse reports can tell program bookings from any other. Same rule
+      // as source: its ALTER in docs/snowflake-setup.sql runs in Snowsight BEFORE this
+      // deploys.
+      b("program_lead"),
     ],
   },
   {

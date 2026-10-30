@@ -119,6 +119,24 @@ assert(
   "the setup file backfills kind only for bookings created before advisor links shipped",
 );
 
+// #4397: whether a booking came through the partner program (bookings.program_lead,
+// migration 0213), so warehouse reports can tell program bookings from any other.
+eq(
+  bookingsSpec?.cols.find((c) => c.name === "program_lead")?.type,
+  "boolean",
+  "the bookings mirror exports program_lead as a boolean",
+);
+assert(
+  (alters.get("bookings") ?? []).some((c) => c.name === "program_lead" && c.type === "BOOLEAN"),
+  "the setup file carries the ALTER that adds program_lead to the existing bookings mirror",
+);
+// The rows already mirrored are never exported again unless they change, so they
+// are filled with false, and only where the ALTER left them null.
+assert(
+  /^UPDATE\s+bookings\s+SET\s+program_lead\s*=\s*FALSE\s+WHERE\s+program_lead\s+IS\s+NULL\s*;$/im.test(sql),
+  "the setup file fills program_lead with false for the bookings already mirrored",
+);
+
 // --- positive controls: the guard can fail -----------------------------------
 const withoutSourceAlter = sql.replace(
   /^ALTER TABLE IF EXISTS\s+bookings\s+ADD COLUMN IF NOT EXISTS\s+source\s+VARCHAR\s*;$/m,
