@@ -2073,6 +2073,14 @@ export interface BookingDeps {
    * booking time would promise a lead one person and send another (L75).
    */
   loadAgentDisplayName(userId: string | null): Promise<string | null>;
+  /**
+   * #4391, #4415: the token that lets a program lead move `booking` onto the
+   * placeholder's extra times (`programLeadMoveTokenFor`), or null for any other
+   * booking. A dependency rather than an option, so every path that finds a lead's
+   * existing call (the landing, the confirm, the program confirm) carries it and none
+   * can forget it. Never throws.
+   */
+  programLeadMoveTokenFor(booking: Booking): string | null;
   /** #392 list: filtered, ordered, offset-paginated booking page + the buckets
    *  referenced by that page (for bucketCode), resolved in one .in() query. */
   queryBookings(filter: ListFilter): Promise<{ rows: Booking[]; buckets: Bucket[] }>;
@@ -4803,14 +4811,6 @@ export async function findExistingCallForIdentity(
   /** The world of the bucket in play (#2660), named by the caller: the landing
    *  page from the row it read, the confirm from the bucket it resolved. */
   world: PersonWorld,
-  opts: {
-    /**
-     * #4391: the token that lets a program lead move THIS call onto the placeholder's
-     * extra times (`programLeadMoveTokenFor`), passed by the landing's caller, which owns
-     * the secret. Absent, the panel carries none and the move is an ordinary one.
-     */
-    moveTokenFor?: (booking: Booking) => string | null;
-  } = {},
 ): Promise<ExistingCall | null> {
   let match: PersonMatch | null;
   try {
@@ -4836,7 +4836,7 @@ export async function findExistingCallForIdentity(
       ? await deps.loadAgentDisplayName(match.booking.assigned_user_id ?? null).catch(() => null)
       : null,
     manageToken: match.booking.manage_token,
-    programLeadMoveToken: opts.moveTokenFor?.(match.booking) ?? null,
+    programLeadMoveToken: deps.programLeadMoveTokenFor(match.booking),
     rescheduleTimesFrom: rescheduleTimesFrom(match.booking),
     mayCancel: match.strength === "strong",
     // #2213: the whole number. The panel let a recognised lead move and cancel and

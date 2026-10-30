@@ -2873,6 +2873,10 @@ export function realDeps(deferSend?: WebhookSendScheduler, lineFacts?: ConfirmLi
     loadAgentDisplayName: (userId) =>
       resolveAdvisorName(supabaseAdmin() as unknown as AdvisorNameReader, userId),
 
+    // #4391, #4415: minted from the booking's own mark, never a read the id in a link
+    // could steer, so it reveals nothing the manage token beside it does not.
+    programLeadMoveTokenFor,
+
     getAgentByEmail: async (email) => {
       // error-ok: agent lookup by email; a null (incl. a read error) returns null and the caller handles the missing agent.
       const { data } = await supabaseAdmin()
@@ -3210,10 +3214,6 @@ export async function existingCallForLanding(
       },
       realDeps(),
       world,
-      // #4391: a program lead's call carries the token its Move panel needs to reach the
-      // placeholder's extra times. Minted from the booking's own mark, never a read the
-      // id in the link could steer, so it reveals nothing the manage token does not.
-      { moveTokenFor: programLeadMoveTokenFor },
     );
   } catch (err) {
     log.warn("booking", { msg: "landing existing-call check failed, showing the picker" }, err);
