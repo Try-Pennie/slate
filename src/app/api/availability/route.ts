@@ -28,6 +28,8 @@ import { wakeConfirmLineForCode } from "@/lib/booking/confirm-line-live";
 import { createServerTimer, SERVER_TIMING_NAMES } from "@/lib/api/server-timing";
 import { makeFreshnessReader } from "@/lib/api/isolate-runs";
 import { coloFromRay } from "@/lib/http/cf-ray";
+import { PROGRAM_LEAD_HEADER, PROGRAM_LEAD_ZONE_PARAM } from "@/lib/booking/program-lead-header";
+import { programLeadTimesLive } from "@/lib/booking/program-lead-times-live";
 
 export const dynamic = "force-dynamic";
 
@@ -156,8 +158,23 @@ async function handle(req: NextRequest) {
   // unreadable bound filters nothing (the #3366 line logs it as unreadable): an
   // unreadable `to` used to compare every time against NaN, drop them all, and
   // explain the empty list as a full calendar.
-  const offered = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
-  const slots = slotsInWindow(offered, params.get("from"), toParam);
+  const realOffered = filterSlotsFromNow(result.slots, now, result.eventType.min_notice_min);
+  const realSlots = slotsInWindow(realOffered, params.get("from"), toParam);
+
+  // #4390: a program lead (the texted link's token, in a header so the address Cloudflare
+  // logs never carries it) is shown the placeholder's starts beside the real ones, under
+  // the placeholder day limit. Every failure inside is real slots only, counted. An
+  // ordinary lead never reaches it, so their read is unchanged.
+  const programToken = req.headers.get(PROGRAM_LEAD_HEADER);
+  const program = programToken
+    ? await programLeadTimesLive({
+        token: programToken,
+        leadZone: params.get(PROGRAM_LEAD_ZONE_PARAM),
+        realSlots: realOffered,
+        eventType: result.eventType,
+      })
+    : null;
+  const slots = program ? slotsInWindow(program.slots, params.get("from"), toParam) : realSlots;
 
   // Observability headers (#257/#234): freshness of the served slots and which
   // tier of the read path answered (L1 cache hit / L2 precomputed row / cold live
@@ -186,6 +203,8 @@ async function handle(req: NextRequest) {
     ...(toParam !== null && parseStampMs(toParam) === null ? { to_anchor: "unreadable" } : {}),
     colo: requestColo(req),
     slots: slots.length,
+    // #4390: how a program lead's read went, never the token.
+    ...(program ? { program_times: program.outcome } : {}),
     // #3381: which path wrote what was served, and the newest booking splice since its
     // compute. Null is not recorded (an entry from before it was), never a writer.
     written_by: result.writtenBy ?? null,
@@ -213,8 +232,15 @@ async function handle(req: NextRequest) {
   // Computed only when the result is actually empty, so the ordinary hot path pays
   // nothing extra, and best-effort: if the reason cannot be worked out the client
   // falls back to the vaguer copy rather than the request failing.
-  const emptyBecause: AvailabilityEmptyReason | null =
-    slots.length === 0 ? (beyondOffered(offered, params.get("from")) ?? (await whyEmpty(now, result.bucket))) : null;
+  //
+  // #4390: asked of the REAL slots, so a program lead's extra times never hide an
+  // unstaffed pool from the notice below; the lead is told why only when nothing at all
+  // is on their screen.
+  const realEmptyBecause: AvailabilityEmptyReason | null =
+    realSlots.length === 0
+      ? (beyondOffered(realOffered, params.get("from")) ?? (await whyEmpty(now, result.bucket)))
+      : null;
+  const emptyBecause = slots.length === 0 ? realEmptyBecause : null;
 
   // #2158, Dan's call: a lead meeting a bucket with nobody in it is worth
   // knowing about the moment it happens, not only when the hourly sweep next
@@ -227,7 +253,7 @@ async function handle(req: NextRequest) {
   // `empty_tier:*`: that one measures the state whether or not anybody is
   // looking, which matters because before cutover almost nobody is (#1394). This
   // one says a person just met it.
-  if (emptyBecause?.kind === "unstaffed" && !result.bucket.is_test) {
+  if (realEmptyBecause?.kind === "unstaffed" && !result.bucket.is_test) {
     // alert-key: booker_unstaffed:*
     await sendThrottledAlert(
       `booker_unstaffed:${result.bucket.code}`,
@@ -256,6 +282,11 @@ async function handle(req: NextRequest) {
     ).catch(logAlertSendFailure(`booking_window_extended:${result.routing.requested_code}`));
   }
 
+  // #4390: on a program lead's read, the served starts only the placeholder offers, so the
+  // confirm (#4391) can tell them from the real slots. Never rendered. Undefined for every
+  // other lead, which JSON leaves out, so their body is unchanged.
+  const placeholderStarts = program ? program.placeholderStarts.filter((s) => slots.includes(s)) : undefined;
+
   // Rule #259: leads must never see routing internals. Tier-drop is intentionally
   // invisible: we report the REQUESTED bucket code (what the lead asked for) and
   // serve the EFFECTIVE tier's slots, and the `routing` meta stays server-side.
@@ -279,6 +310,7 @@ async function handle(req: NextRequest) {
       emptyBecause,
       shownTier: result.routing.booked_tier,
       slotsComputedAt: result.computedAt ?? null,
+      placeholderStarts,
     },
     // Server-Timing is added LAST, so its total covers everything above. Only this
     // 200 carries it: the 404 an unknown and a hidden bucket share stays identical

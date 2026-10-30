@@ -213,6 +213,7 @@ type DuplicateWarning =
  */
 import type { ExistingCall } from "@/lib/booking/orchestration";
 import { leadRescheduleTimesUrl } from "@/lib/booking/reschedule-times-url";
+import { programLeadHeaders, programLeadTimesUrl } from "@/lib/booking/program-lead-header";
 import type { CalendarLinks } from "@/lib/booking/calendar-links";
 import AddToCalendar from "@/components/AddToCalendar";
 import { MarkedLabel } from "@/components/ui/MarkedLabel";
@@ -452,6 +453,7 @@ export default function Booker({
   parentOrigin,
   isTest = false,
   testPass = null,
+  programLeadToken = null,
   horizonDays,
   rescheduleReasons,
   cancelReasons,
@@ -715,12 +717,16 @@ export default function Booker({
   // (#629), the day grouping in the viewer's zone, the chosen day and the
   // loading / failed / empty states, so the booker and the reschedule surfaces
   // cannot drift apart again. No day is chosen until the lead chooses one.
+  // #4390: a program lead's token rides on the pool's times only: an advisor's own times
+  // (their link, or the move of a call booked through it) have no placeholder to add.
+  const timesProgramToken = agentLink || moveAdvisorToken ? null : programLeadToken;
   const picker = useSlotPicker({
     url: availabilityUrl,
     zone,
     leadZone: zone,
     slotsOverride: nextDaySlots,
     testPass,
+    programLeadToken: timesProgramToken,
   });
   const meta = picker.payload as AvailabilityResponse | null;
   /**
@@ -1989,9 +1995,15 @@ export default function Booker({
     // #2799: its OWN ceiling rather than the shared 20s one, because the full walk
     // for the biggest pool lands right about there. It is derived from the server
     // walk's worst case, so re-measuring that walk moves this with it.
+    // #4390: a program lead's token in a header and their zone in the address, as on
+    // the ordinary times read, so the placeholder's starts are offered out here too.
     const res = await getJson<unknown>(
-      `/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`,
-      { timeoutMs: NEXT_DAYS_TIMEOUT_MS, cache: "no-store", headers: testPassHeaders(testPass) },
+      programLeadTimesUrl(`/api/availability/next?bucket=${encodeURIComponent(bucketCode)}`, timesProgramToken, zone),
+      {
+        timeoutMs: NEXT_DAYS_TIMEOUT_MS,
+        cache: "no-store",
+        headers: { ...testPassHeaders(testPass), ...programLeadHeaders(timesProgramToken) },
+      },
     );
     // #2666: a refused test pass is neither "we could not look" nor "unreadable":
     // it has its own sentence (reload, or tell us), carried by the reply itself.

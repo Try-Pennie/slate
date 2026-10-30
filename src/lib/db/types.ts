@@ -862,6 +862,20 @@ export interface PlaceholderDayClaim {
   claimed_at: string;
 }
 
+/** #4390, migration 0215: what happened to program leads on one Eastern day. */
+export type ProgramLeadOutcomeKind = "times_fallback" | "limit_refused";
+
+/** #4390, migration 0215: one (Eastern day, kind) tally, written only by
+ *  `bump_program_lead_outcome`. */
+export interface ProgramLeadOutcome {
+  /** The Eastern day (YYYY-MM-DD) the outcomes happened on. */
+  day: string;
+  kind: ProgramLeadOutcomeKind;
+  occurrences: number;
+  first_at: string;
+  last_at: string;
+}
+
 /** #2090: one person whose Regal calls are not reported while Slate does not
  *  route to them. Every entry carries its reason, who added it and when. */
 export interface RegalCallIgnore {

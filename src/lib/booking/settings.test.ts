@@ -28,6 +28,7 @@ import {
   readPublicBookingPaused,
   readDemotionRerouteEnabled,
   readPlaceholderBookingEnabled,
+  readProgramLeadTimesSettings,
   readTransferOfferSettings,
   readPublicBookingPauseState,
   HORIZON_DEFAULT,
@@ -425,5 +426,37 @@ describe("readTransferOfferSettings", () => {
     await expect(readTransferOfferSettings()).resolves.toBeNull();
     maybeSingle.mockResolvedValue({ data: { transfer_offer_threshold: 3, transfer_line: "7865040671" }, error: null });
     await expect(readTransferOfferSettings()).resolves.toBeNull();
+  });
+});
+
+// #4390: the switch and the placeholder day limit, read once for a program lead's times. An
+// unreadable read must never show the placeholder's times: null, and the caller counts it.
+describe("readProgramLeadTimesSettings", () => {
+  beforeEach(() => {
+    maybeSingle.mockReset();
+  });
+
+  it("reads the stored switch and day limit", async () => {
+    maybeSingle.mockResolvedValue({ data: { placeholder_booking_enabled: true, placeholder_day_limit: 12 }, error: null });
+    await expect(readProgramLeadTimesSettings()).resolves.toEqual({ enabled: true, dayLimit: 12 });
+    maybeSingle.mockResolvedValue({ data: { placeholder_booking_enabled: false, placeholder_day_limit: 0 }, error: null });
+    await expect(readProgramLeadTimesSettings()).resolves.toEqual({ enabled: false, dayLimit: 0 });
+  });
+
+  it("reads a missing settings row as switched off, a real answer", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: null });
+    await expect(readProgramLeadTimesSettings()).resolves.toEqual({ enabled: false, dayLimit: 50 });
+  });
+
+  it("answers null, never a throw, when the read errors", async () => {
+    maybeSingle.mockResolvedValue({ data: null, error: { message: "column does not exist" } });
+    await expect(readProgramLeadTimesSettings()).resolves.toBeNull();
+  });
+
+  it("answers null for a limit outside the shape the column check holds", async () => {
+    for (const limit of [-1, 501, 1.5, null]) {
+      maybeSingle.mockResolvedValue({ data: { placeholder_booking_enabled: true, placeholder_day_limit: limit }, error: null });
+      await expect(readProgramLeadTimesSettings()).resolves.toBeNull();
+    }
   });
 });

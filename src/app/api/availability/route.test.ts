@@ -92,12 +92,25 @@ vi.mock("@/lib/booking/reschedule-times-live", () => rescheduleTimes);
 // route asks for the right code, and only for a bucket it served.
 const lineWake = vi.hoisted(() => ({ wakeConfirmLineForCode: vi.fn() }));
 vi.mock("@/lib/booking/confirm-line-live", () => lineWake);
+// #4390: a program lead's times. The rules are pinned by scripts/test-program-lead-times.ts
+// and the live reads by program-lead-times-live.test.ts; this proves the ROUTE hands the
+// token from its header, the zone and the real slots to them, serves what they answer,
+// and never asks them for an ordinary lead.
+const programTimes = vi.hoisted(() => ({
+  programLeadTimesLive: vi.fn(async (input: { realSlots: string[] }) => ({
+    slots: input.realSlots,
+    placeholderStarts: [] as string[],
+    outcome: "program" as string,
+  })),
+}));
+vi.mock("@/lib/booking/program-lead-times-live", () => programTimes);
 
 import { NextRequest } from "next/server";
 import { GENERIC_ERROR_MESSAGE } from "@/lib/api/errors";
 import { HIDDEN_TEST_BUCKET_CODES, PUBLIC_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { TEST_PASS_HEADER, TEST_PASS_REFUSAL_CODES } from "@/lib/embed/test-pass-header";
 import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
+import { PROGRAM_LEAD_HEADER } from "@/lib/booking/program-lead-header";
 import { log } from "@/lib/log";
 import type { SpanTimer } from "@/lib/api/server-timing";
 import { GET } from "./route";
@@ -1014,5 +1027,75 @@ describe("GET /api/availability answers the window it was asked about (#2220)", 
       expect(body.slots).toEqual(OFFERED);
       expect(body.emptyBecause).toBeNull();
     }
+  });
+});
+
+describe("GET /api/availability for a program lead (#4390)", () => {
+  const TOKEN = "00Q5f00000AbCdE.new.9999999999999.abc";
+  const REAL = "2099-01-01T15:00:00.000Z";
+  const EXTRA = "2099-01-01T16:00:00.000Z";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hours.loadBusinessHoursCached.mockResolvedValue({
+      zone: "America/New_York",
+      rules: [1, 2, 3, 4, 5, 6, 7].map((weekday) => ({ weekday, start_minute: 480, end_minute: 1020 })),
+      exceptions: [],
+      source: "stored" as const,
+    });
+    settings.loadBookingHorizonDays.mockResolvedValue(4);
+    eligible.eligibleAgentIdsCached.mockResolvedValue({ ids: ["u1"], fallbackApplied: false });
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), bucket: { code: "411", is_test: false }, slots: [REAL] });
+  });
+
+  function program(query = "", token: string | null = TOKEN) {
+    const headers = new Headers();
+    if (token) headers.set(PROGRAM_LEAD_HEADER, token);
+    return GET(new NextRequest(`http://localhost/api/availability?bucket=411${query}`, { headers }));
+  }
+
+  it("never asks for an ordinary lead, whose answer is unchanged", async () => {
+    const body = await (await program("", null)).json();
+    expect(programTimes.programLeadTimesLive).not.toHaveBeenCalled();
+    expect(body.slots).toEqual([REAL]);
+    expect(body).not.toHaveProperty("placeholderStarts");
+  });
+
+  it("hands the header's token, the zone and the real slots over, and serves the merged times", async () => {
+    programTimes.programLeadTimesLive.mockResolvedValueOnce({ slots: [REAL, EXTRA], placeholderStarts: [EXTRA], outcome: "program" });
+    const body = await (await program("&leadZone=America%2FChicago")).json();
+    expect(programTimes.programLeadTimesLive).toHaveBeenCalledWith({
+      token: TOKEN,
+      leadZone: "America/Chicago",
+      realSlots: [REAL],
+      eventType: expect.objectContaining({ duration_min: 30, min_notice_min: 0 }),
+    });
+    expect(body.slots).toEqual([REAL, EXTRA]);
+    expect(body.placeholderStarts).toEqual([EXTRA]);
+  });
+
+  it("applies the asked window to the placeholder's starts too", async () => {
+    programTimes.programLeadTimesLive.mockResolvedValueOnce({ slots: [REAL, EXTRA], placeholderStarts: [EXTRA], outcome: "program" });
+    const body = await (await program(`&to=${encodeURIComponent("2099-01-01T15:30:00.000Z")}`)).json();
+    expect(body.slots).toEqual([REAL]);
+    expect(body.placeholderStarts).toEqual([]);
+  });
+
+  it("offers the extra times with no empty reason when no real advisor is free, and still raises an unstaffed pool", async () => {
+    cache.getBucketSlotsWithFallback.mockResolvedValue({ ...slotsFor(false), bucket: { code: "411", is_test: false }, slots: [] });
+    eligible.eligibleAgentIdsCached.mockResolvedValue({ ids: [], fallbackApplied: false });
+    programTimes.programLeadTimesLive.mockResolvedValueOnce({ slots: [EXTRA], placeholderStarts: [EXTRA], outcome: "program" });
+    const body = await (await program()).json();
+    expect(body.slots).toEqual([EXTRA]);
+    expect(body.emptyBecause).toBeNull();
+    expect(sendThrottledAlert.mock.calls.some(([k]) => String(k) === "booker_unstaffed:411")).toBe(true);
+  });
+
+  it("logs how the read went and never the token", async () => {
+    programTimes.programLeadTimesLive.mockResolvedValueOnce({ slots: [REAL], placeholderStarts: [], outcome: "fallback:counts-unreadable" });
+    await program();
+    const logged = JSON.stringify(vi.mocked(log.info).mock.calls);
+    expect(logged).toContain("fallback:counts-unreadable");
+    expect(logged).not.toContain(TOKEN);
   });
 });

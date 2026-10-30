@@ -43,6 +43,8 @@ import type {
   RegalCallIgnore,
   ProgramLead,
   PlaceholderDayClaim,
+  ProgramLeadOutcome,
+  ProgramLeadOutcomeKind,
   BookingOutbox,
   BookingReservation,
   BookingApiOutcomeDaily,
@@ -244,6 +246,7 @@ export interface Database {
       regal_call_ignores: Table<RegalCallIgnore>;
       program_leads: Table<ProgramLead>;
       placeholder_day_claims: Table<PlaceholderDayClaim>;
+      program_lead_outcomes: Table<ProgramLeadOutcome>;
       bucket_slots: Table<BucketSlotsRow>;
       pending_event_deletions: Table<PendingEventDeletion>;
       booking_outbox: Table<BookingOutbox>;
@@ -790,6 +793,11 @@ export interface Database {
       placeholder_day_counts: {
         Args: { p_from: string; p_to: string };
         Returns: { call_day: string; held: number }[];
+      };
+      /** #4390 (migration 0215): count one program lead outcome on today's Eastern day; the new total. */
+      bump_program_lead_outcome: {
+        Args: { p_kind: ProgramLeadOutcomeKind };
+        Returns: number;
       };
       /**
        * #4202, migration 0208: commit_reschedule for a move onto the placeholder advisor,
