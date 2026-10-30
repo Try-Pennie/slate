@@ -80,10 +80,14 @@ export function formatProgramLeadFallbacksAlert(day: string, count: number): str
   );
 }
 
+// The count only rises within a day, so this clears mostly when the Eastern day turns. It
+// says only what was measured: today's count is under the line. It never claims the read
+// that was failing has recovered, which the count cannot see (L11).
 export function formatProgramLeadFallbacksRecovery(count: number): string {
   return (
-    `Program leads are being shown the extra times again: ${count} shown real times only so far today, ` +
-    `under the ${PROGRAM_LEAD_FALLBACK_DAY_LIMIT} that pages.`
+    `${count} program ${count === 1 ? "lead has" : "leads have"} been shown real times only so far today, ` +
+    `under the ${PROGRAM_LEAD_FALLBACK_DAY_LIMIT} that pages. A new day's count starts at zero, so this does ` +
+    `not say the failing read recovered: check the program-lead-times logs if it pages once more.`
   );
 }
 

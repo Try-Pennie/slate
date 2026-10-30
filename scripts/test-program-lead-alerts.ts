@@ -198,5 +198,13 @@ for (const t of [
   assert(!t.toLowerCase().startsWith("slate"), "an alert never opens with the word Slate");
 }
 assert(formatProgramLeadFallbacksAlert("2026-10-29", 1).includes("1 program lead was"), "one is said in the singular");
+// The all clear claims only what the count measured: it mostly fires when the day turns,
+// so it must not say the failing read recovered or that the extra times are back (L11).
+{
+  const clear = formatProgramLeadFallbacksRecovery(2).toLowerCase();
+  assert(!clear.includes("again"), "the fallbacks all clear does not claim the extra times are back");
+  assert(clear.includes("so far today") && clear.includes("not say the failing read recovered"), "it says what it measured and what it did not");
+  assert(formatProgramLeadFallbacksRecovery(1).includes("1 program lead has"), "the all clear says one in the singular");
+}
 
 finish();
