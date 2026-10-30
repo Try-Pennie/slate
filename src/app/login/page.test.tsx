@@ -173,10 +173,6 @@ describe("LoginPage", () => {
   });
 });
 
-// The callback bounces a refused sign-in here rather than throwing (#1648). What
-// arrives is a code, so the page has to have copy for it: an unmapped code renders
-// NOTHING, which leaves the person back on the sign-in screen with no explanation
-// and the same button they just pressed.
 // The partner sign in page shares this page's frame and got its own panel words (#4399) and
 // a way to this page (#4411); this page keeps exactly what it had.
 describe("LoginPage stays the staff page", () => {
@@ -199,6 +195,10 @@ describe("LoginPage stays the staff page", () => {
   });
 });
 
+// The callback bounces a refused sign-in here rather than throwing (#1648). What
+// arrives is a code, so the page has to have copy for it: an unmapped code renders
+// NOTHING, which leaves the person back on the sign-in screen with no explanation
+// and the same button they just pressed.
 describe("LoginPage sign-in error copy", () => {
   it("explains a refused provisioning as something to try again", () => {
     params.current = new URLSearchParams("error=provision_failed");
