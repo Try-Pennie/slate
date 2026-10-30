@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { browserSignInPath } from "@/lib/auth/browser-sign-in-path";
 import { coordinatorDeskUser } from "@/lib/auth";
 import StandaloneTheme from "@/components/StandaloneTheme";
 import { PageShell } from "@/components/ui/PageShell";
@@ -34,7 +35,7 @@ export const dynamic = "force-dynamic";
  */
 export default async function CoordinatorPage({ searchParams }: { searchParams: Promise<{ frame?: string }> }) {
   const me = await coordinatorDeskUser();
-  if (!me) redirect("/login");
+  if (!me) redirect(await browserSignInPath());
   const sp = await searchParams;
 
   const f = await designFrame(sp.frame);

@@ -1,4 +1,5 @@
 import { redirect } from "next/navigation";
+import { browserSignInPath } from "@/lib/auth/browser-sign-in-path";
 import { coordinatorDeskUser, currentUser } from "@/lib/auth";
 import { COORDINATOR_PAGE, landingPathFor } from "@/lib/auth/landing";
 
@@ -17,5 +18,7 @@ export default async function Home() {
   const me = await currentUser();
   if (me) redirect(landingPathFor(me.role));
   if (await coordinatorDeskUser()) redirect(COORDINATOR_PAGE);
-  redirect("/login");
+  // #4412: the sign in page this browser last used, so a partner's refused session is not
+  // sent to the Google only staff login.
+  redirect(await browserSignInPath());
 }
