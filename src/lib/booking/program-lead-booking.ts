@@ -209,7 +209,7 @@ async function claimDay(
   const day = placeholderCallDay(Date.parse(startIso));
   const granted = await attempt(() => deps.claimPlaceholderDay(day, claimKey, bookingId));
   if (!granted) {
-    // Its own tag, so the refusals are countable before #4392 counts them per day.
+    // Its own tag beside the per day count (`countLimitRefusal`, shown on /admin/program-leads).
     log.info("program-lead-day-full", { msg: "a program lead met a full placeholder day", call_day: day, bucket_code: bucket.code, ...(bookingId ? { booking_id: bookingId } : {}) });
     try {
       await deps.countLimitRefusal(day);

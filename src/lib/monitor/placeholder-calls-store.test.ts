@@ -3,9 +3,11 @@
 // empty answer that would read as "nobody called".
 import { describe, expect, it } from "vitest";
 import {
+  loadCallFeedFirstArrivalAfterMs,
   loadCallFeedNewestReceivedMs,
   loadPlaceholderCallCandidates,
   loadPlaceholderCalls,
+  loadProgramLeadBookings,
 } from "./placeholder-calls-store";
 
 type Filter = [string, ...unknown[]];
@@ -23,7 +25,7 @@ function fakeDb(results: { data: unknown; error: { message: string } | null }[])
         q.select = cols;
         return chain;
       };
-      for (const op of ["eq", "in", "gt", "gte", "lte", "order", "limit"]) {
+      for (const op of ["eq", "in", "gt", "gte", "lt", "lte", "order", "limit"]) {
         chain[op] = (...args: unknown[]) => {
           q.filters.push([op, ...args]);
           return chain;
@@ -101,5 +103,52 @@ describe("loadCallFeedNewestReceivedMs", () => {
   it("throws on a failed read", async () => {
     const { db } = fakeDb([{ data: null, error: { message: "boom" } }]);
     await expect(loadCallFeedNewestReceivedMs(db)).rejects.toThrow(/feed newest/);
+  });
+});
+
+// #4392: the program leads admin page's bookings, and the feed's first arrival after a
+// late call was due, which decides whether yesterday's call belongs to today's list.
+describe("loadProgramLeadBookings", () => {
+  it("reads program bookings in the real buckets, owed statuses only, started in the window, every page", async () => {
+    const row = { id: "b1", kind: "routed", status: "confirmed", starts_at: "s", ends_at: "e", salesforce_id: null, agent_name: "Ada", buckets: { is_test: false } };
+    const { db, queries } = fakeDb([{ data: [row], error: null }]);
+    const { buckets: _b, ...plain } = row;
+    expect(await loadProgramLeadBookings(db, "2026-10-16T04:00:00.000Z", "2026-10-30T04:00:00.000Z")).toEqual([plain]);
+    const q = queries[0]!;
+    expect(q.table).toBe("bookings");
+    expect(q.select).toContain("buckets!inner(is_test)");
+    expect(q.filters).toContainEqual(["eq", "buckets.is_test", false]);
+    expect(q.filters).toContainEqual(["eq", "program_lead", true]);
+    expect(q.filters).toContainEqual(["in", "status", ["confirmed", "rescheduled", "completed"]]);
+    expect(q.filters).toContainEqual(["gte", "starts_at", "2026-10-16T04:00:00.000Z"]);
+    expect(q.filters).toContainEqual(["lt", "starts_at", "2026-10-30T04:00:00.000Z"]);
+  });
+
+  it("throws on a failed read, never answering a fortnight with no program bookings", async () => {
+    const { db } = fakeDb([{ data: null, error: { message: "boom" } }]);
+    await expect(loadProgramLeadBookings(db, "a", "b")).rejects.toThrow(/program lead bookings/);
+  });
+});
+
+describe("loadCallFeedFirstArrivalAfterMs", () => {
+  it("answers the first arrival at or after the instant, one row", async () => {
+    const { db, queries } = fakeDb([{ data: { received_at: "2026-10-26T12:03:00.000Z" }, error: null }]);
+    expect(await loadCallFeedFirstArrivalAfterMs(db, "2026-10-26T03:45:00.000Z")).toBe(Date.UTC(2026, 9, 26, 12, 3));
+    expect(queries[0]!.table).toBe("regal_call_outcomes");
+    expect(queries[0]!.filters).toContainEqual(["gte", "received_at", "2026-10-26T03:45:00.000Z"]);
+    expect(queries[0]!.filters).toContainEqual(["order", "received_at", { ascending: true }]);
+    expect(queries[0]!.filters).toContainEqual(["limit", 1]);
+  });
+
+  it("answers null when nothing has arrived since", async () => {
+    const { db } = fakeDb([{ data: null, error: null }]);
+    expect(await loadCallFeedFirstArrivalAfterMs(db, "x")).toBeNull();
+  });
+
+  it("throws on a failed read or an unreadable stamp", async () => {
+    const failed = fakeDb([{ data: null, error: { message: "boom" } }]);
+    await expect(loadCallFeedFirstArrivalAfterMs(failed.db, "x")).rejects.toThrow(/first arrival/);
+    const garbled = fakeDb([{ data: { received_at: "not a time" }, error: null }]);
+    await expect(loadCallFeedFirstArrivalAfterMs(garbled.db, "x")).rejects.toThrow(/unreadable/);
   });
 });

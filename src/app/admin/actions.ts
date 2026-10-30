@@ -121,8 +121,10 @@ import {
   parseDefaultBucketForm,
   parseEventDescriptionForm,
   readNearlyFullPct,
+  readProgramLeadTimesSettings,
   readTransferOfferSettings,
 } from "@/lib/booking/settings";
+import { parsePlaceholderDayLimit, PROGRAM_LEADS_HREF } from "@/lib/admin/program-leads-copy";
 import { parseTransferOfferForm } from "@/lib/admin/transfer-offer-form";
 import { parseDaysOfferedForm } from "@/lib/booking/days-offered";
 import { markAllBucketSlotsStale } from "@/lib/availability/precompute";
@@ -3783,6 +3785,56 @@ export async function setPlaceholderBookingEnabled(form: FormData): Promise<void
 }
 
 const lowerFirst = (s: string): string => s.charAt(0).toLowerCase() + s.slice(1);
+
+/**
+ * Save the placeholder day limit (#4392, `booking_settings.placeholder_day_limit`, migration
+ * 0213): the most calls on the placeholder advisor that program leads may book on one Eastern
+ * day, counted by the day of the call. ADMINS ONLY (Dan, 2026-10-29).
+ *
+ * WHO: `requireAdmin`, which is `requireRole("admin")`, checked here and never trusted to the
+ * page hiding the form. WHOSE DATA: the one org wide settings row. Read on every program
+ * lead's times (`readProgramLeadTimesSettings`) and by every claim (`claim_placeholder_day`),
+ * so a save lands from the next one.
+ *
+ * Read by `parsePlaceholderDayLimit`, whose bounds are the column check's, so anything outside
+ * 0 to 500 is refused with what to enter and nothing is written. A column scoped upsert on
+ * id=1, so it cannot clobber the other settings, and idempotent (assume it runs twice).
+ * Refused before the audit entry, the revalidation and the saved notice, so none of them
+ * claims a value that was not stored (#2379), and the entry carries the limit it replaced
+ * as well as the one it became (L529).
+ */
+export async function setPlaceholderDayLimit(form: FormData): Promise<void> {
+  const actor = await requireAdmin();
+  const parsed = parsePlaceholderDayLimit(String(form.get("placeholder_day_limit") ?? ""));
+  if ("error" in parsed) {
+    redirect(`${PROGRAM_LEADS_HREF}${refusedQuery(parsed.error)}`);
+  }
+  // The limit it replaces. A read that fails does not stop the save; the entry says so.
+  const before = await readProgramLeadTimesSettings();
+  const { error } = await supabaseAdmin().from("booking_settings").upsert(
+    {
+      id: 1,
+      placeholder_day_limit: parsed.limit,
+      updated_at: new Date().toISOString(),
+      updated_by: actor.id,
+    },
+    { onConflict: "id" },
+  );
+  if (error) {
+    redirect(`${PROGRAM_LEADS_HREF}${refusedQuery(writeRefused("The placeholder day limit", error))}`);
+  }
+  await recordAudit({
+    orgId: actor.org_id,
+    actorId: actor.id,
+    action: "booking.settings",
+    details: {
+      from: { placeholder_day_limit: before?.dayLimit ?? "unreadable" },
+      to: { placeholder_day_limit: parsed.limit },
+    },
+  });
+  revalidatePath(PROGRAM_LEADS_HREF);
+  redirect(`${PROGRAM_LEADS_HREF}${savedQuery("placeholder-day-limit")}`);
+}
 
 /**
  * Save when the coordinator page offers a live transfer, and to which line (#4380,

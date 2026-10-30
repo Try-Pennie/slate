@@ -49,6 +49,28 @@ export async function loadPlaceholderCallCandidates(
   );
 }
 
+/**
+ * Program bookings in the real buckets whose call starts in [sinceIso, untilIso), on the
+ * placeholder or on a real advisor, for the program leads admin page (#4392). Every page
+ * of them: a day can hold the placeholder limit (up to 500) plus real calls, so one capped
+ * read would undercount a busy fortnight.
+ */
+export async function loadProgramLeadBookings(db: Db, sinceIso: string, untilIso: string): Promise<PlaceholderBookingRow[]> {
+  const rows = await selectAllPages<PlaceholderBookingRow & { buckets?: unknown }>("program lead bookings", "id", () =>
+    db
+      // agent-link-ok: every program booking, wherever it landed; the page counts the
+      // placeholder's apart by kind.
+      .from("bookings")
+      .select(`${BOOKING_COLUMNS}, buckets!inner(is_test)`)
+      .eq("buckets.is_test", false)
+      .eq("program_lead", true)
+      .in("status", OWED_STATUSES)
+      .gte("starts_at", sinceIso)
+      .lt("starts_at", untilIso) as unknown as PageableQuery,
+  );
+  return rows.map(({ buckets: _bucket, ...b }) => b);
+}
+
 /** The bookings behind the open pages, by primary key. A booking that is gone is simply absent. */
 export async function loadPlaceholderBookingsById(db: Db, ids: string[]): Promise<PlaceholderBookingRow[]> {
   const chunks = await inIdChunks("monitor placeholder call open pages", ids, async (chunk) =>
@@ -74,6 +96,29 @@ export async function loadPlaceholderCalls(db: Db, leadKeys: string[], sinceIso:
     ),
   );
   return chunks.flat();
+}
+
+/**
+ * The feed's first arrival at or after `sinceIso`, anybody's (#4392): whether the feed
+ * heard anything between a late call falling due and the day turning, which decides
+ * whether yesterday's unserved call was ever judgeable yesterday. One indexed row; null
+ * when nothing has arrived since. An unreadable stamp throws, as the newest read does.
+ */
+export async function loadCallFeedFirstArrivalAfterMs(db: Db, sinceIso: string): Promise<number | null> {
+  const row = unwrap(
+    await db
+      .from("regal_call_outcomes")
+      .select("received_at")
+      .gte("received_at", sinceIso)
+      .order("received_at", { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    "monitor placeholder call feed first arrival",
+  ) as { received_at: string } | null;
+  if (row === null) return null;
+  const ms = parseStampMs(row.received_at);
+  if (ms === null) throw new Error("regal_call_outcomes first arrival received_at is unreadable");
+  return ms;
 }
 
 /**

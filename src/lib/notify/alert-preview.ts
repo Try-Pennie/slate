@@ -649,10 +649,19 @@ import type { HandoffKind } from "@/lib/handoffs/kinds";
 import { formatReminder } from "@/lib/notify/repeat-policy";
 import { marciaFailureAlert, marciaGatewayRefusedAlert, marciaTokenRefusedAlert } from "@/lib/mcp-booking/alert-copy";
 import {
-  formatPlaceholderCallAlert,
+  formatPlaceholderCallsAlert,
+  formatPlaceholderCallsAllClear,
   formatPlaceholderCallEnding,
+  RETIRED_PLACEHOLDER_CALL_TEXT,
   type PlaceholderBookingRow,
 } from "@/lib/monitor/placeholder-calls";
+import {
+  formatProgramLeadFallbacksAlert,
+  formatProgramLeadFallbacksRecovery,
+  formatProgramLeadRegistrationsAlert,
+  formatProgramLeadRegistrationsRecovery,
+  formatProgramLeadRegistrationsSwitchedOff,
+} from "@/lib/monitor/program-lead-alerts";
 import {
   formatPlaceholderSeatAlert,
   formatPlaceholderSeatRecovery,
@@ -832,6 +841,14 @@ const PREVIEW_PLACEHOLDER_ENDING = {
   bookingId: PREVIEW_PLACEHOLDER_CALL.id,
   booking: PREVIEW_PLACEHOLDER_CALL,
   url: PREVIEW_PLACEHOLDER_URL,
+};
+/** #4392: a second invented placeholder call the same day, for the day's list. */
+const PREVIEW_PLACEHOLDER_CALL_2: PlaceholderBookingRow = {
+  ...PREVIEW_PLACEHOLDER_CALL,
+  id: "5c7e1b20-9a4d-4f36-b8e2-0d3a6f1c9e57",
+  starts_at: "2026-07-29T19:30:00.000Z",
+  ends_at: "2026-07-29T20:00:00.000Z",
+  salesforce_id: "00Q5f00000ExAmPLEB",
 };
 const PREVIEW_SEAT = "marcia.example@trypennie.com";
 
@@ -3861,73 +3878,103 @@ export const ALERT_PREVIEWS: AlertPreview[] = [
     channel: "recovery",
     text: formatRegalCallEnding({ userId: "4b1e0c55-0000-4000-8000-000000000000", ending: "gone", user: null, ignoreReason: null }),
   },
-  // #4206. A placeholder call Regal never called, and each way the page ends.
+  // #4206, one summary for the day since #4392. Placeholder calls Regal never called,
+  // and each way a listed call leaves the list.
   {
-    key: "placeholder_call_unserved:*",
-    state: "no Regal call to the customer after the booked time",
+    key: "placeholder_calls_unserved",
+    state: "one call past its time with no Regal call",
     channel: "alert",
-    text: formatPlaceholderCallAlert(PREVIEW_PLACEHOLDER_CALL, PREVIEW_PLACEHOLDER_URL),
+    text: formatPlaceholderCallsAlert({ unserved: [PREVIEW_PLACEHOLDER_CALL], unknown: 0, ended: [], bookingUrl: previewBookingUrl }),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "an advisor's call reached them",
-    channel: "recovery",
-    text: formatPlaceholderCallEnding({
-      ...PREVIEW_PLACEHOLDER_ENDING,
-      ending: "reached",
-      callMs: Date.UTC(2026, 6, 29, 18, 22),
-      callAi: false,
+    key: "placeholder_calls_unserved",
+    state: "a second call joins the list, one more not judgeable yet, and an earlier one was reached",
+    channel: "alert",
+    text: formatPlaceholderCallsAlert({
+      unserved: [PREVIEW_PLACEHOLDER_CALL, PREVIEW_PLACEHOLDER_CALL_2],
+      unknown: 1,
+      ended: [
+        {
+          bookingId: "0b9e3c4d-1f2a-4b5c-8d6e-7f8091a2b3c4",
+          ending: "reached",
+          text: formatPlaceholderCallEnding({
+            ...PREVIEW_PLACEHOLDER_ENDING,
+            booking: { ...PREVIEW_PLACEHOLDER_CALL, starts_at: "2026-07-29T15:00:00.000Z", ends_at: "2026-07-29T15:30:00.000Z" },
+            ending: "reached",
+            callMs: Date.UTC(2026, 6, 29, 15, 41),
+            callAi: false,
+          }),
+        },
+      ],
+      bookingUrl: previewBookingUrl,
     }),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "Regal's AI agent called them",
+    key: "placeholder_calls_unserved",
+    state: "nothing listed today",
     channel: "recovery",
-    text: formatPlaceholderCallEnding({
-      ...PREVIEW_PLACEHOLDER_ENDING,
-      ending: "reached",
-      callMs: Date.UTC(2026, 6, 29, 18, 3),
-      callAi: true,
-    }),
+    text: formatPlaceholderCallsAllClear([]),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "the call was cancelled",
+    key: "placeholder_calls_unserved",
+    state: "each listed call ended its own way",
     channel: "recovery",
-    text: formatPlaceholderCallEnding({ ...PREVIEW_PLACEHOLDER_ENDING, ending: "cancelled" }),
+    text: formatPlaceholderCallsAllClear(
+      (
+        [
+          ["reached", { callMs: Date.UTC(2026, 6, 29, 18, 22), callAi: false }],
+          ["reached", { callMs: Date.UTC(2026, 6, 29, 18, 3), callAi: true }],
+          ["cancelled", {}],
+          ["moved-to-advisor", { booking: { ...PREVIEW_PLACEHOLDER_CALL, kind: "routed", agent_name: "Ada Example" } }],
+          // The row a move leaves holds the NEW start.
+          ["rescheduled", { booking: { ...PREVIEW_PLACEHOLDER_CALL, starts_at: "2026-07-30T15:00:00.000Z", ends_at: "2026-07-30T15:30:00.000Z" } }],
+          ["day-over", {}],
+          ["gone", { booking: undefined, url: undefined }],
+        ] as const
+      ).map(([ending, over]) => ({
+        bookingId: PREVIEW_PLACEHOLDER_CALL.id,
+        ending,
+        text: formatPlaceholderCallEnding({ ...PREVIEW_PLACEHOLDER_ENDING, ...over, ending }),
+      })),
+    ),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "the call was moved onto a real advisor",
+    // The retired per booking family's last words, once, on a page it left open.
+    key: "placeholder_calls_unserved",
+    state: "a page the retired per call alert left open is closed",
     channel: "recovery",
-    text: formatPlaceholderCallEnding({
-      ...PREVIEW_PLACEHOLDER_ENDING,
-      booking: { ...PREVIEW_PLACEHOLDER_CALL, kind: "routed", agent_name: "Ada Example" },
-      ending: "moved-to-advisor",
-    }),
+    text: RETIRED_PLACEHOLDER_CALL_TEXT,
+  },
+  // #4392. Program leads shown real times only, and not being registered.
+  {
+    key: "program_lead_fallbacks",
+    state: "seven fallbacks today",
+    channel: "alert",
+    text: formatProgramLeadFallbacksAlert("2026-07-29", 7),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "the call was moved to a later time",
+    key: "program_lead_fallbacks",
+    state: "a new day under the line",
     channel: "recovery",
-    text: formatPlaceholderCallEnding({
-      ...PREVIEW_PLACEHOLDER_ENDING,
-      // The row a move leaves holds the NEW start.
-      booking: { ...PREVIEW_PLACEHOLDER_CALL, starts_at: "2026-07-30T15:00:00.000Z", ends_at: "2026-07-30T15:30:00.000Z" },
-      ending: "rescheduled",
-    }),
+    text: formatProgramLeadFallbacksRecovery(1),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "three days on with no call, the watch stands down",
-    channel: "recovery",
-    text: formatPlaceholderCallEnding({ ...PREVIEW_PLACEHOLDER_ENDING, ending: "stopped-watching" }),
+    key: "program_lead_registrations_zero",
+    state: "none since the last business day opened",
+    channel: "alert",
+    text: formatProgramLeadRegistrationsAlert({ isoDate: "2026-07-28", openMs: Date.UTC(2026, 6, 28, 13, 0) }, "America/New_York"),
   },
   {
-    key: "placeholder_call_unserved:*",
-    state: "the booking is no longer in Slate",
+    key: "program_lead_registrations_zero",
+    state: "registrations counted again",
     channel: "recovery",
-    text: formatPlaceholderCallEnding({ bookingId: PREVIEW_PLACEHOLDER_CALL.id, ending: "gone" }),
+    text: formatProgramLeadRegistrationsRecovery(4),
+  },
+  {
+    key: "program_lead_registrations_zero",
+    state: "the program was switched off",
+    channel: "recovery",
+    text: formatProgramLeadRegistrationsSwitchedOff(),
   },
   // #4206. The placeholder's Google seat.
   {

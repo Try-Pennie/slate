@@ -670,7 +670,7 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       // sentence, never the taken time 409's (L11): that time is not taken, and the
       // booker reloads to the day's real times. Refunded, with a retry credit, exactly
       // as a taken time is, because the next pick is not a burst. Logged under its own
-      // tag where it was refused; counting it per day is #4392's.
+      // tag where it was refused, and counted per day by `countLimitRefusal` (#4392).
       if (err instanceof PlaceholderDayFullError) {
         await refundAll();
         await grantBookingRetryCredit(ip);

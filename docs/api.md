@@ -1039,9 +1039,10 @@ coverage move without reading the booking.
   `slateBookingLink` into the Lead's `calBookingLink__c`, which is how coordinators
   open a placeholder call to move or cancel it. Slate checks the pool half (#4206):
   a placeholder call whose customer's Lead gets no Regal `call.completed` by 15
-  minutes past its booked end pages `placeholder_call_unserved:*`, matched on the
-  Lead id Regal sends as the call's `userId` (`regal_call_outcomes`), so a journey
-  that stops branching on `slateGhostBooking` shows up as those pages.
+  minutes past its booked end is listed in `placeholder_calls_unserved`, one summary
+  for the Eastern day, matched on the Lead id Regal sends as the call's `userId`
+  (`regal_call_outcomes`), so a journey that stops branching on `slateGhostBooking`
+  shows up as a growing list.
 - `generic` (Cadence and any other subscriber): body `{ "event", "data" }` with
   headers `x-slate-event`, `x-slate-timestamp`, `x-slate-delivery-id`, and an
   HMAC `x-slate-signature` of `sha256=hex(hmac(secret, "<timestamp>.<body>"))`

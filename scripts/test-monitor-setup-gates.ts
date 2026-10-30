@@ -38,6 +38,7 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
   assert(g.bufferBreach.run, "a healthy tick runs the buffer breach check");
   assert(g.placeholderCalls.run, "a healthy tick runs the unserved placeholder call check");
   assert(g.transferQueue.run, "a healthy tick runs the transfer queue probe");
+  assert(g.programLeadRegistrations.run, "a healthy tick runs the zero program lead registrations check");
 }
 
 // --- each read, alone, gates exactly the checks that depend on it --------------
@@ -112,6 +113,10 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     // whole business day, so the org's week is the one read that stands it down.
     const transfer = c.name !== "businessHours";
     eq(g.transferQueue.run, transfer, `${c.name} unreadable: transfer queue probe runs = ${transfer}`);
+    // #4392: the zero registrations check judges the last whole business day, so the
+    // org's week is the one read that stands it down.
+    const registrations = c.name !== "businessHours";
+    eq(g.programLeadRegistrations.run, registrations, `${c.name} unreadable: zero registrations check runs = ${registrations}`);
   }
 }
 
@@ -246,6 +251,9 @@ const with_ = (over: Partial<SetupReadiness>): SetupReadiness => ({ ...ALL_SETUP
     placeholderCalls: true,
     // #4380: no switch, only the coded daily repeat; its threshold is a booking setting.
     transferQueue: true,
+    // #4392: no monitor switch (it is armed in code and reads the program's own switch),
+    // only the coded daily repeat.
+    programLeadRegistrations: true,
     // An armed switch (and, for the volume alarm, the floors) decides whether each
     // of these pages, so none may judge on a guessed one.
     availabilityTruth: false,

@@ -288,4 +288,30 @@ function annotationNear(lines: string[], i: number, shape: RegExp): boolean {
   assert(produced.size > 0, "and the authorizer really counts something, or the check is vacuous");
 }
 
+// ------------------------- the full day refusals are counted, and say where (#4392)
+
+// A program lead refused because the placeholder's day was full is the limit doing its
+// job, so it stays out of the failure share. #4392 built what the two entries used to
+// defer to: each refusal is bumped into program_lead_outcomes (kind limit_refused) on the
+// Eastern day it HAPPENED, which is not the day of the call the admin page counts
+// bookings by, and the admin page shows it beside them. The entries must say so, and must
+// no longer read as a promise still owed.
+{
+  for (const id of ["placeholder_day_full", "reschedule_placeholder_day_full"]) {
+    const r = refusalPath(id);
+    assert(r !== undefined, `${id} is in the catalog`);
+    if (!r) continue;
+    eq(r.rateSignal.kind, "none", `${id} no longer defers its signal: it is counted, and deliberately not paged`);
+    assert(r.why.includes("program_lead_outcomes"), `${id} names where it is counted`);
+    assert(/Eastern day it happened/.test(r.why), `${id} says it counts on the Eastern day it happened, not the day of the call`);
+    assert(r.why.includes("/admin/program-leads"), `${id} names the page that shows it`);
+    assert(!/until then|until #4392|by #4392/i.test(r.why), `${id} no longer reads as waiting on #4392`);
+  }
+  eq(
+    REFUSAL_CATALOG.filter((r) => r.rateSignal.kind === "deferred" && r.rateSignal.issue === 4392).map((r) => r.id),
+    [],
+    "nothing defers to #4392 any more, which is the issue that built it",
+  );
+}
+
 finish();

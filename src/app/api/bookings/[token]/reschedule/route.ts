@@ -285,7 +285,7 @@ async function handlePost(
       // all gone. The call did not move and nothing was invited (the claim comes first).
       // Its own reason, code and sentence, never the taken time one (L11); not one of the
       // reasons that offers alternatives, since the reloaded picker shows the day's real
-      // times. Counted per day by #4392; logged under its own tag where it was refused.
+      // times. Counted per day (`countLimitRefusal`, #4392) and logged under its own tag where it was refused.
       if (err instanceof PlaceholderDayFullError) {
         // refusal: reschedule_placeholder_day_full
         return NextResponse.json(

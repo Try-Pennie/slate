@@ -38,6 +38,21 @@ export function placeholderCallDay(startMs: number): string {
   return DateTime.fromMillis(startMs, { zone: PLACEHOLDER_DAY_ZONE }).toISODate() ?? "";
 }
 
+/**
+ * The instant the Eastern day `day` (YYYY-MM-DD) begins: the lower bound
+ * `placeholder_day_held` reads a day's calls from. A day is never its start plus 24
+ * hours, because the day the clocks go back is 25 hours long (#4392).
+ */
+export function placeholderDayStartMs(day: string): number {
+  return DateTime.fromISO(day, { zone: PLACEHOLDER_DAY_ZONE }).startOf("day").toMillis();
+}
+
+/** The `count` Eastern days ending with today, newest first (#4392). */
+export function placeholderDaysBack(nowMs: number, count: number): string[] {
+  const today = DateTime.fromMillis(nowMs, { zone: PLACEHOLDER_DAY_ZONE }).startOf("day");
+  return Array.from({ length: count }, (_, i) => today.minus({ days: i }).toISODate() ?? "");
+}
+
 /** The event type's three facts the starts depend on. */
 export interface ProgramTimesEventType {
   duration_min: number;

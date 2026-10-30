@@ -1302,7 +1302,7 @@ lane family above: the memory figure is unknown, not healthy, until the read is 
 
 ## A call on the placeholder advisor is at risk
 
-Keys: `placeholder_call_unserved:*`, `placeholder_seat_failing`, `placeholder_missing`.
+Keys: `placeholder_calls_unserved`, `placeholder_seat_failing`, `placeholder_missing`.
 
 A coordinator booked a customer at the time they named, nobody real was free, and the
 call went on the placeholder advisor, Marcia (booking kind `staff_placed`). Nobody dials
@@ -1310,27 +1310,34 @@ as the placeholder: Regal sends the call to the pool at its time, and Marcia tex
 customer. The invite and the 24 hour reminder go out from the placeholder's own Google
 seat. How the path works: `docs/architecture.md`, "The placeholder advisor path".
 
-**`placeholder_call_unserved:<booking>`** says the call's booked end is more than 15
-minutes past and Regal's call feed holds no call to that customer's Lead, answered or
-not, from 15 minutes before the start. It judged only after the feed had received
-somebody's call past that time, so it is not a quiet feed. The page names the Lead id
-and links the booking.
+**`placeholder_calls_unserved`** is ONE summary for the Eastern day (#4392). It lists every
+placeholder call so far today whose booked end is more than 15 minutes past with no call
+to that customer's Lead in Regal's call feed, answered or not, from 15 minutes before the
+start, each by its Lead id and booking link. A call is judged only after the feed has
+received somebody's call past its due time, so it is not a quiet feed; one the feed cannot
+judge yet is counted on its own line, never listed. A new name in the list posts at once;
+an unchanged list is said again once a day.
 
-1. Reach the customer. Find the Lead in Salesforce by the id on the page and call them
-   from Regal. That call arriving in the feed closes the page as a recovery.
+1. Reach each customer. Find the Lead in Salesforce by the id on the page and call them
+   from Regal. That call arriving in the feed takes them off the list.
 2. If they want another time, or no call: open the manage link in the Lead's
    `calBookingLink__c` and move or cancel it. A move to a later time, a move onto a real
-   advisor and a cancel each close the page in their own words, none as a recovery.
+   advisor and a cancel each take the call off the list in their own words, none as a
+   recovery. How a call left the list is said on the next post, and in the all clear.
 3. **Several at once is Regal, not the customers.** Check that the journeys on Slate's
    events still branch on `slateGhostBooking` and send those calls to the pool (the
    Regal contract, `docs/api.md`, "Delivery formats"), and whether `regal_calls_quiet` or
    `regal_call_outcomes_short` is firing too.
 4. What it cannot see: a call still in progress, because Regal posts a call only when it
-   completes. A conversation running past the booked end and the grace can page and then
-   recover by itself when it ends. Overnight the feed is quiet, so a late evening call is
-   judged once the next morning's first calls arrive.
-5. A page still open three days after the booked start closes as a stand down saying
-   nothing was fixed, before the per booking prune would delete it with no message.
+   completes. A conversation running past the booked end and the grace can be listed and
+   then leave the list by itself when it ends. Overnight the feed is quiet, so a late
+   evening call is judged once the next morning's first calls arrive, and is listed on
+   that day's list, since nobody was told of it the night before.
+5. When the Eastern day turns, a call still listed leaves the list as a stand down saying
+   nothing was fixed. Reach the customer from Salesforce as in step 1.
+6. It replaced a page per booking, `placeholder_call_unserved:<booking>` (#4206). That
+   family is retired: a page it left open is closed once by the lane, in words saying the
+   summary replaced it. Nothing needs doing about one.
 
 **`placeholder_seat_failing`** says the placeholder's Google Calendar, its Gmail sending
 or its standing Gmail auto reply failed on consecutive ticks while the seat is in use (the
@@ -1396,6 +1403,45 @@ the same page, which asks first. The page shows the switch as could not be read 
 `booking_settings` cannot be read, and offers no control then; only in that case, or with
 no super admin to hand, is it `/db-apply`:
 `update booking_settings set placeholder_booking_enabled = false where id = 1;` (one row).
+
+---
+
+## Program leads are not getting the extra times
+
+Keys: `program_lead_fallbacks`, `program_lead_registrations_zero`.
+
+A program lead is a Salesforce Lead registered for the program (#4255); for 30 days their
+texted booking link shows the placeholder advisor's extra times beside the real ones, up
+to the placeholder day limit on `/admin/program-leads`. Both keys say program leads are
+being shown real times only, and nothing on the booker says so: it still works.
+
+**`program_lead_fallbacks`** says five or more program leads on one Eastern day were shown
+real times only because a read the extra times need failed (#4392). Each is counted in
+`program_lead_outcomes` (kind `times_fallback`) and logged under `program-lead-times` with
+its `reason`. Five, because a broken read fails every program lead who looks and a lead
+looks several times in one visit, while a lone transient failure in a day stays under it.
+
+1. Read the reason in the logs (`scripts/logs.ts`, tag `program-lead-times`, field
+   `reason`): `token-secret-unset` is the Worker's program lead token secret missing,
+   `settings-unreadable`, `hours-unreadable`, `horizon-unreadable` and `counts-unreadable`
+   are a database read failing, so check the database first (`monitor_step_failing` and
+   the database memory alerts).
+2. Fix the read. The page clears on a measured count under five, which for a day's count
+   that only rises is the next Eastern day; a much worse day posts again at once.
+
+**`program_lead_registrations_zero`** says, with the program switched on, no program lead
+has been registered since the last whole business day opened, so registering has stopped
+and every program lead since is being shown real times only. **Shipped disarmed**: it
+reads nothing until #4393 switches the program on and arms it
+(`PROGRAM_LEAD_REGISTRATIONS_ALERT_ARMED` in `src/lib/monitor/program-lead-alerts.ts`).
+
+1. Check that the system accepting program leads is still calling `POST /api/program-leads`
+   (docs/api.md), and whether Slate is refusing it: `program-leads` in the logs, and a 401
+   is the wrong key, a 503 a store failure.
+2. A day with genuinely no accepted program leads also reads as zero: confirm with whoever
+   runs the program before treating it as a fault.
+3. It clears when a registration is counted, and ends in its own words, not as a
+   recovery, when the program is switched off.
 
 ---
 

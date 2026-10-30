@@ -4,6 +4,8 @@ import { log } from "@/lib/log";
 import type { BookingSettings } from "@/lib/db/types";
 import { parseStampMs } from "@/lib/date/stamp";
 import { DAYS_OFFERED_CEILING } from "@/lib/booking/days-offered";
+// The limit's column bounds and default (migration 0213), in one home with the admin control.
+import { PLACEHOLDER_DAY_LIMIT_DEFAULT, PLACEHOLDER_DAY_LIMIT_MAX, PLACEHOLDER_DAY_LIMIT_MIN } from "@/lib/admin/program-leads-copy";
 import {
   isTransferLine,
   TRANSFER_OFFER_DEFAULTS,
@@ -343,9 +345,6 @@ export async function readPlaceholderBookingEnabled(): Promise<boolean | null> {
   }
 }
 
-/** The placeholder day limit's column bounds and default (migration 0213). */
-const PLACEHOLDER_DAY_LIMIT_MAX = 500;
-const PLACEHOLDER_DAY_LIMIT_DEFAULT = 50;
 
 /**
  * The placeholder switch and the placeholder day limit, in one read, for a program lead's
@@ -371,7 +370,7 @@ export async function readProgramLeadTimesSettings(): Promise<{ enabled: boolean
     ) as Pick<BookingSettings, "placeholder_booking_enabled" | "placeholder_day_limit"> | null;
     if (!row) return { enabled: false, dayLimit: PLACEHOLDER_DAY_LIMIT_DEFAULT };
     const limit = row.placeholder_day_limit;
-    if (!Number.isInteger(limit) || limit < 0 || limit > PLACEHOLDER_DAY_LIMIT_MAX) {
+    if (!Number.isInteger(limit) || limit < PLACEHOLDER_DAY_LIMIT_MIN || limit > PLACEHOLDER_DAY_LIMIT_MAX) {
       log.error("booking-settings", { msg: "placeholder day limit out of shape, treating as unreadable" });
       return null;
     }

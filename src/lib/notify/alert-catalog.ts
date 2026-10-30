@@ -1018,15 +1018,33 @@ export const ALERT_CATALOG: AlertEntry[] = [
       "suffix is the email's slug, a handful of rows.",
   },
   {
-    key: "placeholder_call_unserved:*",
+    key: "placeholder_calls_unserved",
     kind: "condition",
-    suffix: "booking",
     why:
-      "A call on the placeholder advisor is past its booked end plus 15 minutes and Regal's call feed, " +
-      "alive past that time, has no call to the customer's Lead (#4206). It ends when a call to them " +
-      "arrives (the recovery), or in its own words when the call is cancelled, moved onto a real advisor " +
-      "or moved to a later time, and as a stand down three days after the booked start, before the per " +
-      "booking prune would remove it silently. The monitor lane re-judges it every 5 minutes.",
+      "One or more calls on the placeholder advisor so far this Eastern day are past their booked end plus " +
+      "15 minutes, and Regal's call feed, alive past that time, has no call to the customer's Lead (#4206, " +
+      "one summary for the day since #4392). Each booking is a subject, so a new name posts at once. It ends " +
+      "when nothing is listed and nothing is still unknown on a measured tick: each listed call ends in its " +
+      "own words (a call found, a cancel, a move onto a real advisor or a later time, the day turning with no " +
+      "call, the booking gone). The monitor lane re-judges it every 5 minutes.",
+  },
+  {
+    key: "program_lead_fallbacks",
+    kind: "condition",
+    why:
+      "Five or more program leads on one Eastern day were shown real times only because a read the extra " +
+      "times need failed (#4392, counted in program_lead_outcomes by #4390). It ends on a measured count " +
+      "under five, which the monitor lane reads every 5 minutes; a day's count only rises, so in practice " +
+      "that is the next Eastern day.",
+  },
+  {
+    key: "program_lead_registrations_zero",
+    kind: "condition",
+    why:
+      "With the program switched on, no program lead has been registered since the last whole business day " +
+      "opened (#4392), so registering has stopped. Shipped disarmed until #4393 switches the program on. It " +
+      "ends when a registration is counted, which the monitor lane reads every 5 minutes, or in its own words " +
+      "when the program is switched off.",
   },
   {
     key: "transfer_queue_unreadable",

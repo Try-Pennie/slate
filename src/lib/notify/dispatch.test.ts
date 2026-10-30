@@ -236,6 +236,7 @@ import {
   resolveRecovered,
   firingFamilyMembers,
   firingKey,
+  postedConditionSubjects,
   settleAlertsSilently,
   isAlertDue,
 } from "./dispatch";
@@ -837,6 +838,39 @@ describe("resolveAlert recovery notice (#1133)", () => {
     it("THROWS when the read fails, so a caller can never clear off a list it did not get", async () => {
       failReads.value = true;
       await expect(firingFamilyMembers("booking_below_lead_tier")).rejects.toThrow(/alert_state/);
+    });
+  });
+
+  // #4392: a summary condition reads back which subjects its last delivered post named,
+  // so it can say how each one left the list.
+  describe("postedConditionSubjects", () => {
+    const KEY = "placeholder_calls_unserved";
+
+    it("answers the subjects the last post named while the condition is firing", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert(KEY, COOLDOWN, "two calls", { subjects: ["bk-1", "bk-2"] });
+      expect(await postedConditionSubjects(KEY)).toEqual(["bk-1", "bk-2"]);
+    });
+
+    it("answers nothing once the condition has been cleared, so a stale list is never reported again", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert(KEY, COOLDOWN, "two calls", { subjects: ["bk-1", "bk-2"] });
+      await resolveAlert(KEY, "all clear");
+      expect(await postedConditionSubjects(KEY)).toEqual([]);
+    });
+
+    it("answers nothing for a condition that never posted", async () => {
+      expect(await postedConditionSubjects(KEY)).toEqual([]);
+    });
+
+    it("THROWS when either read fails, never an empty list that reads as nothing listed", async () => {
+      slack.postSlack.mockResolvedValue({ ok: true });
+      await sendThrottledAlert(KEY, COOLDOWN, "two calls", { subjects: ["bk-1"] });
+      failKeyReads.add(firingKey(KEY));
+      await expect(postedConditionSubjects(KEY)).rejects.toThrow(/unreadable/);
+      failKeyReads.clear();
+      failKeyReads.add(KEY);
+      await expect(postedConditionSubjects(KEY)).rejects.toThrow(/unreadable/);
     });
   });
 

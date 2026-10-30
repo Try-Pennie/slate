@@ -119,6 +119,7 @@ export function monitorSetupGates(readiness: SetupReadiness): {
   bufferBreach: SetupGate;
   placeholderCalls: SetupGate;
   transferQueue: SetupGate;
+  programLeadRegistrations: SetupGate;
 } {
   return {
     // The scan compares every bucket's cached slot count against a live recompute,
@@ -251,5 +252,9 @@ export function monitorSetupGates(readiness: SetupReadiness): {
     // night and judges a Sunday nobody worked, and guessing shut silences a dead Monday.
     // Its threshold is a booking setting it reads itself, not a monitor setting.
     transferQueue: gate(readiness, ["businessHours"]),
+    // #4392: zero program lead registrations judges "none since the last whole business
+    // day opened", so it needs the org's week to know which day that is. The fallback
+    // count check consumes no setup read and is deliberately not gated.
+    programLeadRegistrations: gate(readiness, ["businessHours"]),
   };
 }
