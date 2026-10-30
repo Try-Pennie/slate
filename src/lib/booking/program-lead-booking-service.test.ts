@@ -6,8 +6,31 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // function with the right kind, and THROWS on a refused call rather than reading as counted.
 const rpc = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/supabase/admin", () => ({ supabaseAdmin: () => ({ rpc }) }));
+const pageBookingFailure = vi.hoisted(() => vi.fn(async (_err: unknown) => {}));
+vi.mock("@/lib/booking/service", () => ({ pageBookingFailure }));
 
-import { countLimitRefusal } from "./program-lead-booking-service";
+import { countLimitRefusal, pagingFailures } from "./program-lead-booking-service";
+import { PlaceholderDayFullError } from "./program-lead-booking";
+import { VerifyUnavailableError } from "./orchestration";
+
+// The full day refusal is the limit working, never a fault: it is answered and counted
+// (`countLimitRefusal`), and must never reach the booking failure page, by rule here
+// rather than by `bookingFailureAlert` happening to answer null for its class.
+describe("pagingFailures (#4391)", () => {
+  beforeEach(() => pageBookingFailure.mockClear());
+
+  it("never pages a full day refusal", async () => {
+    const full = new PlaceholderDayFullError("2026-07-01");
+    await expect(pagingFailures(async () => { throw full; })).rejects.toBe(full);
+    expect(pageBookingFailure).not.toHaveBeenCalled();
+  });
+
+  it("control: pages an outage on the placeholder path", async () => {
+    const outage = new VerifyUnavailableError();
+    await expect(pagingFailures(async () => { throw outage; })).rejects.toBe(outage);
+    expect(pageBookingFailure).toHaveBeenCalledWith(outage);
+  });
+});
 
 describe("countLimitRefusal (#4391)", () => {
   beforeEach(() => rpc.mockReset());

@@ -28,6 +28,7 @@ import { findPlaceholderAdvisor } from "@/lib/booking/placed-booking-service";
 import {
   bookProgramLead,
   moveProgramLead,
+  PlaceholderDayFullError,
   type ProgramLeadOutcome,
 } from "@/lib/booking/program-lead-booking";
 
@@ -85,10 +86,17 @@ function remember<T>(work: () => Promise<T>): Promise<T> {
   });
 }
 
-async function pagingFailures<T>(work: () => Promise<T>): Promise<T> {
+/**
+ * Page a placeholder path failure as a booking failure (`pageBookingFailure`), once. A
+ * full day refusal is never paged, by rule here rather than by `bookingFailureAlert`
+ * happening to have no alert for its class: it is the limit doing its job, counted by
+ * `countLimitRefusal` and alerted on per day by #4392.
+ */
+export async function pagingFailures<T>(work: () => Promise<T>): Promise<T> {
   try {
     return await work();
   } catch (caught) {
+    if (caught instanceof PlaceholderDayFullError) throw caught;
     if (caught && typeof caught === "object" && pagedAlready.has(caught)) throw caught;
     const err = orchestration.timeoutAsRetryable(caught);
     await pageBookingFailure(err);
