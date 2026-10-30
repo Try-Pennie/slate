@@ -72,6 +72,12 @@ import { REFERRER_ORIGIN_MAX_CHARS, readReferrerOrigin } from "@/lib/embed/refer
 import type { BookingOriginFacts } from "@/lib/monitor/offsite-origin";
 import { readJsonCapped, PUBLIC_JSON_MAX_BYTES } from "@/lib/http/read-json-capped";
 import { startConfirmPrelude } from "@/lib/booking/confirm-line-live";
+import type { CreateBookingInput } from "@/lib/booking/orchestration";
+import { verifyProgramLeadToken } from "@/lib/booking/program-lead-gate";
+import { bookProgramLeadLive } from "@/lib/booking/program-lead-booking-service";
+import { PLACEHOLDER_DAY_FULL_CODE, PlaceholderDayFullError } from "@/lib/booking/program-lead-booking";
+import { PROGRAM_PLACEHOLDER_OUTCOME } from "@/lib/monitor/booking-api-outcome";
+import { namesAdvisorToLead } from "@/lib/booking/advisor-name";
 
 export const dynamic = "force-dynamic";
 
@@ -124,6 +130,10 @@ const schema = z.object({
   // #3797: the computed_at of the list the lead picked from, so a refused time can be
   // judged a lost race. A measure only, dropped rather than refused when malformed.
   slotsComputedAt: slotsComputedAtSchema,
+  // #4391: the program lead token the texted link's page minted (`programLeadTokenForLanding`).
+  // Judged only by `verifyProgramLeadToken` against the Lead this confirm names; a value
+  // that is too long or not a string is DROPPED, and the confirm is an ordinary one.
+  programLeadToken: z.string().max(256).optional().catch(undefined),
 }).refine(
   (d) =>
     [d.bucketCode, d.agentLink, d.agentLinkToken].filter((v) => v !== undefined).length === 1,
@@ -526,9 +536,17 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     (parsed.data.requestedCode === undefined ||
       resolveRequestedCode(parsed.data.requestedCode).kind === "valid");
 
+  // #4391: a program lead's confirm, recognised only by a token the texted link's page
+  // signed for THIS Lead and a new booking. Never through an advisor's own link, which
+  // books one named advisor and has no placeholder to fall to.
+  const programLead =
+    agentLink === null && parsed.data.salesforceId && parsed.data.programLeadToken !== undefined
+      ? verifyProgramLeadToken(parsed.data.programLeadToken, { salesforceId: parsed.data.salesforceId })
+      : null;
+
   endChecks?.();
   try {
-    const { booking, manageUrl, newlyInserted, followUpLeftToDrain } = await createBooking({
+    const confirm: CreateBookingInput = {
       // One call per person, enforced here and only here (#1337): the direct
       // booking API owns its own richer decision and must keep creating on a
       // cross-bucket rebook (#364).
@@ -554,7 +572,13 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       shownTier: agentLink ? undefined : parsed.data.shownTier,
       // #3797: never through an agent's own link, which records no routing decision.
       servedComputedAt: agentLink ? undefined : parsed.data.slotsComputedAt,
-    }, progress.facts);
+    };
+    // #4391: a program lead's confirm books a real advisor on a time the cache serves and
+    // the placeholder otherwise (`program-lead-booking.ts`); everybody else, as before.
+    const program = programLead?.purpose === "new" ? await bookProgramLeadLive(confirm, progress.facts) : null;
+    const { booking, manageUrl, newlyInserted, followUpLeftToDrain } = program
+      ? program.result
+      : await createBooking(confirm, progress.facts);
     // Backstop, not the ordinary path (#1337): a second booking is normally
     // DECLINED above before anything is created. Since #1641 the window it
     // covers is two simultaneous confirms both passing the check, and no longer
@@ -583,13 +607,20 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
           return null;
         }));
 
-    recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
-    // #2838: a booking made after its first advisor lost the overlap race is
-    // counted again, on a row outside the failure share, for the daily race whisper.
-    // Only when THIS confirm inserted it: a replay returns an earlier confirm's
-    // booking, whose race was counted when that confirm made it.
-    const raced = raceOutcomeForConfirm({ booking, newlyInserted });
-    if (raced) recordRoutedOutcome(raced, code, null, { by: "bucket", code, host });
+    if (program?.onPlaceholder) {
+      // #4391: a call on the placeholder is neither a routed booking nor a refusal, so it
+      // is counted under its own name outside the failure share, by how it got there.
+      const placed = program.path === "lost-race" ? PROGRAM_PLACEHOLDER_OUTCOME.afterRace : PROGRAM_PLACEHOLDER_OUTCOME.straight;
+      recordRoutedOutcome(placed, code, null, { by: "bucket", code, host });
+    } else {
+      recordRoutedOutcome("created", code, null, { by: "bucket", code, host });
+      // #2838: a booking made after its first advisor lost the overlap race is
+      // counted again, on a row outside the failure share, for the daily race whisper.
+      // Only when THIS confirm inserted it: a replay returns an earlier confirm's
+      // booking, whose race was counted when that confirm made it.
+      const raced = raceOutcomeForConfirm({ booking, newlyInserted });
+      if (raced) recordRoutedOutcome(raced, code, null, { by: "bucket", code, host });
+    }
     // #3267: answered the booking and left the work after its save to the
     // reservation drain. Counted beside the created row, outside the failure share,
     // so the monitor lane can page on the share of confirms doing it.
@@ -614,8 +645,9 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
       calendarLinks: bookingDetailExtras(booking).calendarLinks,
       // #2165: who will call, for the Booker's own confirmation. Off the booking
       // just written, so it is the advisor the call is with at this moment; null,
-      // never a placeholder, when the booking holds no name (L75).
-      advisorName: booking.agent_name ?? null,
+      // never a placeholder, when the booking holds no name (L75). #4391: and never the
+      // placeholder advisor's name, who is nobody the lead will speak to.
+      advisorName: namesAdvisorToLead(booking) ? (booking.agent_name ?? null) : null,
       // #2659: the partner join keys the host put on the URL, read back off the
       // booking that was actually made, so the host can carry them onto its own
       // confirmed page. Null when the page passed none, so the field is always
@@ -633,6 +665,21 @@ async function handlePost(req: NextRequest, progress: ConfirmProgress) {
     // most for what the allowance has left, for the refresh of a pool still offering
     // the refused time, so the booker's reload right after it reads the refreshed row.
     return timeStage(progress.facts.profile, "failure-path", () => withinBookingCleanupBudget(() => answerAfterRefusalRefresh(err, async () => {
+      // #4391: a program lead picked an extra time on a day whose extra times are all
+      // gone. Nothing was reserved or invited (the claim comes first). Its own code and
+      // sentence, never the taken time 409's (L11): that time is not taken, and the
+      // booker reloads to the day's real times. Refunded, with a retry credit, exactly
+      // as a taken time is, because the next pick is not a burst. Logged under its own
+      // tag where it was refused; counting it per day is #4392's.
+      if (err instanceof PlaceholderDayFullError) {
+        await refundAll();
+        await grantBookingRetryCredit(ip);
+        // refusal: placeholder_day_full
+        return NextResponse.json(
+          { error: BOOKING_ERROR_COPY.placeholderDayFull, code: PLACEHOLDER_DAY_FULL_CODE },
+          { status: 409 },
+        );
+      }
       // The lead already has an active call, so nothing was created (#1337). Refund
       // the rate-limit hit: being declined is not an attempt they should pay for,
       // and the Move they are about to make is a separate request.

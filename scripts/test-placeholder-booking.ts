@@ -15,6 +15,7 @@
 import {
   createBooking,
   createPlaceholderBooking,
+  findExistingCallForIdentity,
   rescheduleBooking,
   reassignBooking,
   bookViaApi,
@@ -99,6 +100,71 @@ async function run() {
     assert(res.booking.id === "bk-first" && res.newlyInserted === undefined, "a repeat of the submission is answered with the booking it made");
     assert(calls.idempotencyLookups.includes(KEY), "found by the submission's key");
     assert(calls.reservations.length === 0 && calls.createEvent.length === 0 && calls.insertBooking.length === 0, "and nothing is reserved, invited or written again");
+  }
+
+  // --- #4391: a program lead's call placed on the placeholder from the booker ------------------
+  {
+    const { deps, calls } = makeDeps({ candidates: [] });
+    const PROGRAM_KEY = "411|2026-06-08T15:00:00.000Z|k@x.com|+12035615295|00Q000000000001";
+    const res = await createPlaceholderBooking(
+      {
+        ...placedInput,
+        placedByUserId: undefined,
+        idempotencyKey: PROGRAM_KEY,
+        programLead: {
+          prefill: { source: "booking", partnerSubmissionId: "sub-9", leadIdFrom: "forged" },
+          referrerOrigin: "https://www.trypennie.com/apply?ssn=1",
+        },
+      },
+      deps,
+    );
+    const row = calls.insertBooking[0] ?? {};
+    assert(res.booking.id === "bk-new", "the program lead's placeholder call is saved");
+    assert(row.kind === "staff_placed" && row.allow_double_book === true && row.assigned_user_id === "p", "staff placed on the placeholder, stacking");
+    assert(row.program_lead === true, `marked as a program lead's booking (got ${String(row.program_lead)})`);
+    assert(row.placed_by_user_id === null, `placed by nobody: no coordinator was on the phone (got ${String(row.placed_by_user_id)})`);
+    assert(row.source === "booking", `the real source off the link, never the coordinator page (got ${String(row.source)})`);
+    const prefill = row.prefill as Record<string, string>;
+    assert(prefill.partnerSubmissionId === "sub-9", "the partner join keys the link carried are kept");
+    assert(prefill.leadIdFrom === undefined, "a posted lead id provenance is dropped, as the normal create drops it");
+    assert(row.referrer_origin === "https://www.trypennie.com", `the framing page is reduced to its origin (got ${String(row.referrer_origin)})`);
+    assert(row.idempotency_key === PROGRAM_KEY && calls.reservations[0]?.idempotency_key === PROGRAM_KEY, "keyed by the booker's own key");
+  }
+  // Exactly one of the two placements: neither, or both, is a programming mistake.
+  for (const bad of [{ placedByUserId: undefined }, { programLead: { prefill: {} } }] as const) {
+    const { deps, calls } = makeDeps({ candidates: [] });
+    let refused: unknown = null;
+    try {
+      await createPlaceholderBooking({ ...placedInput, ...bad }, deps);
+    } catch (err) {
+      refused = err;
+    }
+    assert(refused instanceof Error && calls.reservations.length === 0, `a placement naming ${"programLead" in bad ? "both" : "neither"} a coordinator and a program lead is refused before anything is written`);
+  }
+
+  // --- #4391: the normal create marks a program lead's booking, and only theirs --------------
+  {
+    const { deps, calls } = makeDeps({ candidates: ["a"] });
+    await createBooking({ ...input, programLead: true }, deps);
+    assert(calls.insertBooking[0]?.program_lead === true, "a program lead's routed booking is written program_lead true");
+    const plain = makeDeps({ candidates: ["a"] });
+    await createBooking(input, plain.deps);
+    assert(plain.calls.insertBooking[0]?.program_lead === undefined, "control: an ordinary booking leaves the column to its default");
+  }
+
+  // --- #4391: the existing call notice never names the placeholder ----------------------------
+  {
+    const onIt = onPlaceholder({ id: "bk-p", salesforce_id: "sf1", program_lead: true } as Partial<Booking>);
+    const { deps } = makeDeps({ personBookings: [onIt], agentNames: { p: "Marcia" } });
+    const call = await findExistingCallForIdentity({ externalId: null, salesforceId: "sf1", email: null, phone: null }, deps, { isTest: false }, {
+      moveTokenFor: (b) => (b.program_lead ? `move-token-for-${b.id}` : null),
+    });
+    assert(call?.disclose === true && call.advisorName === null, `a call on the placeholder names no advisor (got ${call?.disclose ? call.advisorName : "undisclosed"})`);
+    assert(call?.disclose === true && call.programLeadMoveToken === "move-token-for-bk-p", "and carries the move token for a program lead's call");
+    const routed = makeBooking({ id: "bk-r", salesforce_id: "sf1" });
+    const control = makeDeps({ personBookings: [routed], agentNames: { a: "Agent A" } });
+    const named = await findExistingCallForIdentity({ externalId: null, salesforceId: "sf1", email: null, phone: null }, control.deps, { isTest: false });
+    assert(named?.disclose === true && named.advisorName === "Agent A" && named.programLeadMoveToken === null, "control: a routed call names its advisor and carries no move token");
   }
 
   // --- a test bucket's call goes on the TEST placeholder only --------------------------------

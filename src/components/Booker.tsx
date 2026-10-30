@@ -214,6 +214,7 @@ type DuplicateWarning =
 import type { ExistingCall } from "@/lib/booking/orchestration";
 import { leadRescheduleTimesUrl } from "@/lib/booking/reschedule-times-url";
 import { programLeadHeaders, programLeadTimesUrl } from "@/lib/booking/program-lead-header";
+import { PLACEHOLDER_DAY_FULL_CODE } from "@/lib/booking/placeholder-day-full";
 import type { CalendarLinks } from "@/lib/booking/calendar-links";
 import AddToCalendar from "@/components/AddToCalendar";
 import { MarkedLabel } from "@/components/ui/MarkedLabel";
@@ -719,7 +720,15 @@ export default function Booker({
   // cannot drift apart again. No day is chosen until the lead chooses one.
   // #4390: a program lead's token rides on the pool's times only: an advisor's own times
   // (their link, or the move of a call booked through it) have no placeholder to add.
-  const timesProgramToken = agentLink || moveAdvisorToken ? null : programLeadToken;
+  // #4391: and while this lead holds a call, the times are for MOVING it, so they are read
+  // with that call's own move token (null for a call that is not a program lead's), never
+  // the page's new booking token, so the times shown are the ones the move may take.
+  const timesProgramToken =
+    agentLink || moveAdvisorToken
+      ? null
+      : existingCall?.disclose
+        ? (existingCall.programLeadMoveToken ?? null)
+        : programLeadToken;
   const picker = useSlotPicker({
     url: availabilityUrl,
     zone,
@@ -964,6 +973,7 @@ export default function Booker({
         fieldErrors?: AttendeeErrors;
         duplicateWarning?: DuplicateWarning | null;
         existingCall?: ExistingCall | null;
+        code?: string;
       }>(
         "/booking",
         {
@@ -998,6 +1008,10 @@ export default function Booker({
           // Empty for every real lead; a bot filling all fields sends a value the
           // server rejects (#1033).
           [HONEYPOT_FIELD]: honeypot,
+          // #4391: the token the texted link's page signed, so the confirm can use the
+          // placeholder's extra times. In the body, which is never logged; absent for
+          // every other lead.
+          ...(programLeadToken ? { programLeadToken } : {}),
         },
         // Convert a wedged confirm (server accepted, never responds) into the
         // retryable error below instead of an endless "Booking your call…" (#626).
@@ -1033,6 +1047,12 @@ export default function Booker({
         // number the lead has since corrected on this screen is not overwritten by
         // a later render (L14).
         setCallPhone(data.existingCall.disclose ? data.existingCall.phone : null);
+      } else if (status === 409 && data.code === PLACEHOLDER_DAY_FULL_CODE) {
+        // #4391: the day's extra times filled up while this lead was typing. Not "just
+        // taken" (L11): nobody took that time. The reload shows the day's real times.
+        setError(BOOKING_ERROR_COPY.placeholderDayFull);
+        setSelectedSlot(null);
+        picker.retry();
       } else if (status === 409) {
         setError(BOOKING_ERROR_COPY.slotTaken);
         // #1319: remember WHICH time went, so the alternatives below can leave it out. It is
@@ -1223,6 +1243,7 @@ export default function Booker({
         calendarLinks?: CalendarLinks | null;
         error?: string;
         reason?: string;
+        code?: string;
         contactChanged?: { name: boolean; email: boolean; phone: boolean };
       }>(
         `/api/bookings/${encodeURIComponent(existingCall.manageToken)}/reschedule`,
@@ -1232,6 +1253,10 @@ export default function Booker({
           reasonDetail: moveDetail || undefined,
           // #2310: the zone the lead picked this time in, judged by the server.
           timezone: zone,
+          // #4391: this call's own move token, when it is a program lead's, so the move
+          // can use the placeholder's extra times. Never the page's new booking token,
+          // which the route refuses for a move.
+          ...(existingCall.programLeadMoveToken ? { programLeadMoveToken: existingCall.programLeadMoveToken } : {}),
           // #2164: the details on this visit, which are routinely a CORRECTION of
           // the ones the call was booked with. The server writes whichever of them
           // actually moved and rewrites the invite; sending them unchanged costs
@@ -1282,9 +1307,11 @@ export default function Booker({
       else setExistingCall(null);
       setSelectedSlot(null);
       setError(
-        status === 409
-          ? BOOKING_ERROR_COPY.slotTaken
-          : (data.error ?? BOOKING_ERROR_COPY.moveFailed),
+        data.code === PLACEHOLDER_DAY_FULL_CODE
+          ? BOOKING_ERROR_COPY.placeholderDayFull
+          : status === 409
+            ? BOOKING_ERROR_COPY.slotTaken
+            : (data.error ?? BOOKING_ERROR_COPY.moveFailed),
       );
       // #1549: and the soonest times still open beneath it, as on a refused confirm. This
       // lead has a call they were trying to KEEP, so the offer carries the move wording:

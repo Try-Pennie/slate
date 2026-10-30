@@ -143,6 +143,12 @@ vi.mock("@/lib/booking/refusal-stored-offer-live", () => storedOffer);
 const prelude = vi.hoisted(() => ({ startConfirmPrelude: vi.fn() }));
 vi.mock("@/lib/booking/confirm-line-live", () => prelude);
 
+// #4391: a program lead's confirm. Its decisions are pinned by
+// scripts/test-program-lead-booking.ts; here it is a seam, so the route is proven to
+// send a verified program lead there, and nobody else.
+const programLeadBooking = vi.hoisted(() => ({ bookProgramLeadLive: vi.fn() }));
+vi.mock("@/lib/booking/program-lead-booking-service", () => programLeadBooking);
+
 import { POST } from "./route";
 import { DeadlineExceededError } from "@/lib/fetch-within-deadline";
 import { ROUTE_CHECK_STAGES } from "@/lib/booking/confirm-profile";
@@ -157,7 +163,9 @@ import { TEST_PASS_TTL_MS, mintTestPass } from "@/lib/embed/test-pass";
 import { HIDDEN_TEST_BUCKET_CODES } from "@/lib/embed/public-test-bucket";
 import { REFERRER_ORIGIN_MAX_CHARS } from "@/lib/embed/referrer-origin";
 import { INVALID_EMAIL } from "@/lib/attendee";
-import { OUTCOME_ORDER } from "@/lib/monitor/booking-api-outcome";
+import { OUTCOME_ORDER, PROGRAM_PLACEHOLDER_OUTCOME } from "@/lib/monitor/booking-api-outcome";
+import { mintProgramLeadToken } from "@/lib/booking/program-lead-token";
+import { PLACEHOLDER_DAY_FULL_CODE, PlaceholderDayFullError } from "@/lib/booking/program-lead-booking";
 
 const PUBLIC_TEST = PUBLIC_TEST_BUCKET_CODES[0];
 // #2666: the public test bucket is booked only with the pass `/book` handed an
@@ -1917,5 +1925,120 @@ describe("POST /booking times each of its checks (#3493)", () => {
     const stages = stagesOf(line);
     expect(stages.get(ROUTE_CHECK_STAGES.agentLink)?.[1]).toBe(1);
     expect(stages.get(ROUTE_CHECK_STAGES.agentLink)![0]).toBe(SLOW_MS);
+  });
+});
+
+// #4391: a program lead's confirm goes through the program path, and only theirs.
+describe("POST /booking for a program lead (#4391)", () => {
+  const LEAD = "00Q000000000001";
+  const PROGRAM_SECRET = "p".repeat(64);
+  const tokenFor = (salesforceId: string, bookingId: string | null = null) =>
+    mintProgramLeadToken({ salesforceId, bookingId, secret: PROGRAM_SECRET, nowMs: Date.now() }).value;
+  // A forgery always CHANGES the signature's last character. Overwriting it with a fixed
+  // "0" left the token genuine whenever the signature (which moves with the clock)
+  // already ended in "0", one run in sixteen, and the test then failed at random.
+  const forge = (token: string) => `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}`;
+  const BODY = { ...VALID_BODY, salesforceId: LEAD };
+  const routed = {
+    booking: { id: "bk-r", kind: "routed", agent_name: "Agent A", starts_at: BODY.start, ends_at: "2026-07-01T15:30:00.000Z", prefill: {} },
+    manageUrl: "https://slate.test/booking/manage/tok-r",
+    newlyInserted: true,
+  };
+  const onPlaceholder = {
+    booking: { id: "bk-p", kind: "staff_placed", agent_name: "Marcia", starts_at: BODY.start, ends_at: "2026-07-01T15:30:00.000Z", prefill: {} },
+    manageUrl: "https://slate.test/booking/manage/tok-p",
+    newlyInserted: true,
+  };
+
+  beforeEach(() => {
+    vi.stubEnv("PROGRAM_LEAD_TOKEN_SECRET", PROGRAM_SECRET);
+    rateLimit.allowRequest.mockReset();
+    rateLimit.allowRequest.mockResolvedValue(true);
+    rateLimit.bookingWithinLimit.mockResolvedValue(true);
+    rateLimit.refundRequest.mockClear();
+    rateLimit.grantBookingRetryCredit.mockClear();
+    service.createBooking.mockReset();
+    service.findDuplicateBookingWarning.mockResolvedValue(null);
+    programLeadBooking.bookProgramLeadLive.mockReset();
+    recordApiOutcome.mockClear();
+  });
+
+  const outcomes = () => recordApiOutcome.mock.calls.map((c) => [c[0], c[2]]);
+
+  it("sends a lead with a good token through the program path, with the confirm the normal create would get", async () => {
+    programLeadBooking.bookProgramLeadLive.mockResolvedValueOnce({ result: routed, path: "real-slot", onPlaceholder: false });
+    const res = await post({ ...BODY, programLeadToken: tokenFor(LEAD) });
+    expect(res.status).toBe(200);
+    expect(service.createBooking).not.toHaveBeenCalled();
+    const [input, facts] = programLeadBooking.bookProgramLeadLive.mock.calls[0]!;
+    expect(input).toMatchObject({ bucketCode: "411", salesforceId: LEAD, startIso: BODY.start, refuseIfPersonHasCall: true });
+    expect(facts).toBe(prelude.startConfirmPrelude.mock.calls.at(-1)![0]);
+    expect(outcomes()).toEqual([["created", null]]);
+    expect((await res.json()).advisorName).toBe("Agent A");
+  });
+
+  it("records a call that went straight to the placeholder as its own outcome, never created or an error, and names no advisor", async () => {
+    programLeadBooking.bookProgramLeadLive.mockResolvedValueOnce({ result: onPlaceholder, path: "straight", onPlaceholder: true });
+    const res = await post({ ...BODY, programLeadToken: tokenFor(LEAD) });
+    expect(res.status).toBe(200);
+    expect(outcomes()).toEqual([[PROGRAM_PLACEHOLDER_OUTCOME.straight, null]]);
+    expect(OUTCOME_ORDER as readonly string[]).not.toContain(PROGRAM_PLACEHOLDER_OUTCOME.straight);
+    const body = await res.json();
+    expect(body.advisorName).toBeNull();
+    expect(body.id).toBe("bk-p");
+  });
+
+  it("records a lost race that fell to the placeholder as its own outcome, not a refusal", async () => {
+    programLeadBooking.bookProgramLeadLive.mockResolvedValueOnce({ result: onPlaceholder, path: "lost-race", onPlaceholder: true });
+    const res = await post({ ...BODY, programLeadToken: tokenFor(LEAD) });
+    expect(res.status).toBe(200);
+    expect(outcomes()).toEqual([[PROGRAM_PLACEHOLDER_OUTCOME.afterRace, null]]);
+    expect(OUTCOME_ORDER as readonly string[]).not.toContain(PROGRAM_PLACEHOLDER_OUTCOME.afterRace);
+  });
+
+  it("answers a full day with its own code and sentence, never the taken time one, and gives the lead's caps back", async () => {
+    programLeadBooking.bookProgramLeadLive.mockRejectedValueOnce(new PlaceholderDayFullError("2026-07-01"));
+    const res = await post({ ...BODY, programLeadToken: tokenFor(LEAD) });
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.code).toBe(PLACEHOLDER_DAY_FULL_CODE);
+    expect(body.error).toBe(BOOKING_ERROR_COPY.placeholderDayFull);
+    expect(body.error).not.toBe(BOOKING_ERROR_COPY.slotTaken);
+    expect(rateLimit.refundRequest).toHaveBeenCalled();
+    expect(rateLimit.grantBookingRetryCredit).toHaveBeenCalledWith("203.0.113.1");
+    expect(outcomes().filter(([o]) => o === "error")).toEqual([]);
+  });
+
+  it.each([
+    ["no token", undefined],
+    ["a token for another lead", "other"],
+    ["a forged token", "forged"],
+    ["a move token", "move"],
+  ])("books an ordinary confirm with %s", async (_label, kind) => {
+    service.createBooking.mockResolvedValueOnce(routed);
+    const token =
+      kind === "other" ? tokenFor("00Q000000000002")
+        : kind === "forged" ? forge(tokenFor(LEAD))
+          : kind === "move" ? tokenFor(LEAD, "6f1c2d3e-0000-4000-8000-000000000001")
+            : undefined;
+    const res = await post({ ...BODY, ...(token ? { programLeadToken: token } : {}) });
+    expect(res.status).toBe(200);
+    expect(programLeadBooking.bookProgramLeadLive).not.toHaveBeenCalled();
+    expect(service.createBooking).toHaveBeenCalledTimes(1);
+    expect(service.createBooking.mock.calls[0]![0].programLead).toBeUndefined();
+  });
+
+  it("never takes an advisor's own link down the program path", async () => {
+    agentLinkStore.resolveAgentLink.mockResolvedValueOnce({
+      ok: true,
+      agent: { id: "u1" },
+      bucketCode: "411",
+      bucket: { is_test: false },
+    });
+    service.createBooking.mockResolvedValueOnce(routed);
+    const { bucketCode: _code, ...noBucket } = BODY;
+    const res = await post({ ...noBucket, agentLink: "rdaboub", programLeadToken: tokenFor(LEAD) });
+    expect(res.status).toBe(200);
+    expect(programLeadBooking.bookProgramLeadLive).not.toHaveBeenCalled();
   });
 });

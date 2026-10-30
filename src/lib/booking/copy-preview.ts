@@ -355,6 +355,12 @@ export function bookerCopyScreens(): CopyScreen[] {
         "where a generic failure would leave them staring at a working page.",
       lines: [
         { state: "somebody took the time while they typed", text: BOOKING_ERROR_COPY.slotTaken },
+        // #4391: read directly below `slotTaken`, which it must never borrow: nobody took
+        // the time, the day's extra times for a program lead filled up.
+        {
+          state: "a program lead picked an extra time on a day whose extra times just filled",
+          text: BOOKING_ERROR_COPY.placeholderDayFull,
+        },
         // #2310: the time is not taken, it is outside the lead's calling hours,
         // so it must not borrow the line above.
         {
@@ -512,7 +518,9 @@ export function bookerCopyScreens(): CopyScreen[] {
         // #2165: who will call, and the same sentence without a name, because the
         // confirmation renders before anything guarantees the booking holds one.
         { state: "who will call", text: confirmedAdvisor("Dana Lee") },
-        { state: "who will call, when we hold no advisor name", text: confirmedAdvisor(null) },
+        // #4391: a call on the placeholder advisor is answered with no name too
+        // (`namesAdvisorToLead`), so the lead never reads "Your loan advisor, Marcia".
+        { state: "who will call, when we hold no advisor name or the call is on the placeholder advisor", text: confirmedAdvisor(null) },
         { state: "the invite", text: inviteOnItsWay(EMAIL) },
         {
           state: "the invite, with no address to name",

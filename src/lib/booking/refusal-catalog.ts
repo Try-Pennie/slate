@@ -327,6 +327,21 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "indistinguishable without a count.",
   },
   {
+    id: "placeholder_day_full",
+    surface: "embed booker",
+    outcome: "409, told the extra times for that day just filled up, and shown the day's real times",
+    counting: { kind: "none" },
+    rateSignal: { kind: "deferred", issue: 4392 },
+    why:
+      "A program lead (#4391) picked one of the placeholder advisor's extra times on a day whose " +
+      "placeholder day limit was reached between the page loading and the confirm. It is the limit " +
+      "working, not a fault, so it stays out of the failure share: counting it there would page on a " +
+      "busy day doing exactly what the admin's setting asks. Whether the limit is turning too many " +
+      "program leads away is a question about a DAY, not a rate over two hours, so it is counted per " +
+      "Eastern day of the call on the program leads admin page and alerted on there (#4392). Until " +
+      "then each refusal is logged under its own tag, program-lead-day-full.",
+  },
+  {
     id: "attendee_email_refused",
     surface: "embed booker",
     outcome: "400, with the email field told to enter a valid address",
@@ -668,6 +683,18 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
       "A lead moving their call and being told the time went is the same shape as being refused " +
       "at confirm, and it was counted nowhere at all. Recorded alongside the reschedule SUCCESSES " +
       "from this route, so the share stays a share: adding only the failures would inflate it.",
+  },
+  {
+    id: "reschedule_placeholder_day_full",
+    surface: "manage page",
+    outcome: "409, told the extra times for that day just filled up; the call stays where it was",
+    counting: { kind: "none" },
+    rateSignal: { kind: "deferred", issue: 4392 },
+    why:
+      "The move twin of placeholder_day_full (#4391): a program lead moving their call onto an " +
+      "extra time on a day whose placeholder day limit is reached. The limit doing its job, so it " +
+      "stays out of the failure share for the same reason; counted per Eastern day of the call on " +
+      "the program leads admin page by #4392, and logged under program-lead-day-full until then.",
   },
   {
     id: "reschedule_conflict",
