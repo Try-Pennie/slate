@@ -157,7 +157,10 @@ CREATE TABLE IF NOT EXISTS bookings (
   -- advisor's own named link, which does not route), from
   -- supabase/migrations/0144_agent_links.sql. Anything about routing filters on
   -- kind = 'routed', as every Slate reader does.
-  kind                VARCHAR
+  kind                VARCHAR,
+  -- #4397: true when the booking came through the partner program (#4387,
+  -- supabase/migrations/0213_program_leads.sql). False for every other booking.
+  program_lead        BOOLEAN
 )
 CLUSTER BY (created_at);
 
@@ -304,6 +307,17 @@ ALTER TABLE IF EXISTS booking_events      ADD COLUMN IF NOT EXISTS to_bucket_id 
 -- since: rewind the bookings export cursor to the cutoff (docs/migrations-runbook.md)
 -- rather than guessing its kind here.
 UPDATE bookings SET kind = 'routed' WHERE kind IS NULL AND created_at < '2026-09-28 15:17:32 +00:00'::TIMESTAMP_TZ;
+
+-- #4397: the program lead flag. Same rule as source: the MERGE writes it on every
+-- bookings row, so run this BEFORE the change that exports it deploys.
+ALTER TABLE IF EXISTS bookings            ADD COLUMN IF NOT EXISTS program_lead BOOLEAN;
+
+-- The ALTER leaves every row already here null, and a row is exported again only when
+-- it changes. False is right for all of them: when this shipped (2026-10-30) the one
+-- program booking Supabase held was a cancelled test call, so no cursor rewind is
+-- needed. Idempotent, and harmless after the export deploys, which writes the flag
+-- on every row it touches.
+UPDATE bookings SET program_lead = FALSE WHERE program_lead IS NULL;
 
 -- ----------------------------------------------------------------------------
 -- Grants on the mirror tables: SELECT + INSERT + UPDATE only. No DELETE.

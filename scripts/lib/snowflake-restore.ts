@@ -58,8 +58,6 @@ export const UNMIRRORED_COLUMNS: Record<string, Record<string, string>> = {
     replaced_by_booking_id: "null on an inserted booking, so a moved booking's old links show it cancelled",
     // #4200: who placed a coordinator's call is not mirrored; source still says the page.
     placed_by_user_id: "null on an inserted booking, so a coordinator's call no longer names who placed it",
-    // #4387: left out of the mirror so the export needs no warehouse ALTER before deploy.
-    program_lead: "false on an inserted booking, so a restored program call stops counting against the placeholder day limit",
   },
   webhook_deliveries: {
     dedupe_key: "null on an inserted delivery",
