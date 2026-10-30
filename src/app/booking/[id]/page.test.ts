@@ -133,3 +133,36 @@ describe("/booking/{sfId} recognises a program lead (#4389)", () => {
     expect(log.warn).toHaveBeenCalledWith("program-lead", expect.objectContaining({ msg: expect.any(String) }), expect.any(Error));
   });
 });
+
+// #4393: the PARTNER test bucket opens only from approved partner pages (`/book`'s origin
+// gate). A registered program lead's texted link may open it too, so the program path can
+// be drilled on the test bucket; registering needs Bidspoke's key, so a stranger cannot.
+describe("/booking/{sfId} on the public test bucket (#4393)", () => {
+  async function propsFor(xbc: string) {
+    const tree = await BookingPage({ params: Promise.resolve({ id: LEAD }), searchParams: Promise.resolve({ xbc }) });
+    const props = findByType(tree, Booker as unknown);
+    if (!props) throw new Error("the page rendered no Booker");
+    return props;
+  }
+
+  beforeEach(() => {
+    vi.stubEnv("EMBED_TEST_PASS_SECRET", "t".repeat(64));
+  });
+
+  it("hands a registered program lead the test pass on PARTNER", async () => {
+    admin.supabaseAdmin.mockReturnValue(db({ data: { expires_at: new Date(NOW + 86_400_000).toISOString() }, error: null }, []));
+    const props = await propsFor("PARTNER");
+    expect(typeof props.programLeadToken).toBe("string");
+    expect(typeof props.testPass).toBe("string");
+  });
+
+  it("hands anyone else on PARTNER no test pass", async () => {
+    admin.supabaseAdmin.mockReturnValue(db({ data: null, error: null }, []));
+    expect((await propsFor("PARTNER")).testPass ?? null).toBeNull();
+  });
+
+  it("hands a program lead on a real bucket no test pass", async () => {
+    admin.supabaseAdmin.mockReturnValue(db({ data: { expires_at: new Date(NOW + 86_400_000).toISOString() }, error: null }, []));
+    expect((await propsFor("411")).testPass ?? null).toBeNull();
+  });
+});
