@@ -3,7 +3,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // #4390: the live wiring of a program lead's times. The rules (the shared start predicate,
 // the day limit, every fallback) are pinned by scripts/test-program-lead-times.ts; this
 // proves the reads and the count reach the real store the way the rules assume: the day
-// counts through placeholder_day_counts, the fallback through bump_program_lead_outcome,
+// counts through placeholder_day_counts (a move's per day through placeholder_day_held with
+// the moving booking left out, #4414), the fallback through bump_program_lead_outcome,
 // and a fallback is logged with its reason, never the token.
 
 const rpc = vi.hoisted(() => vi.fn());
@@ -21,7 +22,12 @@ vi.mock("@/lib/booking/business-hours-load", () => ({
   })),
 }));
 const gate = vi.hoisted(() => ({
-  readProgramLeadTimesToken: vi.fn((): { ok: true } | { ok: false; reason: string } => ({ ok: true })),
+  readProgramLeadTimesToken: vi.fn(
+    (): { ok: true; facts: { purpose: "new" | "move"; bookingId: string | null } } | { ok: false; reason: string } => ({
+      ok: true,
+      facts: { purpose: "new", bookingId: null },
+    }),
+  ),
 }));
 vi.mock("@/lib/booking/program-lead-gate", () => gate);
 vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
@@ -65,6 +71,30 @@ describe("programLeadTimesLive (#4390)", () => {
     expect(out.placeholderStarts.length).toBeGreaterThan(0);
     expect(out.placeholderStarts.every((iso) => iso.startsWith("2026-06-09"))).toBe(true);
     expect(out.slots).toContain(ASK.realSlots[0]);
+  });
+
+  it("reads a move's days through placeholder_day_held, leaving the moving booking out (#4414)", async () => {
+    gate.readProgramLeadTimesToken.mockReturnValueOnce({ ok: true, facts: { purpose: "move", bookingId: "bk-moving" } });
+    rpc.mockImplementation(async (fn: string, args: Record<string, string>) =>
+      fn === "placeholder_day_held" ? { data: args.p_day === "2026-06-08" ? 0 : 50, error: null } : { data: 1, error: null },
+    );
+    const out = await programLeadTimesLive(ASK);
+    expect(rpc).not.toHaveBeenCalledWith("placeholder_day_counts", expect.anything());
+    expect(rpc).toHaveBeenCalledWith("placeholder_day_held", { p_day: "2026-06-08", p_exclude_booking: "bk-moving" });
+    expect(rpc).toHaveBeenCalledWith("placeholder_day_held", { p_day: "2026-06-09", p_exclude_booking: "bk-moving" });
+    expect(out.outcome).toBe("program");
+    expect(out.placeholderStarts.every((iso) => iso.startsWith("2026-06-08"))).toBe(true);
+  });
+
+  it("serves a move real slots only, counted, when a per day read fails (#4414)", async () => {
+    gate.readProgramLeadTimesToken.mockReturnValueOnce({ ok: true, facts: { purpose: "move", bookingId: "bk-moving" } });
+    rpc.mockImplementation(async (fn: string) =>
+      fn === "placeholder_day_held" ? { data: null, error: { message: "boom" } } : { data: 1, error: null },
+    );
+    const out = await programLeadTimesLive(ASK);
+    expect(out.outcome).toBe("fallback:counts-unreadable");
+    expect(out.placeholderStarts).toEqual([]);
+    expect(rpc).toHaveBeenCalledWith("bump_program_lead_outcome", { p_kind: "times_fallback" });
   });
 
   it("counts a failed counts read as times_fallback and serves real slots only", async () => {

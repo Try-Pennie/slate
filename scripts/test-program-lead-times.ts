@@ -179,13 +179,15 @@ const REAL = ["2026-06-08T15:00:00.000Z"];
 function world(over: Partial<ProgramLeadTimesDeps> = {}) {
   const counted: ProgramTimesFallback[] = [];
   const countReads: [string, string][] = [];
+  const excluded: (string | null)[] = [];
   const deps: ProgramLeadTimesDeps = {
-    readToken: () => ({ ok: true }),
+    readToken: () => ({ ok: true, movingBookingId: null }),
     readSettings: async () => ({ enabled: true, dayLimit: 50 }),
     loadHours: async () => HOURS,
     readHorizonDays: async () => 2,
-    readDayCounts: async (from, to) => {
+    readDayCounts: async (from, to, excludeBookingId) => {
       countReads.push([from, to]);
+      excluded.push(excludeBookingId);
       const out = new Map<string, number>();
       for (let d = DateTime.fromISO(from); d.toISODate()! <= to; d = d.plus({ days: 1 })) out.set(d.toISODate()!, 0);
       return out;
@@ -196,7 +198,7 @@ function world(over: Partial<ProgramLeadTimesDeps> = {}) {
     now: () => MONDAY_MORNING,
     ...over,
   };
-  return { deps, counted, countReads };
+  return { deps, counted, countReads, excluded };
 }
 const ask = (over: { token?: string | null; leadZone?: string | null; fromMs?: number } = {}) => ({
   token: over.token === undefined ? TOKEN : over.token,
@@ -215,6 +217,16 @@ await (async () => {
     eq(out.placeholderStarts.length, out.slots.length - 1, "every start but the real one is marked as the placeholder's");
     eq(w.countReads, [["2026-06-08", "2026-06-09"]], "the day counts are read ONCE, over the Eastern days the starts fall on");
     eq(w.counted, [], "and nothing is counted as a fallback");
+  }
+  {
+    // #4414: a move token names its booking, so the day counts leave that booking out, as
+    // the claim does; a new booking's token leaves nothing out.
+    const moving = world({ readToken: () => ({ ok: true, movingBookingId: "bk-moving" }) });
+    await programLeadTimes(ask(), moving.deps);
+    eq(moving.excluded, ["bk-moving"], "a move's day counts leave the moving booking out");
+    const fresh = world();
+    await programLeadTimes(ask(), fresh.deps);
+    eq(fresh.excluded, [null], "a new booking's day counts leave nothing out");
   }
   {
     const w = world({ readDayCounts: async () => new Map([["2026-06-08", 50], ["2026-06-09", 0]]) });
