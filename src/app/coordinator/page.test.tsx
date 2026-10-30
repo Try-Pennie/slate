@@ -24,6 +24,14 @@ vi.mock("next/navigation", () => ({ redirect, notFound }));
 vi.mock("@/lib/admin/design-fixture-read", () => fixtureRead);
 vi.mock("@/lib/booking/reason-options", () => reasonOptions);
 vi.mock("@/app/coordinator/actions", () => ({ lookupCoordinatorCustomer: vi.fn(), placeCoordinatorCall: vi.fn(), checkCoordinatorTransfer: vi.fn() }));
+// #4412: which sign in page this browser last used, read from its cookies.
+const jar = vi.hoisted(() => ({ lastSignInPage: undefined as string | undefined }));
+vi.mock("next/headers", () => ({
+  cookies: async () => ({
+    get: (name: string) =>
+      name === "slate_last_sign_in_page" && jar.lastSignInPage !== undefined ? { name, value: jar.lastSignInPage } : undefined,
+  }),
+}));
 
 import CoordinatorPage from "./page";
 import { canUseCoordinatorDesk, ROLES } from "@/lib/auth/roles";
@@ -34,11 +42,24 @@ beforeEach(() => {
   vi.clearAllMocks();
   auth.coordinatorDeskUser.mockResolvedValue(null);
   auth.currentUser.mockResolvedValue(null);
+  jar.lastSignInPage = undefined;
 });
 afterEach(cleanup);
 
 describe("who reaches /coordinator (#4205)", () => {
   it("sends somebody signed out to sign in", async () => {
+    await expect(CoordinatorPage(params())).rejects.toThrow("NEXT_REDIRECT:/login");
+  });
+
+  // #4412: a browser holding a session the gate refuses reaches the page, not the middleware's
+  // signed out rule, so the page itself sends it to the sign in page that browser last used.
+  it("sends a refused session from a partner's browser to the partner sign in page", async () => {
+    jar.lastSignInPage = "partner";
+    await expect(CoordinatorPage(params())).rejects.toThrow("NEXT_REDIRECT:/partner/sign-in");
+  });
+
+  it("sends a refused session with any other record to the staff sign in page", async () => {
+    jar.lastSignInPage = "https://elsewhere.example/";
     await expect(CoordinatorPage(params())).rejects.toThrow("NEXT_REDIRECT:/login");
   });
 
