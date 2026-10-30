@@ -16,7 +16,7 @@ import { assert, eq, finish } from "./lib/harness.ts";
 /** A fake users table. Records the id it was asked for, so "never queried" is
  *  provable rather than assumed. */
 function reader(result: {
-  data?: { name: string | null } | null;
+  data?: { name: string | null; is_placeholder?: boolean | null } | null;
   error?: unknown;
   throws?: boolean;
 }) {
@@ -78,6 +78,15 @@ async function run() {
   {
     const { db } = reader({ error: { message: "permission denied" } });
     eq(await resolveAdvisorName(db, "u1"), null, "a read error yields no name rather than throwing");
+  }
+
+  // #4391: the placeholder advisor holds a call nobody dials as her, so the manage page
+  // and the existing call notice never name her ("Your loan advisor, Marcia").
+  {
+    const { db } = reader({ data: { name: "Marcia", is_placeholder: true } });
+    eq(await resolveAdvisorName(db, "p"), null, "the placeholder advisor is never named to a lead");
+    const control = reader({ data: { name: "Aisha Bello", is_placeholder: false } });
+    eq(await resolveAdvisorName(control.db, "u1"), "Aisha Bello", "control: a real advisor still is");
   }
 
   {

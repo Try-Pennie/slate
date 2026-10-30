@@ -110,7 +110,18 @@ vi.mock("@/lib/booking/reason-options", async (importOriginal) => {
   };
 });
 
+// #4391: the program lead move. Its decisions are pinned by
+// scripts/test-program-lead-booking.ts; here it is a seam.
+const programLeadMove = vi.hoisted(() => ({
+  loadProgramLeadMoveContext: vi.fn(),
+  moveProgramLeadLive: vi.fn(),
+}));
+vi.mock("@/lib/booking/program-lead-booking-service", () => programLeadMove);
+
 import { POST } from "./route";
+import { mintProgramLeadToken } from "@/lib/booking/program-lead-token";
+import { PLACEHOLDER_DAY_FULL_CODE, PlaceholderDayFullError } from "@/lib/booking/program-lead-booking";
+import { PROGRAM_PLACEHOLDER_OUTCOME } from "@/lib/monitor/booking-api-outcome";
 // Deliberately NOT mocked: the point of #2373 is that the route branches on the real
 // classification rather than on how an error happens to be worded.
 import { BookingWriteFailedError } from "@/lib/booking/gated-write";
@@ -850,5 +861,94 @@ describe("#3580 test-traffic page suppression", () => {
     const res = await POST(req(BODY), params);
     expect(res.status).toBe(503);
     expect(dispatch.sendThrottledAlert).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #4391: the one exception to #4203 lives HERE, the lead facing reschedule route, and
+// only for a move token signed for this very booking of a program lead's.
+describe("POST /bookings/[token]/reschedule for a program lead (#4391)", () => {
+  const LEAD = "00Q000000000001";
+  const BOOKING_ID = "6f1c2d3e-0000-4000-8000-000000000001";
+  const SECRET = "p".repeat(64);
+  const moveToken = (bookingId: string, salesforceId = LEAD) =>
+    mintProgramLeadToken({ salesforceId, bookingId, secret: SECRET, nowMs: Date.now() }).value;
+  const BODY = { start: "2026-07-01T15:00:00.000Z", reason: "schedule_conflict", timezone: "America/Chicago" };
+  const ctx = (programLead: boolean) => ({
+    booking: { id: BOOKING_ID, salesforce_id: LEAD, program_lead: programLead, manage_token: "tok1" },
+    bucket: { code: "411", is_test: false },
+    eventType: { duration_min: 30 },
+  });
+  const moved = (kind: string) => ({
+    result: {
+      booking: { id: BOOKING_ID, kind, agent_name: kind === "staff_placed" ? "Marcia" : "Agent A", starts_at: BODY.start, ends_at: "2026-07-01T15:30:00.000Z", prefill: {} },
+      manageUrl: "https://slate.test/booking/manage/tok1",
+      isTest: false,
+    },
+    path: kind === "staff_placed" ? "straight" : "real-slot",
+    onPlaceholder: kind === "staff_placed",
+  });
+
+  beforeEach(() => {
+    vi.stubEnv("PROGRAM_LEAD_TOKEN_SECRET", SECRET);
+    programLeadMove.loadProgramLeadMoveContext.mockReset();
+    programLeadMove.moveProgramLeadLive.mockReset();
+  });
+
+  it("moves a program lead's call through the program move, with the facts the ordinary move gets", async () => {
+    programLeadMove.loadProgramLeadMoveContext.mockResolvedValueOnce(ctx(true));
+    programLeadMove.moveProgramLeadLive.mockResolvedValueOnce(moved("staff_placed"));
+    const res = await POST(req({ ...BODY, programLeadMoveToken: moveToken(BOOKING_ID) }), params);
+    expect(res.status).toBe(200);
+    expect(service.rescheduleBooking).not.toHaveBeenCalled();
+    const [args] = programLeadMove.moveProgramLeadLive.mock.calls[0]!;
+    expect(args).toMatchObject({ token: "tok1", startIso: BODY.start, zone: "America/Chicago" });
+    expect(args.reason.code).toBe("schedule_conflict");
+    const body = await res.json();
+    expect(body.advisorName).toBeNull();
+    expect(recordApiOutcome.mock.calls.map((c) => c[0])).toEqual([PROGRAM_PLACEHOLDER_OUTCOME.move]);
+  });
+
+  it("counts a program lead's move to a real advisor as the ordinary rescheduled", async () => {
+    programLeadMove.loadProgramLeadMoveContext.mockResolvedValueOnce(ctx(true));
+    programLeadMove.moveProgramLeadLive.mockResolvedValueOnce(moved("routed"));
+    const res = await POST(req({ ...BODY, programLeadMoveToken: moveToken(BOOKING_ID) }), params);
+    expect(res.status).toBe(200);
+    expect(recordApiOutcome.mock.calls.map((c) => c[0])).toEqual(["rescheduled"]);
+    expect((await res.json()).advisorName).toBe("Agent A");
+  });
+
+  it("answers a full day with its own code and sentence, never the taken time one", async () => {
+    programLeadMove.loadProgramLeadMoveContext.mockResolvedValueOnce(ctx(true));
+    programLeadMove.moveProgramLeadLive.mockRejectedValueOnce(new PlaceholderDayFullError("2026-07-01"));
+    const res = await POST(req({ ...BODY, programLeadMoveToken: moveToken(BOOKING_ID) }), params);
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.reason).toBe("reschedule_placeholder_day_full");
+    expect(body.code).toBe(PLACEHOLDER_DAY_FULL_CODE);
+    expect(body.error).toBe(BOOKING_ERROR_COPY.placeholderDayFull);
+  });
+
+  // The exception is the token, verified against THIS booking, and the booking's own
+  // mark: anything less is the ordinary shared move, which keeps #4203.
+  it.each([
+    ["no token", null, true],
+    ["a token for another booking", "other-booking", true],
+    ["a token for another lead", "other-lead", true],
+    ["a new booking's token", "new", true],
+    ["a booking that is not a program lead's", "good", false],
+  ])("moves with the ordinary shared reschedule given %s", async (_label, kind, programLead) => {
+    programLeadMove.loadProgramLeadMoveContext.mockResolvedValueOnce(ctx(programLead));
+    service.rescheduleBooking.mockResolvedValueOnce(moved("routed").result);
+    const token =
+      kind === "other-booking" ? moveToken("6f1c2d3e-0000-4000-8000-000000000002")
+        : kind === "other-lead" ? moveToken(BOOKING_ID, "00Q000000000002")
+          : kind === "new" ? mintProgramLeadToken({ salesforceId: LEAD, bookingId: null, secret: SECRET, nowMs: Date.now() }).value
+            : kind === "good" ? moveToken(BOOKING_ID)
+              : null;
+    const res = await POST(req({ ...BODY, ...(token ? { programLeadMoveToken: token } : {}) }), params);
+    expect(res.status).toBe(200);
+    expect(programLeadMove.moveProgramLeadLive).not.toHaveBeenCalled();
+    expect(service.rescheduleBooking).toHaveBeenCalledTimes(1);
+    if (token === null) expect(programLeadMove.loadProgramLeadMoveContext).not.toHaveBeenCalled();
   });
 });

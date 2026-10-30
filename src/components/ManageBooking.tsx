@@ -21,6 +21,7 @@ import { SlotTimes, SLOT_TIMES_CLASSES } from "@/components/SlotTimes";
 import { useSlotPicker } from "@/components/use-slot-picker";
 import { NearestTimesPanel } from "@/components/NearestTimes";
 import { rescheduleOffersAlternatives } from "@/lib/booking/nearest-slots";
+import { PLACEHOLDER_DAY_FULL_CODE } from "@/lib/booking/placeholder-day-full";
 import { postJson, REQUEST_TIMEOUT_MS } from "@/lib/http";
 import { useStalledAfter } from "@/lib/useStalledAfter";
 import { formatSlotTime } from "@/lib/booking/slot-label";
@@ -346,6 +347,7 @@ export default function ManageBooking({
         calendarLinks?: CalendarLinks | null;
         error?: string;
         reason?: string;
+        code?: string;
       }>(
         `/api/bookings/${token}/reschedule`,
         {
@@ -355,6 +357,9 @@ export default function ManageBooking({
           // #2310: the zone this page is showing times in, which is the lead's
           // clock the server judges the calling window in.
           timezone: timeZone,
+          // #4391: a program lead's call may move onto the placeholder's extra times. In
+          // the body, which is never logged.
+          ...(programLeadMoveToken ? { programLeadMoveToken } : {}),
         },
         { timeoutMs: REQUEST_TIMEOUT_MS },
       );
@@ -378,6 +383,11 @@ export default function ManageBooking({
           setRefusedSlot(newStart);
           // Re-run the load so the stale list is swapped for the loading state rather
           // than left tappable with a time that has gone.
+          picker.retry();
+        } else if (data.code === PLACEHOLDER_DAY_FULL_CODE) {
+          // #4391: the day's extra times filled up. The server's own sentence is shown
+          // above; the reload swaps them for the day's real times. No alternatives
+          // panel: nothing was taken from this lead.
           picker.retry();
         }
       }

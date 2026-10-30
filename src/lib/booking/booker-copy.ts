@@ -393,6 +393,13 @@ export const BOOKING_ERROR_COPY = {
    *  the alternatives must be added to the explanation rather than replace it (L10). */
   slotTaken: "That time was just taken.",
   /**
+   * #4391: a program lead picked one of the extra times on a day whose extra times have
+   * all gone (the placeholder day limit). Its own sentence, never `slotTaken`: that time
+   * is not taken by anybody, so "just taken" would be untrue (L11). The picker reloads
+   * with that day's real times, which is what "the times below" points at.
+   */
+  placeholderDayFull: "Those extra times for that day just filled up. Pick one of the times below.",
+  /**
    * #2310: the server refused a start outside the lead's calling window. The
    * booker only offers times inside it, so this is reached by a page that sat
    * open across a zone change or a stale embed; it says what the rule is and

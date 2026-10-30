@@ -18,6 +18,7 @@ import { loadLandingBucketIsTest } from "@/lib/booking/landing-bucket";
 import { loadBookingHorizonDays } from "@/lib/booking/settings";
 import { loadReasonOptions } from "@/lib/booking/reason-options";
 import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
+import { programLeadTokenForLanding } from "@/lib/booking/program-lead-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -104,6 +105,11 @@ export default async function RebookPage({
     ? // landing-identity-ok: the id comes off the token's own booking, not the link
       await existingCallForLanding({ salesforceId }, { isTest })
     : null;
+  // #4391: a program lead's rebook may use the placeholder's extra times. The id is the
+  // token's own booking's, never the link's, so this reads program_leads for nobody a
+  // stranger can name. Never throws: a failed read is the ordinary booker.
+  // landing-identity-ok: the id comes off the token's own booking, not the link
+  const programLeadToken = salesforceId ? await programLeadTokenForLanding(salesforceId) : null;
   // landing-identity-ok: the id comes off the token's own booking, not the link
   const attendee = await landingAttendee(
     { salesforceId },
@@ -128,6 +134,7 @@ export default async function RebookPage({
         rescheduleReasons={reasonOptions.reschedule.active}
         cancelReasons={reasonOptions.cancel.active}
         landingCall={landingCall}
+        programLeadToken={programLeadToken}
       />
     </StandaloneBookerShell>
   );
