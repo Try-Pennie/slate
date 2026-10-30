@@ -37,6 +37,7 @@ import BookingPage from "./page";
 import Booker from "@/components/Booker";
 import { verifyProgramLeadToken } from "@/lib/booking/program-lead-gate";
 import { log } from "@/lib/log";
+import { PARTNER_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
 
 const SECRET = "r".repeat(64);
 const NOW = Date.UTC(2026, 9, 29, 15, 0, 0);
@@ -134,7 +135,7 @@ describe("/booking/{sfId} recognises a program lead (#4389)", () => {
   });
 });
 
-// #4393: the PARTNER test bucket opens only from approved partner pages (`/book`'s origin
+// #4393: the public test bucket opens only from approved partner pages (`/book`'s origin
 // gate). A registered program lead's texted link may open it too, so the program path can
 // be drilled on the test bucket; registering needs Bidspoke's key, so a stranger cannot.
 describe("/booking/{sfId} on the public test bucket (#4393)", () => {
@@ -149,16 +150,16 @@ describe("/booking/{sfId} on the public test bucket (#4393)", () => {
     vi.stubEnv("EMBED_TEST_PASS_SECRET", "t".repeat(64));
   });
 
-  it("hands a registered program lead the test pass on PARTNER", async () => {
+  it("hands a registered program lead the test pass on the public test bucket", async () => {
     admin.supabaseAdmin.mockReturnValue(db({ data: { expires_at: new Date(NOW + 86_400_000).toISOString() }, error: null }, []));
-    const props = await propsFor("PARTNER");
+    const props = await propsFor(PARTNER_BUCKET_CODE);
     expect(typeof props.programLeadToken).toBe("string");
     expect(typeof props.testPass).toBe("string");
   });
 
-  it("hands anyone else on PARTNER no test pass", async () => {
+  it("hands anyone else on the public test bucket no test pass", async () => {
     admin.supabaseAdmin.mockReturnValue(db({ data: null, error: null }, []));
-    expect((await propsFor("PARTNER")).testPass ?? null).toBeNull();
+    expect((await propsFor(PARTNER_BUCKET_CODE)).testPass ?? null).toBeNull();
   });
 
   it("hands a program lead on a real bucket no test pass", async () => {
