@@ -11,9 +11,14 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import { unwrap } from "@/lib/db/result";
 import type { Attributes } from "@/lib/db/types";
 import { DRILL_TEST_BUCKET_CODE } from "@/lib/embed/public-test-bucket";
-import { getBucketSlots, resolveBucketAgentIds, resolveBucketByCode } from "@/lib/availability/service";
+import {
+  getBucketSlots,
+  namedAgentResolver,
+  resolveBucketAgentIds,
+  resolveBucketByCode,
+} from "@/lib/availability/service";
 import { DEMOTION_SWEEP_REASON } from "@/lib/booking/demotion-plan";
-import { runDemotionDrill, type DrillResult } from "@/lib/booking/demotion-drill";
+import { firstTimeAllFree, runDemotionDrill, type DrillResult } from "@/lib/booking/demotion-drill";
 import {
   demotionBookings,
   pinnedDemotionBookingIds,
@@ -50,14 +55,16 @@ export async function runDemotionDrillLive(): Promise<DrillResult> {
       // Only test advisors are ever part of the drill.
       return rows.filter((r) => r.is_test).map(({ id, email, attributes }) => ({ id, email, attributes }));
     },
-    findSlot: async () => {
+    findSlot: async (agentIds) => {
       const now = Date.now();
-      const slots = await getBucketSlots(
-        DRILL_TEST_BUCKET_CODE,
-        new Date(now).toISOString(),
-        new Date(now + DRILL_SLOT_WINDOW_MS).toISOString(),
+      const fromIso = new Date(now).toISOString();
+      const toIso = new Date(now + DRILL_SLOT_WINDOW_MS).toISOString();
+      // Each advisor's times through the same predicate the bucket uses, narrowed to that one
+      // advisor as an advisor's own link is, so the time booked is one both can take.
+      const perAdvisor = await Promise.all(
+        agentIds.map((id) => getBucketSlots(DRILL_TEST_BUCKET_CODE, fromIso, toIso, namedAgentResolver(id))),
       );
-      return slots?.slots[0] ?? null;
+      return firstTimeAllFree(perAdvisor.map((r) => r?.slots ?? []));
     },
     book: async (startIso, attendee) => {
       const res = await bookViaApi({
@@ -109,6 +116,17 @@ export async function runDemotionDrillLive(): Promise<DrillResult> {
         await supabaseAdmin().from("bookings").select("status, assigned_user_id").eq("id", bookingId).maybeSingle(),
         "reroute drill booking",
       ) as { status: string; assigned_user_id: string | null } | null,
+    sweepItem: async (jobId, bookingId) =>
+      unwrap(
+        // One row: (job_id, booking_id) is unique.
+        await supabaseAdmin()
+          .from("bulk_reassign_items")
+          .select("status, detail")
+          .eq("job_id", jobId)
+          .eq("booking_id", bookingId)
+          .maybeSingle(),
+        "reroute drill sweep item",
+      ) as { status: string; detail: string | null } | null,
     loadJobChange: async (jobId) =>
       (
         unwrap(

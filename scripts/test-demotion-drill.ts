@@ -5,6 +5,7 @@
 import {
   DRILL_REASONS,
   DRILL_TIER,
+  firstTimeAllFree,
   runDemotionDrill,
   type DemotionDrillDeps,
   type DrillReason,
@@ -44,7 +45,10 @@ function world(sabotage: Partial<Record<"noMove" | "noAudit" | "noPin" | "noChan
 
   const deps: DemotionDrillDeps = {
     loadDrillAgents: async () => [...agents].map(([id, attributes]) => ({ id, email: `${id}@x.com`, attributes })),
-    findSlot: async () => START,
+    findSlot: async (agentIds) => {
+      calls.push(`slot:${agentIds.join(",")}`);
+      return START;
+    },
     book: async (startIso, attendee) => {
       calls.push(`book:${startIso}:${attendee.email}`);
       bookings.set("bk1", { id: "bk1", status: "confirmed", assigned_user_id: "a", manageToken: "tok1", reverted: false });
@@ -74,6 +78,10 @@ function world(sabotage: Partial<Record<"noMove" | "noAudit" | "noPin" | "noChan
       return b ? { status: b.status, assigned_user_id: b.assigned_user_id } : null;
     },
     loadJobChange: async (jobId) => jobs.get(jobId)?.change ?? null,
+    sweepItem: async () =>
+      sabotage.noMove
+        ? { status: "unplaceable", detail: "No other advisor was available to take this appointment at its original time." }
+        : { status: "moved", detail: null },
     auditActions: async (bookingId) => audits.filter((a) => a.bookingId === bookingId).map((a) => a.action),
     moveBack: async (bookingId) => {
       if (sabotage.moveBackRefused) return { kind: "refused", reason: "moved-since" };
@@ -103,6 +111,9 @@ function world(sabotage: Partial<Record<"noMove" | "noAudit" | "noPin" | "noChan
   eq(w.bookings.get("bk1")?.status, "cancelled", "and the test call is cancelled afterwards");
   eq(JSON.stringify(w.agents.get("a")), JSON.stringify(w.original.get("a")), "and the demoted test advisor is restored exactly");
   assert(w.calls.some((c) => c.includes("smoketest+reroute-drill-n1@trypennie.com")), "booked as a per run alias of the smoke mailbox");
+  // 2026-10-30: the drill booked a time only one advisor was free at, so the call could only land
+  // on that one and the sweep rightly found nobody to take it. The time is asked of BOTH.
+  eq(w.calls[0], "slot:a,b", "the time is one every drill advisor is free at");
   eq(
     w.audits.map((a) => a.action),
     ["booking.demotion_reroute", "booking.demotion_reroute_reverted"],
@@ -187,6 +198,28 @@ for (const [sabotage, reason] of failures) {
   const r = await runDemotionDrill(w.deps);
   eq(r.reason, "cleanup-failed", "the cleanup failure is said");
   eq(r.endedAs, "did-not-move", "and the pipeline's own failure is carried, not lost");
+}
+
+{
+  // A call that did not move says what the sweep itself recorded, so a busy advisor can never
+  // read as a broken pipeline, nor the reverse (L11).
+  const r = await runDemotionDrill(world({ noMove: true }).deps);
+  assert(
+    r.detail.includes("unplaceable") && r.detail.includes("No other advisor was available"),
+    `the sweep's own status and reason are carried (${r.detail})`,
+  );
+  const w = world({ noMove: true });
+  w.deps.sweepItem = async () => null;
+  const none = await runDemotionDrill(w.deps);
+  assert(none.detail.includes("recorded nothing"), `and a sweep with no record for the call says so (${none.detail})`);
+}
+
+{
+  // The first time every advisor is free, in the first advisor's order.
+  eq(firstTimeAllFree([["t1", "t2", "t3"], ["t2", "t3"]]), "t2", "the first time both share");
+  eq(firstTimeAllFree([["t1"], ["t2"]]), null, "no shared time is none");
+  eq(firstTimeAllFree([]), null, "no advisors is none");
+  eq(firstTimeAllFree([["t1"], []]), null, "an advisor with no times leaves none");
 }
 
 eq(new Set(DRILL_REASONS).size, DRILL_REASONS.length, "every reason is listed once");

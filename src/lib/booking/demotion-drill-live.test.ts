@@ -18,6 +18,7 @@ const availability = vi.hoisted(() => ({
   resolveBucketByCode: vi.fn(),
   resolveBucketAgentIds: vi.fn(),
   getBucketSlots: vi.fn(),
+  namedAgentResolver: vi.fn((userId: string) => ({ agent: userId })),
 }));
 vi.mock("@/lib/availability/service", () => availability);
 vi.mock("@/lib/booking/bulk-reassign-store", () => ({
@@ -63,5 +64,32 @@ describe("the reroute drill's booking (#3615)", () => {
     expect(input.allowTestBuckets).toBe(true);
     expect(input.startIso).toBe("2026-10-14T15:00:00.000Z");
     expect(input.attendee.email).toMatch(/^smoketest\+reroute-drill-.+@trypennie\.com$/);
+  });
+});
+
+describe("the reroute drill's time (2026-10-30)", () => {
+  // The drill booked the bucket's first time, which only ONE test advisor was free at (the other
+  // had a calendar event), so the call could only land on that one and the sweep rightly found
+  // nobody to take it. Each advisor's times are read on their own and the first shared one booked.
+  it("books the first time every drill advisor is free, read per advisor", async () => {
+    availability.getBucketSlots.mockImplementation(async (_code: string, _from: string, _to: string, resolver?: { agent: string }) =>
+      resolver?.agent === "a"
+        ? { slots: ["2026-10-30T17:00:00.000Z", "2026-10-30T18:00:00.000Z"] }
+        : resolver?.agent === "b"
+          ? { slots: ["2026-10-30T18:00:00.000Z"] }
+          : { slots: ["2026-10-30T17:00:00.000Z"] },
+    );
+    await runDemotionDrillLive();
+    expect(availability.namedAgentResolver.mock.calls.map((c) => c[0]).sort()).toEqual(["a", "b"]);
+    expect(service.bookViaApi.mock.calls[0][0].startIso).toBe("2026-10-30T18:00:00.000Z");
+  });
+
+  it("books nothing when the advisors share no free time", async () => {
+    availability.getBucketSlots.mockImplementation(async (_c: string, _f: string, _t: string, resolver?: { agent: string }) =>
+      ({ slots: [resolver?.agent === "a" ? "2026-10-30T17:00:00.000Z" : "2026-10-30T18:00:00.000Z"] }),
+    );
+    const r = await runDemotionDrillLive();
+    expect(r.reason).toBe("no-free-slot");
+    expect(service.bookViaApi).not.toHaveBeenCalled();
   });
 });

@@ -82,8 +82,10 @@ export interface DrillAgent {
 export interface DemotionDrillDeps {
   /** The bookable advisors the DRILL bucket's criteria reach. */
   loadDrillAgents(): Promise<DrillAgent[]>;
-  /** The first free time on the DRILL bucket, or null when it offers none. */
-  findSlot(): Promise<string | null>;
+  /** The first time on the DRILL bucket that EVERY listed advisor is free at, or null when there is
+   *  none. Free for one is not enough: the call can then land only on that one, and the sweep rightly
+   *  finds nobody to move it to (2026-10-30). */
+  findSlot(agentIds: string[]): Promise<string | null>;
   /** Book the DRILL bucket at `startIso`, or null when the booking path refused. */
   book(
     startIso: string,
@@ -101,6 +103,8 @@ export interface DemotionDrillDeps {
   /** Process every pending item of one sweep, through the real drain. */
   processJob(jobId: string): Promise<void>;
   loadBooking(bookingId: string): Promise<{ status: string; assigned_user_id: string | null } | null>;
+  /** What the sweep recorded about one call, so a call that did not move says why. */
+  sweepItem(jobId: string, bookingId: string): Promise<{ status: string; detail: string | null } | null>;
   /** The change recorded on the sweep, as stored. */
   loadJobChange(jobId: string): Promise<unknown>;
   /** The audit actions recorded about this booking. */
@@ -117,6 +121,14 @@ const tiersOf = (a: Attributes | null | undefined): string[] => {
   const v = a?.debt_team;
   return Array.isArray(v) ? v.map(String) : v === undefined || v === null ? [] : [String(v)];
 };
+
+/** The first time every advisor is free at, in the first advisor's order; null when they share none. */
+export function firstTimeAllFree(perAdvisor: string[][]): string | null {
+  if (perAdvisor.length === 0) return null;
+  const [first, ...rest] = perAdvisor;
+  const others = rest.map((times) => new Set(times));
+  return first.find((t) => others.every((set) => set.has(t))) ?? null;
+}
 
 class DrillFailure extends Error {
   readonly reason: DrillReason;
@@ -135,8 +147,10 @@ export async function runDemotionDrill(deps: DemotionDrillDeps): Promise<DrillRe
       detail: `The DRILL bucket reaches ${drillAgents.length} advisor(s) carrying the drill tier, and the drill needs two: run the smoke seed.`,
     };
   }
-  const slot = await deps.findSlot();
-  if (!slot) return { reason: "no-free-slot", detail: "The DRILL bucket offered no free time to book the test call on." };
+  const slot = await deps.findSlot(drillAgents.map((a) => a.id));
+  if (!slot) {
+    return { reason: "no-free-slot", detail: "The DRILL bucket offered no time when both drill advisors are free to book the test call on." };
+  }
 
   let step = "book";
   let booked: { bookingId: string; manageToken: string } | null = null;
@@ -200,7 +214,14 @@ export async function runDemotionDrill(deps: DemotionDrillDeps): Promise<DrillRe
     await deps.processJob(jobId);
     const moved = await deps.loadBooking(made.bookingId);
     if (moved?.assigned_user_id !== other.id) {
-      throw new DrillFailure("did-not-move", "The sweep ran and the test call is not with the other drill advisor.");
+      const item = await deps.sweepItem(jobId, made.bookingId);
+      // Only what the sweep recorded: the alert's headline already says the call did not move.
+      throw new DrillFailure(
+        "did-not-move",
+        item
+          ? `The sweep recorded the test call as ${item.status}${item.detail ? `: ${item.detail}` : "."}`
+          : "The sweep ran and recorded nothing for the test call.",
+      );
     }
     const recorded = readDemotionChange(await deps.loadJobChange(jobId));
     if (!recorded || !recorded.from.debtTeam.includes(DRILL_TIER) || recorded.to.debtTeam.includes(DRILL_TIER)) {
