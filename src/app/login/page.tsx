@@ -5,12 +5,12 @@ import { useSearchParams } from "next/navigation";
 import { OAuthSignInButton } from "@/components/sign-in/OAuthSignInButton";
 import { SignInErrorBanner } from "@/components/sign-in/SignInErrorBanner";
 import { SignInFrame } from "@/components/sign-in/SignInFrame";
-import { SIGN_IN_INCOMPLETE_MESSAGE, SIGN_IN_SETUP_RETRY_MESSAGE } from "@/lib/auth/sign-in-copy";
 import {
-  SESSION_IDLE_DAYS,
-  SESSION_TIME_BOX_DAYS,
-  sessionRefusalLoginError,
-} from "@/lib/auth/session-age";
+  SESSION_ENDED_MESSAGES,
+  SIGN_IN_INCOMPLETE_MESSAGE,
+  SIGN_IN_SETUP_RETRY_MESSAGE,
+  type SignInPanelWords,
+} from "@/lib/auth/sign-in-copy";
 import {
   GOOGLE_ACCOUNT_CHANGED_LOGIN_ERROR,
   GOOGLE_ACCOUNT_CHANGED_MESSAGE,
@@ -50,14 +50,15 @@ const ERROR_MESSAGES: Record<string, string> = {
   // can fix it, so it points at the people who can.
   sign_in_unavailable:
     "Sign in is unavailable right now. Please let a Slate admin know.",
-  // #3084: a sign in that reached its age limit. Each says which limit, because
-  // "you were signed out" alone reads as something having gone wrong.
-  [sessionRefusalLoginError("time-box")]:
-    `You were signed out because it has been ${SESSION_TIME_BOX_DAYS} days since you signed in. Please sign in again.`,
-  [sessionRefusalLoginError("idle")]:
-    `You were signed out because Slate was not used on this device for ${SESSION_IDLE_DAYS} days. Please sign in again.`,
-  [sessionRefusalLoginError("unstamped")]:
-    "You were signed out. Please sign in again.",
+  // #3084: a sign in that reached its age limit, one sentence per limit, shared with the
+  // partner sign in page so the two cannot drift apart (#4409).
+  ...SESSION_ENDED_MESSAGES,
+};
+
+/** The photograph panel's words on the staff page, as they have always been. */
+const STAFF_PANEL: SignInPanelWords = {
+  headline: "Welcome back.",
+  line: "Manage your availability and let the right calls find you.",
 };
 
 function LoginError() {
@@ -76,7 +77,7 @@ function LoginError() {
  */
 export default function LoginPage() {
   return (
-    <SignInFrame>
+    <SignInFrame panel={STAFF_PANEL}>
       <h1 className="pn-h3">Sign in to Slate</h1>
       <p className="mt-2 text-sm text-fg-muted">
         Sign in with your Pennie Google account to manage your calendar and

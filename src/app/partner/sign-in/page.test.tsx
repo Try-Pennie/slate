@@ -63,6 +63,32 @@ describe("the partner sign in page (#4379, D1 and D2)", () => {
     expect(PARTNER_SIGN_IN_COPY.heading).toBe(h1.textContent);
   });
 
+  // #4399, docs/design/partner-sign-in.html D4 and D5: the photograph panel speaks to a partner
+  // coordinator, never in the staff page's words.
+  it("puts the partner's words on the photograph panel, not the staff page's", async () => {
+    await renderPage();
+    const headline = screen.getByText("Booking for Pennie.");
+    expect(headline.nextElementSibling?.textContent).toBe(
+      "Help Pennie's customers talk to an advisor, now or at a time that suits them.",
+    );
+    expect(document.body.textContent).not.toMatch(/Welcome back|Manage your availability/);
+  });
+
+  // #4411, docs/design/partner-sign-in.html D6: below the Microsoft button, a quiet line gives
+  // Pennie staff a way to their own sign in page.
+  it("gives Pennie staff a way to the staff sign in page, below the Microsoft button", async () => {
+    await renderPage();
+    const link = screen.getByRole("link", { name: "Sign in on the staff page" });
+    expect(link.getAttribute("href")).toBe("/login");
+    const line = link.parentElement!;
+    expect(line.tagName).toBe("P");
+    expect(line.textContent).toBe("Pennie staff? Sign in on the staff page");
+    // It follows the button, so a partner reaches Continue with Microsoft first.
+    expect(microsoftButton().compareDocumentPosition(line) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // A link, never a second button: the page still offers one way in.
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
+
   it("renders per request and names itself in the tab", () => {
     // A prerendered page carries no CSP nonce, so its scripts would all be refused (#2575).
     expect(dynamic).toBe("force-dynamic");
@@ -88,6 +114,18 @@ describe("the refusals a Microsoft sign in comes back with", () => {
     expect(link?.getAttribute("href")).toBe("/login");
     // Still exactly one button: the way to the staff page is a link, never a Google button.
     expect(screen.getAllByRole("button")).toHaveLength(1);
+    // And the way there is said once: the staff line (D6) steps aside while this refusal shows.
+    expect(screen.getAllByRole("link")).toHaveLength(1);
+    expect(document.body.textContent).not.toMatch(/Pennie staff\?/);
+  });
+
+  it("keeps the staff line under every refusal that does not already link to the staff page", async () => {
+    for (const [code, refusal] of Object.entries(PARTNER_SIGN_IN_REFUSALS)) {
+      if (refusal.link) continue;
+      cleanup();
+      await renderPage({ error: code });
+      expect(screen.getByRole("link", { name: "Sign in on the staff page" }), code).toBeTruthy();
+    }
   });
 
   it("gives every code the callback can send here a sentence of its own", async () => {

@@ -7,23 +7,21 @@ import {
 
 /**
  * The words both sign in pages share (#4379): the staff page, `/login`, and the partner
- * page, `/partner/sign-in`, draw the same photograph panel and the same sign in button,
- * and explain an ended session alike (#4409), so they read the same sentences from here
- * rather than two copies drifting apart.
+ * page, `/partner/sign-in`, draw the same sign in button and explain an ended session alike
+ * (#4409), so they read those sentences from here rather than two copies drifting apart.
  *
- * The panel's words are the staff page's as they were; the partner page shows them too,
- * because its settled design draws the card inside the existing login page frame
- * (docs/design/partner-sign-in.html, "idioms"). Each page's own heading, line and refusal
- * sentences live with that page: `partner-sign-in-copy.ts` for the partner page.
+ * Each page's own heading, line, photograph panel words (#4399) and remaining refusal
+ * sentences live with that page: `partner-sign-in-copy.ts` for the partner page, inline
+ * for `/login`.
  *
  * Pure; its one import is the session limits the session sentences name.
  */
 
-/** The photograph panel beside the card. */
-export const SIGN_IN_PANEL_COPY = {
-  welcome: "Welcome back.",
-  line: "Manage your availability and let the right calls find you.",
-} as const;
+/** What a photograph panel says: a headline, and the line under it. Each page has its own. */
+export interface SignInPanelWords {
+  headline: string;
+  line: string;
+}
 
 /** The sign in button, in each of its states (#626, #631). */
 export const SIGN_IN_BUTTON_COPY = {

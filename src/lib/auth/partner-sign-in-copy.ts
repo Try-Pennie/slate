@@ -13,8 +13,8 @@ import { STAFF_SIGN_IN_PATH } from "./sign-in-page.ts";
  * scheduling coordinators sign in with their work Microsoft account.
  *
  * The heading and line are the settled design's, word for word
- * (docs/design/partner-sign-in.html, D2), and `docs/design/partner-sign-in.checks.js`
- * checks the built page says them. The refusals are beyond the design, for the codes the
+ * (docs/design/partner-sign-in.html, D2), as are the panel's words and the staff line (D4 to
+ * D6), and `docs/design/partner-sign-in.checks.js` checks the built page says them. The refusals are beyond the design, for the codes the
  * sign in callback sends a Microsoft sign in back with, in the same voice: short sentences
  * for a reader whose first language may not be English, and, since a partner cannot know
  * who Pennie's Slate admins are, the person they can ask is their own team lead.
@@ -24,7 +24,7 @@ export const PARTNER_SIGN_IN_COPY = {
   line: "Sign in with your work Microsoft account to book calls for Pennie's customers.",
   /**
    * The photograph panel, in the partner's words rather than the staff page's (#4399,
-   * docs/design/partner-sign-in-panel.html, D1 the headline and D2 the line).
+   * docs/design/partner-sign-in.html, D4 the headline and D5 the line).
    */
   panel: {
     headline: "Booking for Pennie.",
@@ -32,7 +32,8 @@ export const PARTNER_SIGN_IN_COPY = {
   },
   /**
    * The quiet way out below the Microsoft button for a Pennie staff member who lands here on a
-   * browser a coordinator used last (#4411, docs/design/partner-sign-in-staff-link.html, D1).
+   * browser a coordinator used last (#4411, docs/design/partner-sign-in.html, D6). The page
+   * leaves it out while a refusal already links to the staff page, so that is said once.
    * The lead ends in a space because the link follows it on the same line.
    */
   staffWay: {
