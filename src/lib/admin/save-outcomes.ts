@@ -73,6 +73,7 @@ export const SAVE_OUTCOMES = [
   "frame-unlocked",
   "nearly-full",
   "org-default-hours",
+  "placeholder-day-limit",
   "placeholder-off",
   "placeholder-on",
   "transfer-offer",
@@ -141,6 +142,9 @@ export const SAVE_OUTCOME_COPY: Record<Exclude<SaveOutcome, DynamicOutcome>, str
   // lands from the next one. What each state means is drawn by the switch itself (L605).
   "placeholder-on": "Saved. From the next booking, a coordinator can put a call nobody is free for on Marcia.",
   "placeholder-off": "Saved. From the next booking, a coordinator who tries to book a call nobody is free for is refused.",
+  // #4392: read on every program lead's times and every program booking's claim, so it
+  // lands from the next one. The limit itself is in the box beneath this notice (L605).
+  "placeholder-day-limit": "Placeholder day limit saved. It applies from the next program lead's times or booking.",
   // #4380: read on every transfer check, so it lands from the next customer found.
   "transfer-offer": "Live transfer saved. It applies from the next customer a coordinator finds.",
   // #3706: which way it went and when it lands, like the frame lock above. What each

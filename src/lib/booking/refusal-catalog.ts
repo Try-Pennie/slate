@@ -331,15 +331,17 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "embed booker",
     outcome: "409, told the extra times for that day just filled up, and shown the day's real times",
     counting: { kind: "none" },
-    rateSignal: { kind: "deferred", issue: 4392 },
+    rateSignal: { kind: "none" },
     why:
       "A program lead (#4391) picked one of the placeholder advisor's extra times on a day whose " +
       "placeholder day limit was reached between the page loading and the confirm. It is the limit " +
       "working, not a fault, so it stays out of the failure share: counting it there would page on a " +
-      "busy day doing exactly what the admin's setting asks. Whether the limit is turning too many " +
-      "program leads away is a question about a DAY, not a rate over two hours, so it is counted per " +
-      "Eastern day of the call on the program leads admin page and alerted on there (#4392). Until " +
-      "then each refusal is logged under its own tag, program-lead-day-full.",
+      "busy day doing exactly what the admin's setting asks, and it pages nowhere else for the same " +
+      "reason. Whether the limit is turning too many program leads away is a question about a DAY, not " +
+      "a rate over two hours, so each refusal is counted in program_lead_outcomes (kind limit_refused) " +
+      "on the Eastern day it happened, and /admin/program-leads shows that count beside the day's " +
+      "bookings for the admin who sets the limit (#4392). It is also logged under its own tag, " +
+      "program-lead-day-full, with the call's day.",
   },
   {
     id: "attendee_email_refused",
@@ -689,12 +691,13 @@ export const REFUSAL_CATALOG: RefusalPath[] = [
     surface: "manage page",
     outcome: "409, told the extra times for that day just filled up; the call stays where it was",
     counting: { kind: "none" },
-    rateSignal: { kind: "deferred", issue: 4392 },
+    rateSignal: { kind: "none" },
     why:
       "The move twin of placeholder_day_full (#4391): a program lead moving their call onto an " +
       "extra time on a day whose placeholder day limit is reached. The limit doing its job, so it " +
-      "stays out of the failure share for the same reason; counted per Eastern day of the call on " +
-      "the program leads admin page by #4392, and logged under program-lead-day-full until then.",
+      "stays out of the failure share and pages nowhere for the same reason. Counted the same way, in " +
+      "program_lead_outcomes (kind limit_refused) on the Eastern day it happened, shown on " +
+      "/admin/program-leads (#4392), and logged under program-lead-day-full.",
   },
   {
     id: "reschedule_conflict",

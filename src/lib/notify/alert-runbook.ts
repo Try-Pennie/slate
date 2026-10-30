@@ -35,6 +35,7 @@ export const ALERT_FAMILIES = [
   "a-merge-has-not-shipped-or-ci-cannot-run",
   "the-database-is-running-low-on-memory",
   "a-call-on-the-placeholder-advisor-is-at-risk",
+  "program-leads-are-not-getting-the-extra-times",
   "live-transfer-is-not-being-offered",
   "something-was-measured-and-is-only-worth-knowing",
 ] as const;
@@ -365,12 +366,17 @@ const FAMILY_BY_KEY: Record<string, AlertFamily> = {
   // pool), and the first question is the same one: is this person meant to be
   // taking calls, and what does the roster say about them.
   regal_call_unroutable: "the-roster-or-routing-data-is-wrong",
-  // #4206. A call a coordinator placed on the placeholder advisor, Marcia: Regal never
-  // called the customer, the placeholder's Google seat is failing, or the switch is on
-  // with no placeholder to place calls on. One procedure: the placeholder path.
-  placeholder_call_unserved: "a-call-on-the-placeholder-advisor-is-at-risk",
+  // #4206. A call placed on the placeholder advisor, Marcia: Regal never called the
+  // customer (one summary for the day since #4392), the placeholder's Google seat is
+  // failing, or the switch is on with no placeholder to place calls on. One procedure:
+  // the placeholder path.
+  placeholder_calls_unserved: "a-call-on-the-placeholder-advisor-is-at-risk",
   placeholder_seat_failing: "a-call-on-the-placeholder-advisor-is-at-risk",
   placeholder_missing: "a-call-on-the-placeholder-advisor-is-at-risk",
+  // #4392. Program leads shown real times only because a read failed, or not being
+  // registered at all: either way the extra times are not reaching them. One procedure.
+  program_lead_fallbacks: "program-leads-are-not-getting-the-extra-times",
+  program_lead_registrations_zero: "program-leads-are-not-getting-the-extra-times",
   // #4380. The coordinator page's live transfer offer: the transfer queue cannot be read,
   // or never had enough advisors free all day. One procedure: the endpoint, then the queue.
   transfer_queue_unreadable: "live-transfer-is-not-being-offered",

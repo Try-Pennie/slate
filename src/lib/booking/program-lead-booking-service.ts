@@ -90,7 +90,7 @@ function remember<T>(work: () => Promise<T>): Promise<T> {
  * Page a placeholder path failure as a booking failure (`pageBookingFailure`), once. A
  * full day refusal is never paged, by rule here rather than by `bookingFailureAlert`
  * happening to have no alert for its class: it is the limit doing its job, counted by
- * `countLimitRefusal` and alerted on per day by #4392.
+ * `countLimitRefusal` and shown per Eastern day on /admin/program-leads (#4392).
  */
 export async function pagingFailures<T>(work: () => Promise<T>): Promise<T> {
   try {

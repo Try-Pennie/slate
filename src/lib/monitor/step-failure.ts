@@ -200,6 +200,7 @@ const GATE_NAMES: Record<keyof ReturnType<typeof monitorSetupGates>, string> = {
   bufferBreach: "the calls inside an advisor's buffer check",
   placeholderCalls: "the placeholder call nobody called check",
   transferQueue: "the live transfer queue probe",
+  programLeadRegistrations: "the no program leads registered alarm",
 };
 
 /**

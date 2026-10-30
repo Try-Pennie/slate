@@ -920,6 +920,27 @@ export async function firingFamilyMembers(family: string): Promise<string[]> {
 }
 
 /**
+ * The subjects a CONDITION's last post named, while it is firing (#4392).
+ *
+ * A summary condition (one key listing several bookings) has to say how each name it
+ * posted left the list, and the only record of what it posted is the row the send wrote
+ * (`subjects`, #3801). Read only while the firing marker is there: once the all clear has
+ * gone out, those names were already told as ended, and answering them again would report
+ * a list nobody is looking at. Empty for a key that never posted or has been cleared.
+ *
+ * THROWS when either read fails, never an empty list: to a caller, empty means "nothing
+ * was listed", and saying that off a read that did not happen would drop every ending.
+ */
+export async function postedConditionSubjects(key: string): Promise<string[]> {
+  const firing = await readStamp(firingKey(key));
+  if (firing.kind === "unreadable") throw new Error(`alert_state firing marker for ${key} is unreadable`);
+  if (firing.kind === "absent") return [];
+  const row = await readStamp(key);
+  if (row.kind === "unreadable") throw new Error(`alert_state row for ${key} is unreadable`);
+  return row.kind === "present" ? (row.subjects ?? []) : [];
+}
+
+/**
  * Clear several conditions at once, at the cost of ONE read on the healthy tick
  * (#1151).
  *

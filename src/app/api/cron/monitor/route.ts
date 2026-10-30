@@ -13,6 +13,7 @@ import {
   settleAlertsSilently,
   firingFamilyMembers,
   existingAlertStateKeys,
+  postedConditionSubjects,
 } from "@/lib/notify/dispatch";
 import { logAlertSendFailure } from "@/lib/notify/send-failure";
 import { CHANGE_ONLY_HOLD_MS, CONDITION_REPEAT_MS } from "@/lib/notify/repeat-policy";
@@ -39,16 +40,32 @@ import { getBucketSlots } from "@/lib/availability/service";
 import { loadAllWorkingHours } from "@/lib/availability/working-hours-load";
 import { slotCacheKey } from "@/lib/availability/cache-key";
 import { recomputeBucketSlotsForToday } from "@/lib/availability/slot-cache";
-import { readBookingHorizonDays, readPlaceholderBookingEnabled, readTransferOfferSettings } from "@/lib/booking/settings";
+import {
+  readBookingHorizonDays,
+  readPlaceholderBookingEnabled,
+  readProgramLeadTimesSettings,
+  readTransferOfferSettings,
+} from "@/lib/booking/settings";
 import { readOfferedOpenDays } from "@/lib/booking/days-offered-load";
 import { recordFailureStreak, clearFailureStreak, trackConsecutiveStreak } from "@/lib/notify/streak";
-import { runPlaceholderCallCheck, PLACEHOLDER_CALL_ALERT_PREFIX } from "@/lib/monitor/placeholder-calls";
+import {
+  runPlaceholderCallCheck,
+  PLACEHOLDER_CALLS_ALERT_KEY,
+  RETIRED_PLACEHOLDER_CALL_PREFIX,
+} from "@/lib/monitor/placeholder-calls";
 import {
   loadPlaceholderCallCandidates,
   loadPlaceholderBookingsById,
   loadPlaceholderCalls,
   loadCallFeedNewestReceivedMs,
+  loadCallFeedFirstArrivalAfterMs,
 } from "@/lib/monitor/placeholder-calls-store";
+import {
+  PROGRAM_LEAD_REGISTRATIONS_ALERT_ARMED,
+  runProgramLeadFallbackCheck,
+  runProgramLeadRegistrationsCheck,
+} from "@/lib/monitor/program-lead-alerts";
+import { countProgramLeadsRegisteredSince, readProgramLeadFallbackDayCount } from "@/lib/monitor/program-lead-alerts-store";
 import { runReminderOwedCheck, REMINDER_OWED_ALERT_PREFIX } from "@/lib/monitor/reminder-owed";
 import {
   runTransferQueueProbe,
@@ -3065,14 +3082,16 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // --- A placeholder call past its time with no Regal call to the customer (#4206).
-    // Nobody dials as the placeholder: Regal sends the call to the pool at its time,
-    // so the one way the customer is left waiting is Regal never calling at all. This
-    // reads the day's placeholder calls in the REAL buckets, the pages already open,
-    // the calls to those customers' Leads and the feed's newest arrival (its positive
-    // control), and pages per booking. Gated on the shared bucket list, which is what
-    // keeps a test bucket's drill call off the page. A failed read measures nothing,
-    // pages nobody and clears nothing. ---
+    // --- Placeholder calls past their time with no Regal call to the customer (#4206),
+    // reported as ONE summary for the Eastern day (#4392). Nobody dials as the
+    // placeholder: Regal sends the call to the pool at its time, so the one way the
+    // customer is left waiting is Regal never calling at all. This reads yesterday's and
+    // today's placeholder calls in the REAL buckets, what the last post listed, the calls
+    // to those customers' Leads and the feed's newest arrival (its positive control), and
+    // lists every unserved call so far today, each booking a subject. It also closes, once,
+    // any page the retired per booking family left open. Gated on the shared bucket list,
+    // which is what keeps a test bucket's drill call off the page. A failed read measures
+    // nothing, pages nobody and clears nothing. ---
     const placeholderCalls = await steps.run("placeholder_calls", null, async (step) => {
       if (!gates.placeholderCalls.run) {
         log.warn("monitor", { msg: "placeholder calls skipped", why: gates.placeholderCalls.why });
@@ -3088,19 +3107,23 @@ export async function GET(req: NextRequest) {
             sinceIso,
             untilIso,
           ),
-        loadFiringIds: () => firingFamilyMembers(PLACEHOLDER_CALL_ALERT_PREFIX),
+        loadListedIds: () => postedConditionSubjects(PLACEHOLDER_CALLS_ALERT_KEY),
         loadBookingsById: (ids) => loadPlaceholderBookingsById(db, ids),
         loadCalls: (leadKeys, sinceIso) => loadPlaceholderCalls(db, leadKeys, sinceIso),
         feedNewestReceivedMs: () => loadCallFeedNewestReceivedMs(db),
+        feedFirstArrivalAfterMs: (sinceIso) => loadCallFeedFirstArrivalAfterMs(db, sinceIso),
+        loadRetiredFiringIds: () => firingFamilyMembers(RETIRED_PLACEHOLDER_CALL_PREFIX),
         bookingUrl: (id) => `${appUrl()}${bookingDetailHref(id)}`,
-        // alert-key: placeholder_call_unserved:*
+        // alert-key: placeholder_calls_unserved
         // alert-text-ok: our own copy from placeholder-calls.ts, built from the booking
-        // row, a Lead id and formatted times; no error text can reach it.
+        // rows, Lead ids and formatted times; no error text can reach it.
         notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: placeholder_calls_unserved
         // alert-key: placeholder_call_unserved:*
         // all-clear-proof: scripts/test-placeholder-calls.ts pins that a failed read of the
-        // bookings, the open pages, the calls or the feed clears nothing, that a feed behind
-        // the due time clears nothing, and that only a call found is worded as a recovery.
+        // bookings, the last post's list, the calls or the feed clears nothing, that a call
+        // the feed cannot judge yet holds the page open, and that only a call found is
+        // worded as a recovery. The retired family's closing words say it was replaced.
         resolve: (key, text) => resolveAlert(key, text),
         cooldownMs: CONDITION_REPEAT_MS,
         nowMs: now,
@@ -3124,9 +3147,76 @@ export async function GET(req: NextRequest) {
               no_lead_id: placeholderCalls.noLeadId.join(","),
               unserved: placeholderCalls.unserved.join(","),
               settled: placeholderCalls.settled.join(","),
+              retired_closed: placeholderCalls.retiredClosed,
             }
           : {}),
       });
+    }
+
+    // --- Program leads shown real times only because a read failed (#4392). Reads the
+    // Eastern day's count from program_lead_outcomes (bumped by the times path, #4390)
+    // and pages at five on one day, the day the subject, the count banded. It consumes no
+    // setup read and is not gated. A failed read measures nothing, pages nobody and
+    // clears nothing, and is thrown so this step's failing streak pages it. ---
+    const programLeadFallbacks = await steps.run("program_lead_fallbacks", null, async () =>
+      runProgramLeadFallbackCheck({
+        readDayCount: (day) => readProgramLeadFallbackDayCount(db, day),
+        // alert-key: program_lead_fallbacks
+        // alert-text-ok: our own copy from program-lead-alerts.ts, built from a day and a
+        // count; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: program_lead_fallbacks
+        // all-clear-proof: scripts/test-program-lead-alerts.ts pins that a failed read clears
+        // nothing and that only a measured count under the line clears it.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+        nowMs: now,
+      }).then((result) => {
+        if (result.status === "unreadable") throw new Error(`program lead fallbacks unreadable: ${result.error}`);
+        return result;
+      }),
+    );
+    if (programLeadFallbacks) {
+      log.info("monitor", { msg: "program lead fallbacks", ...programLeadFallbacks });
+    }
+
+    // --- No program lead registered since the last whole business day opened (#4392).
+    // SHIPPED DISARMED: PROGRAM_LEAD_REGISTRATIONS_ALERT_ARMED is false until #4393 switches
+    // the program on, and a disarmed check reads nothing. Armed, it reads the program's
+    // switch and a server side count, and judges the last whole business day, so it is
+    // gated on the org's week. An unreadable switch, week or count measures nothing. ---
+    const programLeadRegistrations = await steps.run("program_lead_registrations", null, async (step) => {
+      if (!gates.programLeadRegistrations.run || !businessHours) {
+        log.warn("monitor", {
+          msg: "program lead registrations skipped",
+          why: gates.programLeadRegistrations.run ? "no business hours" : gates.programLeadRegistrations.why,
+        });
+        return step.unmeasured(null);
+      }
+      return runProgramLeadRegistrationsCheck({
+        armed: PROGRAM_LEAD_REGISTRATIONS_ALERT_ARMED,
+        hours: { zone: businessHours.zone, rules: businessHours.rules, exceptions: businessHours.exceptions },
+        readSwitch: async () => (await readProgramLeadTimesSettings())?.enabled ?? null,
+        countRegisteredSince: (sinceIso) => countProgramLeadsRegisteredSince(db, sinceIso),
+        // alert-key: program_lead_registrations_zero
+        // alert-text-ok: our own copy from program-lead-alerts.ts, built from a business
+        // day and a count; no error text can reach it.
+        notify: (key, ms, text, repeat) => sendThrottledAlert(key, ms, text, repeat),
+        // alert-key: program_lead_registrations_zero
+        // all-clear-proof: scripts/test-program-lead-alerts.ts pins that a disarmed check, an
+        // unreadable switch, week or count clear nothing, that only a counted registration
+        // is worded as a recovery, and that the program switched off ends it in its own words.
+        resolve: (key, text) => resolveAlert(key, text),
+        cooldownMs: CONDITION_REPEAT_MS,
+        nowMs: now,
+      }).then((result) => {
+        // Thrown, so the step's failing streak pages a read that stays broken.
+        if (result.status === "unreadable") throw new Error(`program lead registrations unreadable: ${result.why}`);
+        return result;
+      });
+    });
+    if (programLeadRegistrations) {
+      log.info("monitor", { msg: "program lead registrations", ...programLeadRegistrations });
     }
 
     // --- A reminder email owed to a lead whose call is still ahead, and not recorded

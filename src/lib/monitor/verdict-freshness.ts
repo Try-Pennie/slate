@@ -895,4 +895,11 @@ export const GATED_CHECK_VERDICT_COVERAGE: Record<MonitorGatedCheck, DetectorVer
       "step, so `monitor_step_failing:transfer_queue` pages a sustained one, and its only gate is the org's " +
       "week, whose own failing read pages as `monitor_step_failing:setup_business_hours`",
   },
+  programLeadRegistrations: {
+    exempt:
+      "shipped disarmed (#4392), reading nothing until #4393 arms it; armed, every way it can stop " +
+      "concluding already pages: a failed read of the switch or the count is thrown out of its step, so " +
+      "`monitor_step_failing:program_lead_registrations` pages a sustained one, and its only gate is the " +
+      "org's week, whose own failing read pages as `monitor_step_failing:setup_business_hours`",
+  },
 };

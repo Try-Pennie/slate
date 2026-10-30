@@ -368,12 +368,14 @@ Lead's `calBookingLink__c`.
 **What watches it** (#4206, all in the monitor lane, runbook "A call on the placeholder
 advisor is at risk"):
 
-- `placeholder_call_unserved:<booking>`: a call 15 minutes past its booked END with no
-  Regal call to the customer's Lead in `regal_call_outcomes` since 15 minutes before its
-  start, judged only once the call feed has received anybody's call after that time
-  (`src/lib/monitor/placeholder-calls.ts`). The match is on the Lead id because the feed
-  stores no phone. The grace runs from the end, not the start, because Slate hears of a
-  call only when it completes.
+- `placeholder_calls_unserved`: ONE summary for the Eastern day (#4392) listing every
+  placeholder call so far that day 15 minutes past its booked END with no Regal call to
+  the customer's Lead in `regal_call_outcomes` since 15 minutes before its start, each
+  judged only once the call feed has received anybody's call after that time
+  (`src/lib/monitor/placeholder-calls.ts`). Each booking is a subject, so a new name posts
+  at once. The match is on the Lead id because the feed stores no phone. The grace runs
+  from the end, not the start, because Slate hears of a call only when it completes. It
+  replaced a page per booking (`placeholder_call_unserved:<booking>`), now retired.
 - `placeholder_seat_failing`: the seat's Calendar (`calendarList.list`) or Gmail (a
   `gmail.send` token mint) failing while the seat is in use, classified with
   `isDefinitiveFailure` (`src/lib/monitor/placeholder-seat.ts`), or its vacation
