@@ -26,6 +26,7 @@ import {
 } from "@/lib/auth/microsoft-identity";
 import { PARTNER_SIGN_IN_COPY, PARTNER_SIGN_IN_REFUSALS } from "@/lib/auth/partner-sign-in-copy";
 import { SIGN_IN_FROM_COOKIE } from "@/lib/auth/sign-in-page";
+import { sessionRefusalLoginError } from "@/lib/auth/session-age";
 
 const renderPage = async (sp: Record<string, string> = {}) =>
   render(await PartnerSignInPage({ searchParams: Promise.resolve(sp) }));
@@ -103,6 +104,8 @@ describe("the refusals a Microsoft sign in comes back with", () => {
       "provision_failed",
       "exchange_failed",
       "missing_code",
+      // A session that reached its limit (#4406, #4412), one code per reason.
+      ...(["time-box", "idle", "unstamped"] as const).map(sessionRefusalLoginError),
     ];
     const seen = new Map<string, string>();
     for (const code of codes) {
@@ -120,6 +123,17 @@ describe("the refusals a Microsoft sign in comes back with", () => {
       expect(text, code).not.toMatch(/Slate admin/);
       if (code !== "domain_not_allowed") expect(text, code).not.toMatch(/google/i);
     }
+  });
+
+  // #4409: a coordinator whose session reached its limit lands here (#4406, #4412) and reads
+  // the sentence the staff page shows (Dan, 2026-10-29), from the one place both pages read.
+  it.each([
+    ["time-box", "You were signed out because it has been 30 days since you signed in. Please sign in again."],
+    ["idle", "You were signed out because Slate was not used on this device for 7 days. Please sign in again."],
+    ["unstamped", "You were signed out. Please sign in again."],
+  ] as const)("explains a session ended for %s in the staff page's words", async (reason, sentence) => {
+    await renderPage({ error: sessionRefusalLoginError(reason) });
+    expect(screen.getByRole("alert").textContent).toBe(sentence);
   });
 
   it.each(["__proto__", "constructor", "toString", "not_a_real_code"])(

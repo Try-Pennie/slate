@@ -177,6 +177,28 @@ describe("LoginPage", () => {
 // arrives is a code, so the page has to have copy for it: an unmapped code renders
 // NOTHING, which leaves the person back on the sign-in screen with no explanation
 // and the same button they just pressed.
+// The partner sign in page shares this page's frame and got its own panel words (#4399) and
+// a way to this page (#4411); this page keeps exactly what it had.
+describe("LoginPage stays the staff page", () => {
+  it("keeps the staff page's words on the photograph panel", () => {
+    render(<LoginPage />);
+
+    const welcome = screen.getByText("Welcome back.");
+    expect(welcome.nextElementSibling?.textContent).toBe(
+      "Manage your availability and let the right calls find you.",
+    );
+    expect(document.body.textContent).not.toMatch(/Booking for Pennie/);
+  });
+
+  // #4411: the partner page's way to the staff page is the partner page's alone.
+  it("carries no link to itself", () => {
+    render(<LoginPage />);
+
+    expect(screen.queryAllByRole("link")).toHaveLength(0);
+    expect(document.body.textContent).not.toMatch(/Pennie staff\?/);
+  });
+});
+
 describe("LoginPage sign-in error copy", () => {
   it("explains a refused provisioning as something to try again", () => {
     params.current = new URLSearchParams("error=provision_failed");
@@ -211,6 +233,19 @@ describe("LoginPage sign-in error copy", () => {
     const alert = screen.getByRole("alert").textContent ?? "";
     expect(alert).toMatch(words);
     expect(alert).toMatch(/sign in again/i);
+  });
+
+  // #4409: the partner sign in page now shows these same sentences, read from one shared
+  // place. This page's words must come through that move character for character.
+  it.each([
+    ["time-box", "You were signed out because it has been 30 days since you signed in. Please sign in again."],
+    ["idle", "You were signed out because Slate was not used on this device for 7 days. Please sign in again."],
+    ["unstamped", "You were signed out. Please sign in again."],
+  ] as const)("still says exactly what it always said for a session ended for %s", (reason, sentence) => {
+    params.current = new URLSearchParams(`error=${sessionRefusalLoginError(reason)}`);
+    render(<LoginPage />);
+
+    expect(screen.getByRole("alert").textContent).toBe(sentence);
   });
 
   // #3526: a Google account that is not the one this Slate account was set up
