@@ -129,6 +129,7 @@ const NON_SINGLETON_TABLES: { table: string; category: string; why: string }[] =
   { table: "capacity_history_cursor", category: "lock/counter", why: "#3940: one recorded through row per organisation keyed by org_id as the PK, moved only forward by record_capacity_history" },
   { table: "lead_texting_lines", category: "lock/counter", why: "#3718: one texting line per lead keyed by the 15 character Lead id as the PK, so a second row for a lead is structurally impossible" },
   { table: "program_leads", category: "lock/counter", why: "#4387: one program mark per lead keyed by the 15 character Lead id as the PK; registering again extends that row, never adds one" },
+  { table: "program_lead_outcomes", category: "lock/counter", why: "#4390: one tally row per (Eastern day, outcome kind), that pair being the primary key, written only by bump_program_lead_outcome's upsert; two kinds, so two rows a day at most" },
   { table: "placeholder_day_claims", category: "growth/append-only", why: "#4387: one claim per in flight program booking keyed by its claim key (PK), about 50 a day at most, kept; counted per day, never read as one row" },
   { table: "pilot_settings_samples", category: "growth/append-only", why: "#3641: an append only log of pilot split readings, one row every quarter hour keyed by sampled_at; never read as one row" },
   { table: "frame_origin_daily", category: "growth", why: "#3137: one row per (day, framing origin, booker page); capped at 200 hosts a day outside the allow list by record_frame_origins and pruned past 90 days by it" },

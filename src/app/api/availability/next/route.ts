@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import { getBucketSlots } from "@/lib/availability/service";
 import { filterSlotsFromNow } from "@/lib/availability/compute";
-import { searchWindowDays } from "@/lib/availability/bookable-days";
+import { searchWindowDays, trimToBookableDays } from "@/lib/availability/bookable-days";
 import {
   probeWindows,
   findNextAvailableSlots,
@@ -14,6 +14,9 @@ import { internalErrorResponse } from "@/lib/api/errors";
 import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
 import { refuseUnlessTestPass } from "@/lib/embed/test-pass-gate";
 import { DateTime } from "luxon";
+import { PROGRAM_LEAD_HEADER, PROGRAM_LEAD_ZONE_PARAM } from "@/lib/booking/program-lead-header";
+import { programLeadTimesLive } from "@/lib/booking/program-lead-times-live";
+import type { ProgramTimesEventType } from "@/lib/booking/program-lead-times";
 
 export const dynamic = "force-dynamic";
 
@@ -84,7 +87,9 @@ async function handle(req: NextRequest) {
   // A missing bucket is indistinguishable from a hidden test bucket here, matching
   // /api/availability: a real lead must never learn a hidden bucket exists (#396).
   let bucketExists = true;
-  const slots = await findNextAvailableSlots({
+  // A holder, not a bare let: the walk sets it inside a callback, which narrowing cannot see.
+  const seen: { eventType: ProgramTimesEventType | null } = { eventType: null };
+  const realSlots = await findNextAvailableSlots({
     probes: probeWindows({ searchedThroughDay, zone: hours.zone }),
     wantDays: horizonDays,
     zone: hours.zone,
@@ -102,12 +107,30 @@ async function handle(req: NextRequest) {
         bucketExists = false;
         return [];
       }
+      seen.eventType = res.eventType;
       // Min notice still applies out here: a slot a lead cannot book is not a day.
       return filterSlotsFromNow(res.slots, nowMs, res.eventType.min_notice_min);
     },
   });
 
   if (!bucketExists) return NextResponse.json({ error: "Unknown bucket" }, { status: 404 });
+
+  // #4390: a program lead is offered the placeholder's starts here too, from the day after
+  // the ordinary search stopped (it offered the ones before), merged with the real times
+  // found and held to the same first days offered. Every failure inside is the real times
+  // only, counted. An ordinary lead never reaches it.
+  const programToken = req.headers.get(PROGRAM_LEAD_HEADER);
+  let slots = realSlots;
+  if (programToken && seen.eventType !== null) {
+    const program = await programLeadTimesLive({
+      token: programToken,
+      leadZone: req.nextUrl.searchParams.get(PROGRAM_LEAD_ZONE_PARAM),
+      realSlots,
+      eventType: seen.eventType,
+      fromMs: DateTime.fromISO(searchedThroughDay, { zone: hours.zone }).plus({ days: 1 }).toMillis(),
+    });
+    slots = trimToBookableDays(program.slots, hours.zone, horizonDays);
+  }
 
   return NextResponse.json(
     { slots },

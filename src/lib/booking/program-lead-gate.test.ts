@@ -11,6 +11,7 @@ vi.mock("@/lib/log", () => ({ log: { error: vi.fn(), warn: vi.fn(), info: vi.fn(
 import {
   programLeadMoveTokenFor,
   programLeadTokenForLanding,
+  readProgramLeadTimesToken,
   verifyProgramLeadToken,
 } from "./program-lead-gate";
 import { mintProgramLeadToken, PROGRAM_LEAD_TOKEN_TTL_MS } from "./program-lead-token";
@@ -184,5 +185,33 @@ describe("programLeadMoveTokenFor (#4389)", () => {
   it("with no secret mints nothing", () => {
     vi.stubEnv("PROGRAM_LEAD_TOKEN_SECRET", "");
     expect(programLeadMoveTokenFor({ id: BOOKING, program_lead: true, salesforce_id: LEAD })).toBeNull();
+  });
+});
+
+describe("readProgramLeadTimesToken (#4390)", () => {
+  const fresh = (bookingId: string | null = null) =>
+    mintProgramLeadToken({ salesforceId: LEAD, bookingId, secret: SECRET, nowMs: NOW }).value;
+
+  it("reads a new booking token and a move token as issued, for the times read", () => {
+    expect(readProgramLeadTimesToken(fresh())).toMatchObject({ ok: true, facts: { purpose: "new" } });
+    expect(readProgramLeadTimesToken(fresh(BOOKING))).toMatchObject({ ok: true, facts: { purpose: "move", bookingId: BOOKING } });
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("refuses a forged or expired token by its reason, logging the reason and never the token", () => {
+    const token = fresh();
+    const forged = `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}`;
+    expect(readProgramLeadTimesToken(forged)).toEqual({ ok: false, reason: "forged" });
+    vi.setSystemTime(NOW + PROGRAM_LEAD_TOKEN_TTL_MS);
+    expect(readProgramLeadTimesToken(token)).toEqual({ ok: false, reason: "expired" });
+    const logged = JSON.stringify(vi.mocked(log.warn).mock.calls);
+    expect(logged).toContain("forged");
+    expect(logged).not.toContain(token);
+  });
+
+  it("answers secret-unset with no secret, so the times read can count it", () => {
+    const token = fresh();
+    vi.stubEnv("PROGRAM_LEAD_TOKEN_SECRET", "");
+    expect(readProgramLeadTimesToken(token)).toEqual({ ok: false, reason: "secret-unset" });
   });
 });
