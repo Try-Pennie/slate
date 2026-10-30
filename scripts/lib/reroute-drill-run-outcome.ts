@@ -42,7 +42,7 @@ export const REROUTE_DRILL_EXIT = {
   busy: 7,
   /** The DRILL bucket or its two test advisors are not set up. */
   notSeeded: 8,
-  /** The DRILL bucket offered no free time to book on. */
+  /** The DRILL bucket offered no time when both drill advisors are free to book on. */
   noFreeSlot: 9,
   /** The booking path refused the test call. */
   bookingRefused: 10,
@@ -152,7 +152,7 @@ export const RUN_JUDGEMENT: Record<RerouteDrillExit, RunJudgement> = {
     concluded: false,
     headline: `The DRILL test bucket or its two test advisors are not set up, ${BLIND} Run the smoke seed (scripts/seed-smoke-test.ts) to set them up.`,
   },
-  [REROUTE_DRILL_EXIT.noFreeSlot]: { concluded: false, headline: `The DRILL test bucket offered no free time to book the test call on, ${BLIND}` },
+  [REROUTE_DRILL_EXIT.noFreeSlot]: { concluded: false, headline: `The DRILL test bucket offered no time when both test advisors were free to book the test call on, ${BLIND}` },
   [REROUTE_DRILL_EXIT.bookingRefused]: { concluded: false, headline: `The booking path refused the reroute drill's test call, ${BLIND}` },
   [REROUTE_DRILL_EXIT.bookedOutsideDrill]: {
     concluded: false,

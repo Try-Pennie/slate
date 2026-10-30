@@ -580,7 +580,8 @@ about the database, the reassign and the calendars by construction (L52).
 deployment, where Slate's own calendar credentials live, on the DRILL test bucket and the two smoke
 test advisors only:
 
-1. book a test call on the DRILL bucket, keyed on the made up `drill` tier both advisors carry;
+1. book a test call on the DRILL bucket, keyed on the made up `drill` tier both advisors carry, at
+   the first time BOTH advisors are free;
 2. take that tier off whoever got the call, exactly as a Twilio narrowing would;
 3. run the real demotion decision (stamp, then sweep past the debounce, on an injected clock, so
    nothing waits), queue the real filtered sweep with what changed, and drain it under the lane's
@@ -608,7 +609,7 @@ exits on its own code, listed in `scripts/lib/reroute-drill-run-outcome.ts`:
 | 1 to 6 | the command could not ask (no key or URL, no reply, an unreadable reply, a refused key, no key on the deployment, no endpoint yet) |
 | 7 | another drill was running |
 | 8 | the DRILL bucket or its two advisors are not seeded |
-| 9 | no free time on the DRILL bucket |
+| 9 | no time on the DRILL bucket when both drill advisors are free |
 | 10, 11 | the booking path refused the test call, or it landed outside the drill (nobody demoted) |
 | 12 to 20 | **the pipeline answered wrongly**: no stamp, no sweep, no change recorded, nothing queued, no move, no audit, the move back refused or did not land, or not pinned |
 | 21 | the drill could not cancel its call or restore its advisor, before it judged anything |
@@ -635,6 +636,14 @@ lapses, release is idempotent, the two endpoints exclude each other) by
 `src/lib/booking/test-advisor-lease.test.ts`. A shared GitHub concurrency group was rejected: a
 third queued run cancels the pending one even with `cancel-in-progress: false` (L1020), and the
 canary queues often, so the day's drill could be dropped without a word.
+
+The lease covers Slate's own runs, never the advisors' calendars. On 2026-10-30 a one hour Google
+event on smoketest@ made the bucket's first time one only smoketest2@ was free at, so the call
+landed there and the sweep rightly found nobody to take it (exit 16, with no fault in the reroute).
+So the drill reads each advisor's times on their own, through the bucket's predicate narrowed to one
+advisor (`namedAgentResolver`, as an advisor's own link does), and books the first time they share
+(`firstTimeAllFree`). A call that still does not move carries the sweep's own record for it into
+the alert, so a busy advisor and a broken reroute cannot read alike.
 
 Its decision logic is pinned offline by `scripts/test-demotion-drill.ts`, which runs the drill over
 a fake world built from the real decision functions and shows every failure reason can occur.
