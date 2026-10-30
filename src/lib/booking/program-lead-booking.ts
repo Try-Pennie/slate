@@ -30,18 +30,19 @@
  * placeholder claims the new day with the booking's own id, so it never counts against
  * its own move, then moves through `commit_reschedule_onto_placeholder`.
  *
- * The start checks compose the same primitives the coordinator's predicate does
- * (`bookable-hours.ts`: `isOrgOpen`, `withinLeadCallingWindow`, `withinHorizon`), plus the
- * minimum notice the booker's own times honour.
+ * A start is a placeholder start exactly when #4390's times offer it (`placeholderStarts`
+ * in `program-lead-times.ts`, the coordinator's start rule in `bookable-hours.ts` with the
+ * event type's notice and interval), and its day is `placeholderCallDay` from the same
+ * module, so the times shown and the times accepted cannot disagree (L370).
  *
  * Pure apart from the injected deps (relative imports), so
  * `scripts/test-program-lead-booking.ts` drives every branch;
  * `program-lead-booking-service.ts` wires the real ones.
  */
-import { isOrgOpen, type BusinessHoursRules } from "../availability/compute.ts";
+import type { BusinessHoursRules } from "../availability/compute.ts";
 import { withinLeadCallingWindow } from "./lead-calling-window.ts";
-import { noFreeAdvisor, withinHorizon } from "./placed-booking.ts";
-import { placeholderCallDay } from "./program-lead.ts";
+import { noFreeAdvisor } from "./placed-booking.ts";
+import { placeholderCallDay, placeholderStarts } from "./program-lead-times.ts";
 import {
   ExistingCallError,
   OutsideCallingWindowError,
@@ -132,7 +133,6 @@ export interface ProgramLeadMoveDeps extends PlaceholderDeps {
   reschedule(args: { ontoPlaceholder?: User }): Promise<BookingResult>;
 }
 
-const MINUTE = 60_000;
 
 /** The claim key a move takes its place under: one per booking, so a retry keeps its place. */
 export function moveClaimKey(bookingId: string): string {
@@ -174,10 +174,13 @@ async function attempt<T>(read: () => Promise<T>): Promise<T> {
 }
 
 /**
- * The start's own checks, before any claim. Answers null when it may go on the
- * placeholder, or the refusal: `OutsideCallingWindowError` for the lead's window (its own
- * sentence), `SlotUnavailableError` for anything else, since the booker never offers such
- * a time and a refreshed picker is the right answer.
+ * The start's own check, before any claim. Answers null when it may go on the placeholder,
+ * or the refusal. ONE predicate with the times the lead is shown (#4390): the start must be
+ * one of `placeholderStarts` for this lead's zone, the coordinator page's start rule
+ * (`bookable-hours.ts`: business hours, calling window, horizon, nothing past) with the
+ * event type's minimum notice and slot interval. The calling window is asked first only so
+ * it answers with its own sentence (`OutsideCallingWindowError`); anything else the times
+ * never offered is `SlotUnavailableError`, and a refreshed picker is the right answer.
  */
 async function startRefusal(
   deps: PlaceholderDeps,
@@ -186,14 +189,12 @@ async function startRefusal(
   const startMs = Date.parse(rules.startIso);
   const nowMs = deps.now();
   if (!Number.isFinite(startMs) || startMs <= nowMs) return new SlotUnavailableError();
-  if (startMs < nowMs + (rules.eventType.min_notice_min ?? 0) * MINUTE) return new SlotUnavailableError();
-  const hours = await attempt(() => deps.businessHours());
-  if (!isOrgOpen(hours, startMs, startMs + rules.eventType.duration_min * MINUTE)) return new SlotUnavailableError();
   if (!withinLeadCallingWindow(rules.startIso, rules.zone)) return new OutsideCallingWindowError(rules.zone);
-  const horizon = await attempt(() => deps.horizonDays());
-  if (horizon === null) throw new VerifyUnavailableError();
-  if (!withinHorizon(hours, startMs, nowMs, horizon)) return new SlotUnavailableError();
-  return null;
+  const hours = await attempt(() => deps.businessHours());
+  const horizonDays = await attempt(() => deps.horizonDays());
+  if (horizonDays === null) throw new VerifyUnavailableError();
+  const offered = placeholderStarts({ hours, zone: rules.zone, nowMs, horizonDays, eventType: rules.eventType });
+  return offered.some((iso) => Date.parse(iso) === startMs) ? null : new SlotUnavailableError();
 }
 
 /** Take a place on the call's Eastern day, or refuse it as full. A test call never claims. */

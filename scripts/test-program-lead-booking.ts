@@ -20,7 +20,7 @@ import {
   type ProgramLeadBookingDeps,
   type ProgramLeadMoveDeps,
 } from "../src/lib/booking/program-lead-booking.ts";
-import { placeholderCallDay } from "../src/lib/booking/program-lead.ts";
+import { placeholderCallDay, placeholderStarts } from "../src/lib/booking/program-lead-times.ts";
 import {
   ExistingCallError,
   NoEligibleAgentsError,
@@ -49,7 +49,7 @@ const HOURS: BusinessHoursRules = {
 } as unknown as BusinessHoursRules;
 
 const bucket = { id: "bkt1", org_id: "org1", code: "411", is_test: false, criteria: {} } as unknown as Bucket;
-const eventType = { id: "et1", name: "Call", duration_min: 30, min_notice_min: 60 } as unknown as EventType;
+const eventType = { id: "et1", name: "Call", duration_min: 30, slot_interval_min: 30, min_notice_min: 60 } as unknown as EventType;
 const placeholder = { id: "p", name: "Marcia", email: "marcia@x.com", is_placeholder: true, is_test: false } as unknown as User;
 
 const input: CreateBookingInput = {
@@ -287,7 +287,17 @@ async function run() {
     // 07:30 for a Los Angeles lead, while Pennie is open (10:30 Eastern).
     ["outside the lead's calling window", { startIso: "2026-06-09T14:30:00.000Z", timezone: "America/Los_Angeles" }, (e) => e instanceof OutsideCallingWindowError],
     ["beyond the horizon", { startIso: "2026-07-21T15:00:00.000Z" }, (e) => e instanceof SlotUnavailableError],
+    // #4390's grid: 11:10 Eastern sits between two of the event type's 30 minute starts,
+    // so the times never offered it and the confirm must not take it either.
+    ["off the slot interval's grid", { startIso: "2026-06-09T15:10:00.000Z" }, (e) => e instanceof SlotUnavailableError],
   ];
+  // The confirm takes exactly the placeholder starts the lead is shown (one predicate):
+  // the main start is one of #4390's `placeholderStarts` for this lead.
+  {
+    const shown = placeholderStarts({ hours: HOURS, zone: input.timezone, nowMs: NOW, horizonDays: 10, eventType });
+    assert(shown.includes(START), `the start the suite books is one the times offer (${shown.length} starts offered)`);
+    assert(!shown.includes("2026-06-09T15:10:00.000Z"), "and the off grid start is not");
+  }
   for (const [label, over, expected] of refusedStarts) {
     const { deps, calls } = makeBookDeps({ served: false });
     const err = await refusal(() => bookProgramLead({ ...input, ...over }, deps));
