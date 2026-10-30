@@ -1,0 +1,56 @@
+import { supabaseAdmin } from "@/lib/supabase/admin";
+import { unwrap } from "@/lib/db/result";
+import { log } from "@/lib/log";
+import { loadBusinessHoursCached } from "@/lib/booking/business-hours-load";
+import { readBookingHorizonDays, readProgramLeadTimesSettings } from "@/lib/booking/settings";
+import { readProgramLeadTimesToken } from "@/lib/booking/program-lead-gate";
+import { programLeadTimes, type ProgramLeadTimes, type ProgramLeadTimesDeps } from "./program-lead-times";
+
+/**
+ * The live wiring of a program lead's times (#4390): the rules are `program-lead-times.ts`;
+ * this binds them to the token secret, `booking_settings`, the cached week, the horizon,
+ * `placeholder_day_counts` (0213) and `bump_program_lead_outcome` (0215). Server only.
+ *
+ * A fallback is logged by its reason, never with the token, and COUNTED; a count that
+ * fails is logged as an error of its own, since it is the one failure nothing else sees.
+ */
+const LIVE_DEPS: ProgramLeadTimesDeps = {
+  readToken: (token) => {
+    const reading = readProgramLeadTimesToken(token);
+    return reading.ok ? { ok: true } : { ok: false, reason: reading.reason };
+  },
+  readSettings: readProgramLeadTimesSettings,
+  loadHours: loadBusinessHoursCached,
+  readHorizonDays: readBookingHorizonDays,
+  readDayCounts: async (fromDay, toDay) => {
+    // One row per day of the range, the horizon's few days, never a growth read.
+    const rows = unwrap(
+      await supabaseAdmin().rpc("placeholder_day_counts", { p_from: fromDay, p_to: toDay }),
+      "placeholder_day_counts",
+    ) as { call_day: string; held: number }[] | null;
+    const out = new Map<string, number>();
+    for (const row of rows ?? []) {
+      if (typeof row.call_day === "string" && Number.isInteger(row.held)) out.set(row.call_day, row.held);
+    }
+    return out;
+  },
+  countFallback: async () => {
+    const { error } = await supabaseAdmin().rpc("bump_program_lead_outcome", { p_kind: "times_fallback" });
+    if (error) throw new Error(`bump_program_lead_outcome failed: ${error.message}`);
+  },
+  now: () => Date.now(),
+};
+
+export async function programLeadTimesLive(input: Parameters<typeof programLeadTimes>[0]): Promise<ProgramLeadTimes> {
+  const out = await programLeadTimes(input, LIVE_DEPS);
+  if (out.outcome.startsWith("fallback:")) {
+    log.error("program-lead-times", {
+      msg: "a program lead was shown real times only because a read failed",
+      reason: out.outcome.slice("fallback:".length),
+    });
+    if (out.countFailed !== undefined) {
+      log.error("program-lead-times", { msg: "and the fallback could not be counted" }, out.countFailed);
+    }
+  }
+  return out;
+}

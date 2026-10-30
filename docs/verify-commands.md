@@ -2568,3 +2568,23 @@ racers were granted the last place.
 
 **Re-run it after any change to `placeholder_day_held`, `claim_placeholder_day` or what
 `staff_placed`, `program_lead` and the placeholder mean.**
+
+# Proving the program lead outcome counts in a real database (`scripts/verify-program-lead-outcomes-sql.ts`)
+
+#4390 (phase 4 of #4255): when a program lead with a good token is shown real times only
+because a read failed (the token secret, the switch and day limit, the hours, the horizon,
+the day counts), that is counted, never only logged (L654). Migration 0215 adds
+`program_lead_outcomes`, one row per (Eastern day, kind), and its one writer
+`bump_program_lead_outcome(kind)`, an atomic upsert. Kinds: `times_fallback` (#4390) and
+`limit_refused` (#4391).
+
+`node --experimental-strip-types scripts/verify-program-lead-outcomes-sql.ts` replays every migration into the
+`supabase/postgres` image and checks, each beside a control: the first bump of a kind
+answers 1 and the second 2, on one row for today's Eastern day; another kind is its own
+row; three bumps in concurrent transactions are all counted; a kind outside the two is
+refused; and the web roles see no rows and cannot bump. No Docker is exit 2, UNMEASURED;
+any failed check is exit 1. It runs in the DB replay workflow with the other
+`verify-*-sql.ts` suites. Seen failing on a planted breakage of 0215: with the bump
+written as a read then a write, three concurrent bumps counted one.
+
+**Re-run it after any change to `bump_program_lead_outcome` or the kinds it accepts.**
