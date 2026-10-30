@@ -9,6 +9,8 @@ import { readHostColours } from "@/lib/embed/host-colours";
 import { prefillFromQuery } from "@/lib/booking/book-link";
 import { landingLookupId } from "@/lib/booking/landing-identity-gate";
 import { programLeadTokenForLanding } from "@/lib/booking/program-lead-gate";
+import { isPublicTestBucket } from "@/lib/embed/public-test-bucket";
+import { currentTestPassFor } from "@/lib/embed/test-pass-gate";
 import { headers } from "next/headers";
 
 export const dynamic = "force-dynamic";
@@ -68,6 +70,11 @@ export default async function BookingPage({
     programLeadTokenForLanding(lookupId),
   ]);
   const bucketCode = resolved.code;
+  // #4393: the public test bucket opens only from approved partner pages (`/book`'s origin
+  // gate), so this page never had its pass. A registered PROGRAM lead's texted link may
+  // open it, so the program path can be drilled on the test bucket: registering needs
+  // Bidspoke's key, so nobody a stranger can name gets in. Everyone else is unchanged.
+  const testPass = programLeadToken && isPublicTestBucket(bucketCode) ? currentTestPassFor(bucketCode) : null;
 
   // #2660: the same question `/book` asks of the same helper, so a test booking
   // reached by this route carries the test line too (L659).
@@ -121,6 +128,7 @@ export default async function BookingPage({
         cancelReasons={reasonOptions.cancel.active}
         landingCall={landingCall}
         programLeadToken={programLeadToken}
+        testPass={testPass}
       />
     </StandaloneBookerShell>
   );
