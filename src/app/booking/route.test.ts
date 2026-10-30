@@ -1934,6 +1934,10 @@ describe("POST /booking for a program lead (#4391)", () => {
   const PROGRAM_SECRET = "p".repeat(64);
   const tokenFor = (salesforceId: string, bookingId: string | null = null) =>
     mintProgramLeadToken({ salesforceId, bookingId, secret: PROGRAM_SECRET, nowMs: Date.now() }).value;
+  // A forgery always CHANGES the signature's last character. Overwriting it with a fixed
+  // "0" left the token genuine whenever the signature (which moves with the clock)
+  // already ended in "0", one run in sixteen, and the test then failed at random.
+  const forge = (token: string) => `${token.slice(0, -1)}${token.endsWith("0") ? "1" : "0"}`;
   const BODY = { ...VALID_BODY, salesforceId: LEAD };
   const routed = {
     booking: { id: "bk-r", kind: "routed", agent_name: "Agent A", starts_at: BODY.start, ends_at: "2026-07-01T15:30:00.000Z", prefill: {} },
@@ -2014,7 +2018,7 @@ describe("POST /booking for a program lead (#4391)", () => {
     service.createBooking.mockResolvedValueOnce(routed);
     const token =
       kind === "other" ? tokenFor("00Q000000000002")
-        : kind === "forged" ? `${tokenFor(LEAD).slice(0, -1)}0`
+        : kind === "forged" ? forge(tokenFor(LEAD))
           : kind === "move" ? tokenFor(LEAD, "6f1c2d3e-0000-4000-8000-000000000001")
             : undefined;
     const res = await post({ ...BODY, ...(token ? { programLeadToken: token } : {}) });
