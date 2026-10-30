@@ -24,6 +24,10 @@ vi.mock("@/lib/booking/reason-options", () => ({
   loadReasonOptions: vi.fn(async () => ({ reschedule: { active: [] }, cancel: { active: [] } })),
 }));
 vi.mock("@/components/Booker", () => ({ default: () => null }));
+const programLead = vi.hoisted(() => ({
+  programLeadTokenForLanding: vi.fn(async (_id: string) => null as string | null),
+}));
+vi.mock("@/lib/booking/program-lead-gate", () => programLead);
 vi.mock("@/components/ManageNotFound", () => ({ default: () => null }));
 vi.mock("@/components/StandaloneTheme", () => ({ default: () => null }));
 vi.mock("@/components/LegalFooter", () => ({ default: () => null }));
@@ -168,5 +172,23 @@ describe("/booking/manage/[token]/rebook (#2982)", () => {
   it("keeps the page out of search and its URL out of every Referer but its own", () => {
     expect(metadata.referrer).toBe("same-origin");
     expect(metadata.robots).toEqual({ index: false, follow: false });
+  });
+
+  // #4391: a program lead's rebook is a NEW booking, so it gets a new booking's token,
+  // decided by the registration for the Lead id off the token's own booking.
+  it("hands a program lead's rebook the new booking token, minted for the booking's own Lead (#4391)", async () => {
+    service.rebookRowForToken.mockResolvedValue({ kind: "found", row: ROW });
+    programLead.programLeadTokenForLanding.mockResolvedValueOnce("program-lead-token-fixture");
+    const props = findByType(await render(), Booker);
+    expect(programLead.programLeadTokenForLanding).toHaveBeenCalledWith(ROW.leadId);
+    expect(props?.programLeadToken).toBe("program-lead-token-fixture");
+  });
+
+  it("mints nothing for a rebook with no Lead id (#4391)", async () => {
+    programLead.programLeadTokenForLanding.mockClear();
+    service.rebookRowForToken.mockResolvedValue({ kind: "failed" });
+    const props = findByType(await render(), Booker);
+    expect(programLead.programLeadTokenForLanding).not.toHaveBeenCalled();
+    expect(props?.programLeadToken).toBeNull();
   });
 });
